@@ -82,6 +82,8 @@ async def download_file(
     encoded = quote(filename)
 
     # 6. S3 스트리밍 응답
+    # cross-origin 환경에서 JS 가 Content-Disposition 을 읽으려면
+    # Access-Control-Expose-Headers 에 명시되어야 한다.
     return StreamingResponse(
         content=storage_service.iter_download_stream(s3_key),
         media_type=content_type,
@@ -91,5 +93,6 @@ async def download_file(
                 f'filename="{encoded}"; '
                 f"filename*=UTF-8''{encoded}"
             ),
+            "Access-Control-Expose-Headers": "Content-Disposition",
         },
     )
