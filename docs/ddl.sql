@@ -110,7 +110,8 @@ CREATE TABLE `chtb_msg_d` (
   `RGST_DTM` datetime NOT NULL COMMENT '등록일시',
   `UPPR_ID` varchar(20) COLLATE utf8mb4_general_ci NOT NULL COMMENT '수정자아이디',
   `UPD_DTM` datetime NOT NULL COMMENT '수정일시',
-  PRIMARY KEY (`CHTB_TLK_ID`,`CHTB_TLK_SMRY_ID`,`CHTB_TLK_SEQ`)
+  PRIMARY KEY (`CHTB_TLK_ID`,`CHTB_TLK_SMRY_ID`,`CHTB_TLK_SEQ`),
+  UNIQUE KEY `uq_smry_seq` (`CHTB_TLK_SMRY_ID`,`CHTB_TLK_SEQ`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='챗봇메시지상세'
 
 
