@@ -184,6 +184,13 @@ def list_objects(prefix: str) -> list[str]:
     return keys
 
 
+def delete_object(s3_key: str) -> None:
+    """단일 오브젝트를 삭제한다. 키가 없어도 예외를 발생시키지 않는다 (S3 표준)."""
+    client = _get_client()
+    bucket = _get_bucket()
+    client.delete_object(Bucket=bucket, Key=s3_key)
+
+
 def delete_prefix(prefix: str) -> int:
     """prefix 하위의 모든 오브젝트를 삭제한다.
 

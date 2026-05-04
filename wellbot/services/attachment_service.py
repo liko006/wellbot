@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +19,12 @@ from pathlib import Path
 from wellbot.models.attachment import AtchFileM
 from wellbot.models.chat_message import ChtbMsgD
 from wellbot.models.chat_message_attachment import ChtbMsgAtchFileD
-from wellbot.constants import KST
+from wellbot.constants import (
+    DB_UPDATE_RETRIES,
+    DB_UPDATE_RETRY_BASE_DELAY,
+    KST,
+    S3_DERIVATIVE_UPLOAD_RETRIES,
+)
 from wellbot.services import chunker, embedding_service, file_parser, storage_service
 from wellbot.services.database import get_session
 
@@ -104,6 +110,61 @@ def register_attachment(
     return file_no
 
 
+# ── 파생물 S3 원자적 업로드 ──
+
+
+def _safe_delete(key: str) -> None:
+    """S3 오브젝트를 best-effort 삭제. 실패해도 예외를 전파하지 않는다."""
+    try:
+        storage_service.delete_object(key)
+    except Exception as exc:
+        log.warning("부분 잔존물 정리 실패 key=%s err=%s", key, exc)
+
+
+def _upload_derivatives_atomic(
+    chunks_key: str,
+    chunks_bytes: bytes,
+    index_key: str,
+    index_bytes: bytes,
+    max_retries: int = S3_DERIVATIVE_UPLOAD_RETRIES,
+) -> None:
+    """chunks.jsonl 와 index.faiss 를 원자적으로 업로드한다.
+
+    한쪽이라도 실패하면 방금 올린 다른 쪽을 정리하고 재시도한다.
+    모든 시도가 실패하면 마지막 예외를 전파한다.
+
+    Raises:
+        Exception: 재시도 한도 초과 시 마지막 업로드 예외.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            storage_service.upload_bytes(
+                chunks_bytes,
+                chunks_key,
+                content_type="application/x-jsonlines",
+            )
+            try:
+                storage_service.upload_bytes(
+                    index_bytes,
+                    index_key,
+                    content_type="application/octet-stream",
+                )
+                return  # 양쪽 모두 성공 → commit point 진입 가능
+            except Exception:
+                # index 실패 → 방금 올린 chunks 정리
+                _safe_delete(chunks_key)
+                raise
+        except Exception as exc:
+            last_exc = exc
+            log.warning(
+                "파생물 업로드 실패 (시도 %d/%d): %s",
+                attempt + 1, max_retries, exc,
+            )
+    assert last_exc is not None
+    raise last_exc
+
+
 # ── 파싱 + 청킹 + 임베딩 + S3 파생물 저장 ──
 
 
@@ -169,21 +230,17 @@ def process_attachment(file_no: int, emp_no: str) -> bool:
         index = embedding_service.build_index(embeddings)
         index_bytes = embedding_service.serialize_index(index)
 
-        # 8. 파생물 S3 업로드
+        # 8. 파생물 S3 업로드 (원자적: 한쪽 실패 시 정리 + 재시도)
         chunks_key = f"{s3_prefix}chunks.jsonl"
         index_key = f"{s3_prefix}index.faiss"
-        storage_service.upload_bytes(
-            chunker.chunks_to_jsonl(chunks),
-            chunks_key,
-            content_type="application/x-jsonlines",
-        )
-        storage_service.upload_bytes(
-            index_bytes,
-            index_key,
-            content_type="application/octet-stream",
+        _upload_derivatives_atomic(
+            chunks_key=chunks_key,
+            chunks_bytes=chunker.chunks_to_jsonl(chunks),
+            index_key=index_key,
+            index_bytes=index_bytes,
         )
 
-        # 9. 토큰 수 업데이트
+        # 9. (Commit point) 토큰 수 업데이트 — 이 라인 이전에는 검색에서 스킵됨
         _update_token_count(file_no, emp_no, total_tokens)
 
         # 10. 캐시 무효화 (다음 조회 시 재로드)
@@ -209,16 +266,40 @@ def process_attachment(file_no: int, emp_no: str) -> bool:
             pass
 
 
-def _update_token_count(file_no: int, emp_no: str, total_tokens: int) -> None:
-    """atch_file_m.atch_file_tokn_ecnt 갱신."""
-    now = datetime.now(KST)
-    with get_session() as session:
-        record = session.query(AtchFileM).get(file_no)
-        if not record:
+def _update_token_count(
+    file_no: int,
+    emp_no: str,
+    total_tokens: int,
+    max_retries: int = DB_UPDATE_RETRIES,
+) -> None:
+    """atch_file_m.atch_file_tokn_ecnt 갱신.
+
+    S3 파생물 업로드 성공 직후 호출되는 commit point 이므로 일시 DB 장애에
+    대비해 지수 백오프 재시도를 수행한다. 모든 시도가 실패하면 마지막
+    예외를 전파한다 (호출부가 process_attachment 실패로 처리).
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            now = datetime.now(KST)
+            with get_session() as session:
+                record = session.query(AtchFileM).get(file_no)
+                if not record:
+                    return
+                record.atch_file_tokn_ecnt = total_tokens
+                record.upd_dtm = now
+                record.uppr_id = emp_no[:20]
             return
-        record.atch_file_tokn_ecnt = total_tokens
-        record.upd_dtm = now
-        record.uppr_id = emp_no[:20]
+        except Exception as exc:
+            last_exc = exc
+            log.warning(
+                "token_count 갱신 실패 (시도 %d/%d) file_no=%s: %s",
+                attempt + 1, max_retries, file_no, exc,
+            )
+            if attempt < max_retries - 1:
+                time.sleep(DB_UPDATE_RETRY_BASE_DELAY * (2 ** attempt))
+    assert last_exc is not None
+    raise last_exc
 
 
 def _smry_id_from_record(file_no: int) -> str:
