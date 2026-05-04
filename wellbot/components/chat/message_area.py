@@ -109,29 +109,58 @@ def streaming_message() -> rx.Component:
     )
 
 
-def scroll_to_bottom_button() -> rx.Component:
-    """맨 아래로 이동 플로팅 버튼."""
-    return rx.el.button(
-        rx.icon("chevron-down", size=18, color=COLORS["text_secondary"]),
-        id="scroll-to-bottom-btn",
+def _rail_button(
+    icon: str, btn_id: str, tooltip: str, margin_top: str = "0"
+) -> rx.Component:
+    """네비게이션 레일 내 단일 원형 버튼."""
+    return rx.tooltip(
+        rx.el.button(
+            rx.icon(icon, size=16, color=COLORS["text_secondary"]),
+            id=btn_id,
+            style={
+                "width": "32px",
+                "height": "32px",
+                "border_radius": "50%",
+                "background": str(COLORS["input_bg"]),
+                "border": f"1px solid {COLORS['border']}",
+                "display": "flex",
+                "align_items": "center",
+                "justify_content": "center",
+                "cursor": "pointer",
+                "padding": "0",
+                "outline": "none",
+                "transition": "opacity 0.15s ease, background 0.15s ease",
+                "margin_top": margin_top,
+            },
+        ),
+        content=tooltip,
+        side="left",
+    )
+
+
+def navigation_rail() -> rx.Component:
+    """채팅 영역 우측 사이드 네비게이션 레일.
+
+    - 이전 메시지(↑) / 다음 메시지(↓): 메시지 단위 이동
+    - 최하단(⤓): 스크롤 끝으로 이동, 바닥에 있으면 비활성 표시
+    """
+    return rx.box(
+        _rail_button("chevron-up", "nav-prev-btn", "이전 메시지"),
+        _rail_button("chevron-down", "nav-next-btn", "다음 메시지"),
+        _rail_button(
+            "chevrons-down", "scroll-to-bottom-btn", "최하단으로", margin_top="8px"
+        ),
+        id="navigation-rail",
         style={
-            "width": "36px",
-            "height": "36px",
-            "border_radius": "50%",
-            "background": str(COLORS["input_bg"]),
-            "border": f"1px solid {COLORS['border']}",
-            "display": "none",
-            "align_items": "center",
-            "justify_content": "center",
-            "cursor": "pointer",
             "position": "absolute",
-            "bottom": "0.75em",
-            "left": "50%",
-            "transform": "translateX(-50%)",
-            "z_index": "5",
-            "box_shadow": "0 2px 8px rgba(0,0,0,0.15)",
-            "padding": "0",
-            "outline": "none",
+            "right": "16px",
+            "top": "50%",
+            "transform": "translateY(-50%)",
+            "display": "flex",
+            "flex_direction": "column",
+            "gap": "4px",
+            "z_index": "10",
+            "pointer_events": "auto",
         },
     )
 
@@ -168,7 +197,6 @@ def message_area() -> rx.Component:
             ),
             welcome_message(),
         ),
-        scroll_to_bottom_button(),
         id="message-area",
         flex="1",
         overflow_y="auto",

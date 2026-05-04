@@ -8,7 +8,7 @@ import reflex as rx
 
 from wellbot.components.chat.gnb import chat_gnb
 from wellbot.components.chat.input_bar import input_bar
-from wellbot.components.chat.message_area import message_area
+from wellbot.components.chat.message_area import message_area, navigation_rail
 from wellbot.components.layout import chat_layout
 from wellbot.constants import BTN_THRESHOLD, SCROLL_THRESHOLD
 
@@ -23,14 +23,18 @@ AUTO_SCROLL_SCRIPT = """
 (function initAutoScroll() {
     var SCROLL_THRESHOLD = __SCROLL_THRESHOLD__;
     var BTN_THRESHOLD = __BTN_THRESHOLD__;
+    var NAV_TOLERANCE = 8;
+    var NAV_OFFSET = 12;
+
+    var SETUP_VERSION = 4;
 
     function setup() {
         var el = document.getElementById('message-area');
         if (!el) return false;
 
-        // 이미 설정된 경우 스킵
-        if (el._asReady) return true;
-        el._asReady = true;
+        // 이미 동일 버전으로 설정된 경우 스킵 (버전 다르면 재설정)
+        if (el._asReadyVersion === SETUP_VERSION) return true;
+        el._asReadyVersion = SETUP_VERSION;
 
         var userScrolledUp = false;
 
@@ -38,14 +42,65 @@ AUTO_SCROLL_SCRIPT = """
             return el.scrollHeight - el.scrollTop - el.clientHeight;
         }
 
-        function scrollToBottom() {
-            el.scrollTop = el.scrollHeight;
+        function scrollToBottom(smooth) {
+            if (smooth) {
+                el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+            } else {
+                el.scrollTop = el.scrollHeight;
+            }
+        }
+
+        function setBtnEnabled(btn, enabled) {
+            if (!btn) return;
+            btn.style.opacity = enabled ? '1' : '0.35';
+            btn.style.pointerEvents = enabled ? 'auto' : 'none';
+            btn.style.cursor = enabled ? 'pointer' : 'default';
+        }
+
+        function getMessages() {
+            return Array.from(el.querySelectorAll('.chat-msg'));
+        }
+
+        function currentMsgIndex(msgs) {
+            // viewport 상단(= scrollTop + NAV_OFFSET)에 앵커된 메시지 인덱스.
+            // offsetTop이 anchor 이하인 마지막 메시지 = 현재 보고 있는 메시지.
+            var anchor = el.scrollTop + NAV_OFFSET + NAV_TOLERANCE;
+            var idx = -1;
+            for (var i = 0; i < msgs.length; i++) {
+                if (msgs[i].offsetTop <= anchor) idx = i;
+                else break;
+            }
+            return idx; // -1: 첫 메시지보다 위
+        }
+
+        function navPrev() {
+            var msgs = getMessages();
+            if (msgs.length === 0) return;
+            var idx = currentMsgIndex(msgs);
+            var target = idx > 0 ? idx - 1 : 0;
+            el.scrollTo({ top: Math.max(0, msgs[target].offsetTop - NAV_OFFSET), behavior: 'smooth' });
+        }
+
+        function navNext() {
+            var msgs = getMessages();
+            if (msgs.length === 0) return;
+            var idx = currentMsgIndex(msgs);
+            var target = Math.min(msgs.length - 1, idx + 1);
+            el.scrollTo({ top: msgs[target].offsetTop - NAV_OFFSET, behavior: 'smooth' });
         }
 
         function updateBtn() {
-            var btn = document.getElementById('scroll-to-bottom-btn');
-            if (!btn) return;
-            btn.style.display = (userScrolledUp && el.scrollHeight > el.clientHeight) ? 'flex' : 'none';
+            var bottomBtn = document.getElementById('scroll-to-bottom-btn');
+            var prevBtn = document.getElementById('nav-prev-btn');
+            var nextBtn = document.getElementById('nav-next-btn');
+
+            var atBottom = distFromBottom() < BTN_THRESHOLD;
+            var atTop = el.scrollTop <= NAV_TOLERANCE;
+            var hasScroll = el.scrollHeight > el.clientHeight + 1;
+
+            setBtnEnabled(bottomBtn, hasScroll && !atBottom);
+            setBtnEnabled(prevBtn, hasScroll && !atTop);
+            setBtnEnabled(nextBtn, hasScroll && !atBottom);
         }
 
         el.addEventListener('scroll', function() {
@@ -58,11 +113,16 @@ AUTO_SCROLL_SCRIPT = """
             updateBtn();
         });
 
-        el.addEventListener('click', function(e) {
+        document.addEventListener('click', function(e) {
             if (e.target.closest('#scroll-to-bottom-btn')) {
                 userScrolledUp = false;
-                scrollToBottom();
+                scrollToBottom(true);
                 updateBtn();
+            } else if (e.target.closest('#nav-prev-btn')) {
+                userScrolledUp = true;
+                navPrev();
+            } else if (e.target.closest('#nav-next-btn')) {
+                navNext();
             }
         });
 
@@ -87,6 +147,7 @@ AUTO_SCROLL_SCRIPT = """
         };
 
         scrollToBottom();
+        updateBtn();
         return true;
     }
 
@@ -105,14 +166,19 @@ AUTO_SCROLL_SCRIPT = """
 
 
 def chat_main() -> rx.Component:
-    """메인 대화 영역: GNB + 메시지 표시 + 입력 바."""
-    return rx.vstack(
-        chat_gnb(),
-        message_area(),
-        input_bar(),
+    """메인 대화 영역: GNB + 메시지 표시 + 입력 바 + 우측 네비 레일."""
+    return rx.box(
+        rx.vstack(
+            chat_gnb(),
+            message_area(),
+            input_bar(),
+            height="100%",
+            width="100%",
+            spacing="0",
+        ),
+        navigation_rail(),
         height="100%",
         width="100%",
-        spacing="0",
         position="relative",
     )
 
