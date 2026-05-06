@@ -5,11 +5,11 @@
 
 agent_modes:
   - id: chat
-    name: 기본 대화
+    name: Chat
     description: 일반 대화 모드
     icon: message-circle
 
   - id: report
     name: Report
-    description: 보고서 작성 모드
-    icon: file-text
+    description: 보고서 생성
+    icon: presentation

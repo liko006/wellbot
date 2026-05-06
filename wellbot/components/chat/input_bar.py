@@ -300,7 +300,7 @@ def _processing_toast() -> rx.Component:
         rx.hstack(
             rx.spinner(size="1"),
             rx.text(
-                "첨부 파일을 분석하고 있어요. 완료 후 전송할 수 있습니다.",
+                "첨부 파일 처리 중... 완료 후 전송할 수 있습니다.",
                 size="2",
                 color=COLORS["text_primary"],
                 weight="medium",

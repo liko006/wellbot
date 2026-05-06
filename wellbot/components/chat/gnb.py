@@ -97,7 +97,7 @@ def _attachment_item(att: AttachmentInfo) -> rx.Component:
             overflow="hidden",
         ),
         rx.icon_button(
-            rx.icon("download", size=12),
+            rx.icon("cloud-download", size=12),
             variant="ghost",
             size="1",
             cursor="pointer",
