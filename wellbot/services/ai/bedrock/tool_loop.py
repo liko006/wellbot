@@ -11,7 +11,7 @@ from wellbot.services.ai.bedrock.converse import (
     safe_next,
     stream_one_turn_iter,
 )
-from wellbot.services.core.config import ModelConfig
+from wellbot.services.core.settings import ModelConfig
 
 log = logging.getLogger(__name__)
 

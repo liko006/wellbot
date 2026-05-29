@@ -1,9 +1,9 @@
-# 에이전트 모드 설정
+# 채팅 모드 설정 (채팅 UI 의 모드 선택 드롭다운)
 # - id: 내부 식별자
 # - name: UI 에 표시할 이름
 # - description: 모드 설명
 
-agent_modes:
+chat_modes:
   - id: chat
     name: Chat
     description: 일반 대화 모드

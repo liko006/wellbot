@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from wellbot.services.ai.bedrock.client import get_client
-from wellbot.services.core.config import get_config
+from wellbot.services.core.settings import get_config
 
 
 def generate_title(user_msg: str, assistant_msg: str) -> str:

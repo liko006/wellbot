@@ -39,7 +39,7 @@ from wellbot.constants import (
     EMBED_RETRY_BASE_DELAY,
     FAISS_CACHE_MAX_CONVERSATIONS,
 )
-from wellbot.services.core.config import get_config
+from wellbot.services.core.settings import get_config
 
 log = logging.getLogger(__name__)
 

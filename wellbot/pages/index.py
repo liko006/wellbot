@@ -183,7 +183,7 @@ def chat_main() -> rx.Component:
     )
 
 
-def index() -> rx.Component:
+def index_page() -> rx.Component:
     """채팅 메인 페이지."""
     return rx.fragment(
         rx.script(AUTO_SCROLL_SCRIPT),

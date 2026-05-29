@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
-class ChtbSmryD(Base):
+class ChatSummary(Base):
     """챗봇요약상세."""
 
     __tablename__ = "chtb_smry_d"
@@ -40,3 +40,7 @@ class ChtbSmryD(Base):
     upd_dtm: Mapped[datetime] = mapped_column(
         "UPD_DTM", DateTime, comment="수정일시",
     )
+
+
+# 하위 호환을 위한 약어 alias (구 코드/외부 import 용)
+ChtbSmryD = ChatSummary

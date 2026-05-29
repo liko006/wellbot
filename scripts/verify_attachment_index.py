@@ -26,9 +26,9 @@ if str(ROOT) not in sys.path:
 
 from sqlalchemy import func
 
-from wellbot.models.attachment import AtchFileM
-from wellbot.models.chat_message import ChtbMsgD
-from wellbot.models.chat_message_attachment import ChtbMsgAtchFileD
+from wellbot.models.attachment import Attachment
+from wellbot.models.chat_message import ChatMessage
+from wellbot.models.chat_message_attachment import ChatMessageAttachment
 from wellbot.services.ai import embedding_service
 from wellbot.services.core.database import get_session
 from wellbot.services.files import storage_service
@@ -46,20 +46,20 @@ def find_smry_ids_with_attachments(limit: int | None = None) -> list[str]:
     with get_session() as session:
         q = (
             session.query(
-                ChtbMsgD.chtb_tlk_smry_id,
-                func.max(AtchFileM.upd_dtm).label("latest"),
-                func.count(AtchFileM.atch_file_no).label("cnt"),
+                ChatMessage.chtb_tlk_smry_id,
+                func.max(Attachment.upd_dtm).label("latest"),
+                func.count(Attachment.atch_file_no).label("cnt"),
             )
             .join(
-                ChtbMsgAtchFileD,
-                ChtbMsgAtchFileD.chtb_tlk_id == ChtbMsgD.chtb_tlk_id,
+                ChatMessageAttachment,
+                ChatMessageAttachment.chtb_tlk_id == ChatMessage.chtb_tlk_id,
             )
             .join(
-                AtchFileM,
-                AtchFileM.atch_file_no == ChtbMsgAtchFileD.atch_file_no,
+                Attachment,
+                Attachment.atch_file_no == ChatMessageAttachment.atch_file_no,
             )
-            .group_by(ChtbMsgD.chtb_tlk_smry_id)
-            .order_by(func.max(AtchFileM.upd_dtm).desc())
+            .group_by(ChatMessage.chtb_tlk_smry_id)
+            .order_by(func.max(Attachment.upd_dtm).desc())
         )
         if limit:
             q = q.limit(limit)

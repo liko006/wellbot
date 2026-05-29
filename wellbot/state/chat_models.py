@@ -15,8 +15,8 @@ from pydantic import BaseModel
 from wellbot.constants import DEFAULT_CONVERSATION_TITLE
 
 
-class AgentModeInfo(BaseModel):
-    """프론트엔드 표시용 에이전트 모드 정보."""
+class ChatModeInfo(BaseModel):
+    """프론트엔드 표시용 채팅 모드 정보."""
 
     id: str
     name: str

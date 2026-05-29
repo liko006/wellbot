@@ -354,11 +354,11 @@ known-first-party = ["wellbot"]
 - [x] 3-A `wellbot/paths.py` 신설 ✅ 2026-05-29 — `Path(__file__).resolve().parent.parent.parent` 패턴 6곳 모두 단일 모듈로 통합
 - [x] 3-B `constants.py` → YAML 이관 ✅ 2026-05-29 — TITLE_* / EMBEDDING_* 5개 상수를 `config/models.yaml` 의 title/embedding 섹션으로 이전 (튜닝 파라미터는 constants 유지)
 - [x] 3-C 모듈 import 시 사이드이펙트 제거 ✅ 2026-05-29 — `wellbot/env.py::init_env()` 신설 + DB_URL / JWT_SECRET 검증을 lazy 화. 환경변수 없이 entrypoint import 통과
-- [ ] 4-A 모델 도메인 별칭
-- [ ] 4-B 페이지 함수명 통일 + `pages/__init__.py`
-- [ ] 4-C `services/config.py` → `settings.py`
-- [ ] 4-D `state/__init__.py` 에 `AdminState` 추가
-- [ ] 4-E (옵션) `agent` 도메인 분리
+- [x] 4-A ORM 모델 전면 개명 + 약어 alias ✅ 2026-05-29 — `EmpM` → `Employee` 등 9개 모델 도메인명으로 개명, 약어는 `EmpM = Employee` alias 로 호환 유지
+- [x] 4-B 페이지 함수명 통일 + `pages/__init__.py` ✅ 2026-05-29 — `admin/index/login/register` → `*_page`, 엔트리포인트 import 9줄 → 4줄
+- [x] 4-C `services/core/config.py` → `settings.py` ✅ 2026-05-29 — 디렉터리·모듈·`rxconfig` 3중 의미 해소
+- [x] 4-D `state/__init__.py` 에 `AdminState` 추가 ✅ 2026-05-29 — 4개 State 모두 re-export
+- [x] 4-E 채팅 `agent_modes` → `chat_modes` 전면 개명 ✅ 2026-05-29 — YAML/dataclass/state var/UI 컴포넌트 일괄 변경. DB의 `Agent` 도메인과 분리
 - [ ] 5-A 프롬프트 파일명 ASCII 화
 - [ ] 5-B `.gitignore` 점검
 - [ ] 5-C `ruff` 도입

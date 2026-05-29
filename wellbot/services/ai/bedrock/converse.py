@@ -7,7 +7,7 @@ from collections.abc import Generator
 from typing import Any
 
 from wellbot.services.ai.bedrock.client import get_client
-from wellbot.services.core.config import ModelConfig
+from wellbot.services.core.settings import ModelConfig
 
 
 def build_messages(messages: list[dict[str, Any]]) -> list[dict]:

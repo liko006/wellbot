@@ -8,18 +8,18 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from wellbot.constants import CONVERSATION_LIMIT, KST, MESSAGE_SEQ_MAX_RETRIES
-from wellbot.models.chat_message import ChtbMsgD
-from wellbot.models.chat_summary import ChtbSmryD
+from wellbot.models.chat_message import ChatMessage
+from wellbot.models.chat_summary import ChatSummary
 from wellbot.services.core.database import get_session
 
 
-def _verify_ownership(session, smry_id: str, emp_no: str) -> ChtbSmryD | None:
+def _verify_ownership(session, smry_id: str, emp_no: str) -> ChatSummary | None:
     """대화 소유권 검증. 소유자가 아니면 None 반환."""
     record = (
-        session.query(ChtbSmryD)
+        session.query(ChatSummary)
         .filter(
-            ChtbSmryD.chtb_tlk_smry_id == smry_id,
-            ChtbSmryD.emp_no == emp_no,
+            ChatSummary.chtb_tlk_smry_id == smry_id,
+            ChatSummary.emp_no == emp_no,
         )
         .first()
     )
@@ -30,9 +30,9 @@ def list_conversations(emp_no: str) -> list[dict]:
     """사원의 대화 목록 조회 (최근 30개, 메시지 제외)."""
     with get_session() as session:
         rows = (
-            session.query(ChtbSmryD)
-            .filter(ChtbSmryD.emp_no == emp_no)
-            .order_by(ChtbSmryD.rgst_dtm.desc())
+            session.query(ChatSummary)
+            .filter(ChatSummary.emp_no == emp_no)
+            .order_by(ChatSummary.rgst_dtm.desc())
             .limit(CONVERSATION_LIMIT)
             .all()
         )
@@ -57,15 +57,15 @@ def get_conversation_messages(smry_id: str, emp_no: str) -> list[dict]:
             return []
 
         rows = (
-            session.query(ChtbMsgD)
+            session.query(ChatMessage)
             .filter(
-                ChtbMsgD.chtb_tlk_smry_id == smry_id,
-                ChtbMsgD.msg_role_nm != "system",
+                ChatMessage.chtb_tlk_smry_id == smry_id,
+                ChatMessage.msg_role_nm != "system",
             )
             .order_by(
-                ChtbMsgD.chtb_tlk_seq.asc(),
-                ChtbMsgD.rgst_dtm.asc(),
-                ChtbMsgD.chtb_tlk_id.asc(),
+                ChatMessage.chtb_tlk_seq.asc(),
+                ChatMessage.rgst_dtm.asc(),
+                ChatMessage.chtb_tlk_id.asc(),
             )
             .all()
         )
@@ -99,7 +99,7 @@ def save_conversation(
             existing.upd_dtm = now
             existing.uppr_id = emp_no[:20]
         else:
-            record = ChtbSmryD(
+            record = ChatSummary(
                 chtb_tlk_smry_id=conv_id,
                 emp_no=emp_no,
                 chtb_tlk_smry_ttl=title,
@@ -157,12 +157,12 @@ def append_message(
             now = datetime.now(KST)
             with get_session() as session:
                 max_seq = (
-                    session.query(func.max(ChtbMsgD.chtb_tlk_seq))
-                    .filter(ChtbMsgD.chtb_tlk_smry_id == smry_id)
+                    session.query(func.max(ChatMessage.chtb_tlk_seq))
+                    .filter(ChatMessage.chtb_tlk_smry_id == smry_id)
                     .scalar()
                 )
                 seq = (int(max_seq) if max_seq is not None else 0) + 1
-                record = ChtbMsgD(
+                record = ChatMessage(
                     chtb_tlk_smry_id=smry_id,
                     chtb_tlk_id=tlk_id,
                     chtb_tlk_seq=seq,
@@ -191,8 +191,8 @@ def append_message(
 
 def delete_conversation(smry_id: str, emp_no: str) -> None:
     """대화 및 관련 메시지·첨부파일 삭제 (소유권 검증 포함)."""
-    from wellbot.models.attachment import AtchFileM
-    from wellbot.models.chat_message_attachment import ChtbMsgAtchFileD
+    from wellbot.models.attachment import Attachment
+    from wellbot.models.chat_message_attachment import ChatMessageAttachment
 
     with get_session() as session:
         if not _verify_ownership(session, smry_id, emp_no):
@@ -201,8 +201,8 @@ def delete_conversation(smry_id: str, emp_no: str) -> None:
         # 대화에 속한 메시지의 chtb_tlk_id 목록 조회
         msg_ids = [
             row[0]
-            for row in session.query(ChtbMsgD.chtb_tlk_id)
-            .filter(ChtbMsgD.chtb_tlk_smry_id == smry_id)
+            for row in session.query(ChatMessage.chtb_tlk_id)
+            .filter(ChatMessage.chtb_tlk_smry_id == smry_id)
             .all()
         ]
 
@@ -210,28 +210,28 @@ def delete_conversation(smry_id: str, emp_no: str) -> None:
             # 해당 메시지에 연결된 첨부파일 번호 조회
             file_nos = [
                 row[0]
-                for row in session.query(ChtbMsgAtchFileD.atch_file_no)
-                .filter(ChtbMsgAtchFileD.chtb_tlk_id.in_(msg_ids))
+                for row in session.query(ChatMessageAttachment.atch_file_no)
+                .filter(ChatMessageAttachment.chtb_tlk_id.in_(msg_ids))
                 .all()
             ]
 
             # 첨부파일 매핑 삭제
-            session.query(ChtbMsgAtchFileD).filter(
-                ChtbMsgAtchFileD.chtb_tlk_id.in_(msg_ids)
+            session.query(ChatMessageAttachment).filter(
+                ChatMessageAttachment.chtb_tlk_id.in_(msg_ids)
             ).delete(synchronize_session="fetch")
 
             # 첨부파일 마스터 삭제
             if file_nos:
-                session.query(AtchFileM).filter(
-                    AtchFileM.atch_file_no.in_(file_nos)
+                session.query(Attachment).filter(
+                    Attachment.atch_file_no.in_(file_nos)
                 ).delete(synchronize_session="fetch")
 
         # 메시지 삭제
-        session.query(ChtbMsgD).filter(
-            ChtbMsgD.chtb_tlk_smry_id == smry_id
+        session.query(ChatMessage).filter(
+            ChatMessage.chtb_tlk_smry_id == smry_id
         ).delete()
 
         # 대화 요약 삭제
-        session.query(ChtbSmryD).filter(
-            ChtbSmryD.chtb_tlk_smry_id == smry_id
+        session.query(ChatSummary).filter(
+            ChatSummary.chtb_tlk_smry_id == smry_id
         ).delete()

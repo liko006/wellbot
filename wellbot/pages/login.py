@@ -31,7 +31,7 @@ def _notice_section() -> rx.Component:
     )
 
 
-def login() -> rx.Component:
+def login_page() -> rx.Component:
     """로그인 페이지."""
     return rx.box(
         rx.center(

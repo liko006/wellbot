@@ -27,7 +27,7 @@ from wellbot.services.ai.bedrock import (
     generate_title,
 )
 from wellbot.services.chat import chat_service, response_filter, tool_executor
-from wellbot.services.core.config import get_config, get_greetings
+from wellbot.services.core.settings import get_config, get_greetings
 from wellbot.services.files import attachment_service, file_parser
 from wellbot.state.chat_helpers.attachments import (
     collect_image_blocks,
@@ -38,7 +38,7 @@ from wellbot.state.chat_helpers.download_script import build_download_script
 from wellbot.state.chat_helpers.system_prompt import augment_system_with_attachments
 from wellbot.state.chat_helpers.upload_script import build_upload_script
 from wellbot.state.chat_models import (
-    AgentModeInfo,
+    ChatModeInfo,
     AttachmentInfo,
     Conversation,
     Message,
@@ -63,8 +63,8 @@ class ChatState(rx.State):
     show_style_panel: bool = False
     greeting_text: str = ""
 
-    # ── 에이전트 모드 ──
-    selected_agent_mode: str = "chat"
+    # ── 채팅 모드 ──
+    selected_chat_mode: str = "chat"
 
     # ── 대화 검색 ──
     search_query: str = ""
@@ -174,36 +174,36 @@ class ChatState(rx.State):
         return self.conversations[idx].title
 
     @rx.var
-    def agent_mode_list(self) -> list[AgentModeInfo]:
-        """사용 가능한 에이전트 모드 목록."""
+    def chat_mode_list(self) -> list[ChatModeInfo]:
+        """사용 가능한 채팅 모드 목록."""
         try:
             cfg = get_config()
             return [
-                AgentModeInfo(
+                ChatModeInfo(
                     id=a.id, name=a.name,
                     description=a.description, icon=a.icon,
                 )
-                for a in cfg.agent_modes
+                for a in cfg.chat_modes
             ]
         except Exception:
             return []
 
     @rx.var
-    def current_agent_mode_name(self) -> str:
-        """현재 선택된 에이전트 모드 이름."""
+    def current_chat_mode_name(self) -> str:
+        """현재 선택된 채팅 모드 이름."""
         try:
             cfg = get_config()
-            mode = cfg.get_agent_mode(self.selected_agent_mode)
+            mode = cfg.get_chat_mode(self.selected_chat_mode)
             return mode.name if mode else "기본 대화"
         except Exception:
             return "기본 대화"
 
     @rx.var
-    def current_agent_mode_icon(self) -> str:
-        """현재 선택된 에이전트 모드 아이콘."""
+    def current_chat_mode_icon(self) -> str:
+        """현재 선택된 채팅 모드 아이콘."""
         try:
             cfg = get_config()
-            mode = cfg.get_agent_mode(self.selected_agent_mode)
+            mode = cfg.get_chat_mode(self.selected_chat_mode)
             return mode.icon if mode else "message-circle"
         except Exception:
             return "message-circle"
@@ -336,9 +336,9 @@ class ChatState(rx.State):
 
     # ── Event handlers ──
 
-    def set_agent_mode(self, mode_id: str) -> None:
-        """에이전트 모드를 변경한다."""
-        self.selected_agent_mode = mode_id
+    def set_chat_mode(self, mode_id: str) -> None:
+        """채팅 모드를 변경한다."""
+        self.selected_chat_mode = mode_id
 
     def stop_generation(self) -> None:
         """사용자가 생성 중지를 요청한다."""

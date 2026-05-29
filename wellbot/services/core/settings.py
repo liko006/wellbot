@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 from wellbot.paths import (
-    AGENTS_YAML,
+    CHAT_MODES_YAML,
     GREETINGS_YAML,
     MODELS_YAML,
     PROMPTS_DIR,
@@ -73,7 +73,7 @@ class AppConfig:
     prompts: tuple[PromptTemplate, ...]
     title: TitleConfig
     embedding: EmbeddingConfig
-    agent_modes: tuple[AgentMode, ...] = ()
+    chat_modes: tuple[ChatMode, ...] = ()
 
     def get_model(self, name: str) -> ModelConfig | None:
         """이름으로 모델 설정을 찾는다."""
@@ -105,21 +105,21 @@ class AppConfig:
         return [p.name for p in self.prompts]
 
     @property
-    def agent_mode_ids(self) -> list[str]:
-        """에이전트 모드 ID 목록."""
-        return [a.id for a in self.agent_modes]
+    def chat_mode_ids(self) -> list[str]:
+        """채팅 모드 ID 목록."""
+        return [a.id for a in self.chat_modes]
 
-    def get_agent_mode(self, mode_id: str) -> AgentMode | None:
-        """ID로 에이전트 모드를 찾는다."""
-        for a in self.agent_modes:
+    def get_chat_mode(self, mode_id: str) -> ChatMode | None:
+        """ID로 채팅 모드를 찾는다."""
+        for a in self.chat_modes:
             if a.id == mode_id:
                 return a
         return None
 
 
 @dataclass(frozen=True)
-class AgentMode:
-    """에이전트 모드 설정."""
+class ChatMode:
+    """채팅 모드 설정 (채팅 UI 의 모드 선택 드롭다운)."""
 
     id: str
     name: str
@@ -184,19 +184,19 @@ def _load_prompt_config() -> tuple[str, tuple[PromptTemplate, ...]]:
     return system_prompt, prompts
 
 
-def _load_agent_modes() -> tuple[AgentMode, ...]:
-    """config/agents.yaml에서 에이전트 모드를 로드한다."""
-    if not AGENTS_YAML.exists():
-        return (AgentMode(id="chat", name="기본 대화", icon="message-circle"),)
+def _load_chat_modes() -> tuple[ChatMode, ...]:
+    """config/chat_modes.yaml 에서 채팅 모드를 로드한다."""
+    if not CHAT_MODES_YAML.exists():
+        return (ChatMode(id="chat", name="기본 대화", icon="message-circle"),)
     try:
-        with open(AGENTS_YAML, encoding="utf-8") as f:
+        with open(CHAT_MODES_YAML, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
-        items = raw.get("agent_modes", [])
-        return tuple(AgentMode(**item) for item in items) if items else (
-            AgentMode(id="chat", name="기본 대화", icon="message-circle"),
+        items = raw.get("chat_modes", [])
+        return tuple(ChatMode(**item) for item in items) if items else (
+            ChatMode(id="chat", name="기본 대화", icon="message-circle"),
         )
     except Exception:
-        return (AgentMode(id="chat", name="기본 대화", icon="message-circle"),)
+        return (ChatMode(id="chat", name="기본 대화", icon="message-circle"),)
 
 
 def load_config(path: Path | None = None) -> AppConfig:
@@ -209,7 +209,7 @@ def load_config(path: Path | None = None) -> AppConfig:
 
     models = tuple(ModelConfig(**m) for m in raw.get("models", []))
     system_prompt, prompts = _load_prompt_config()
-    agent_modes = _load_agent_modes()
+    chat_modes = _load_chat_modes()
     title = _build_title_config(raw.get("title", {}))
     embedding = _build_embedding_config(raw.get("embedding", {}))
 
@@ -219,7 +219,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         prompts=prompts,
         title=title,
         embedding=embedding,
-        agent_modes=agent_modes,
+        chat_modes=chat_modes,
     )
 
 

@@ -8,9 +8,9 @@ import bcrypt
 import jwt
 
 from wellbot.constants import KST, LOCK_DURATION_MINUTES, LOCK_THRESHOLD, TOKEN_EXPIRE_HOURS
-from wellbot.models.auth_token import CrtfToknN
-from wellbot.models.dept import DeptM
-from wellbot.models.employee import EmpM
+from wellbot.models.auth_token import AuthToken
+from wellbot.models.dept import Dept
+from wellbot.models.employee import Employee
 from wellbot.services.core.database import get_session
 
 
@@ -46,7 +46,7 @@ def authenticate_user(emp_no: str, password: str) -> dict:
         {"success": False, "error": "에러 메시지"}
     """
     with get_session() as session:
-        emp = session.query(EmpM).get(emp_no)
+        emp = session.query(Employee).get(emp_no)
         if not emp:
             return {"success": False, "error": "사원번호 또는 비밀번호가 올바르지 않습니다."}
 
@@ -113,7 +113,7 @@ def create_session_token(emp_no: str) -> str:
     token = jwt.encode(payload, _get_jwt_secret(), algorithm="HS256")
 
     with get_session() as session:
-        record = CrtfToknN(
+        record = AuthToken(
             crtf_tokn_id=token_id,
             emp_no=emp_no,
             crtf_ecr_tokn_val=token,
@@ -147,13 +147,13 @@ def validate_session_token(token: str) -> dict | None:
         return None
 
     with get_session() as session:
-        record = session.query(CrtfToknN).get((token_id, emp_no))
+        record = session.query(AuthToken).get((token_id, emp_no))
         if not record or record.diss_yn != "N":
             return None
         if _ensure_aware(record.trtn_dtm) and _ensure_aware(record.trtn_dtm) < datetime.now(KST):
             return None
 
-        emp = session.query(EmpM).get(emp_no)
+        emp = session.query(Employee).get(emp_no)
         if not emp or emp.acnt_sts_nm != "ACTIVE":
             return None
 
@@ -184,7 +184,7 @@ def invalidate_session_token(token: str) -> bool:
 
     now = datetime.now(KST)
     with get_session() as session:
-        record = session.query(CrtfToknN).get((token_id, emp_no))
+        record = session.query(AuthToken).get((token_id, emp_no))
         if not record:
             return False
         record.diss_yn = "Y"
@@ -210,13 +210,13 @@ def register_user(
         return {"success": False, "error": "모든 필드를 입력해주세요."}
 
     with get_session() as session:
-        existing = session.query(EmpM).get(emp_no)
+        existing = session.query(Employee).get(emp_no)
         if existing:
             return {"success": False, "error": "이미 등록된 사원번호입니다."}
 
         now = datetime.now(KST)
         hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-        emp = EmpM(
+        emp = Employee(
             emp_no=emp_no,
             ecr_pwd=hashed,
             user_nm=user_nm,
@@ -239,8 +239,8 @@ def list_dept_options() -> list[dict]:
     """부서 목록 조회 (회원가입 드롭다운용)."""
     with get_session() as session:
         rows = (
-            session.query(DeptM.dept_cd, DeptM.dept_nm)
-            .order_by(DeptM.dept_cd)
+            session.query(Dept.dept_cd, Dept.dept_nm)
+            .order_by(Dept.dept_cd)
             .all()
         )
         return [{"code": r[0], "name": r[1] or r[0]} for r in rows]
@@ -261,7 +261,7 @@ def change_password(emp_no: str, current_password: str, new_password: str) -> di
         return {"success": False, "error": "모든 필드를 입력해주세요."}
 
     with get_session() as session:
-        emp = session.query(EmpM).get(emp_no)
+        emp = session.query(Employee).get(emp_no)
         if not emp:
             return {"success": False, "error": "사용자를 찾을 수 없습니다."}
 

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
-class EmpM(Base):
+class Employee(Base):
     """사원마스터."""
 
     __tablename__ = "emp_m"
@@ -56,3 +56,7 @@ class EmpM(Base):
     acnt_sts_nm: Mapped[str] = mapped_column(
         "ACNT_STS_NM", String(50), comment="계정상태명",
     )
+
+
+# 하위 호환을 위한 약어 alias (구 코드/외부 import 용)
+EmpM = Employee

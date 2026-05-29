@@ -24,6 +24,6 @@ ENV_FILE: Path = PROJECT_ROOT / ".env"
 # 자주 사용하는 YAML/MD 파일
 MODELS_YAML: Path = CONFIG_DIR / "models.yaml"
 PROMPTS_YAML: Path = CONFIG_DIR / "prompts.yaml"
-AGENTS_YAML: Path = CONFIG_DIR / "agents.yaml"
+CHAT_MODES_YAML: Path = CONFIG_DIR / "chat_modes.yaml"
 GREETINGS_YAML: Path = CONFIG_DIR / "greetings.yaml"
 NOTICE_MD: Path = CONFIG_DIR / "notice.md"

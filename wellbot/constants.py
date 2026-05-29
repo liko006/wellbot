@@ -24,7 +24,7 @@ DEFAULT_CONVERSATION_TITLE: str = "새 대화"
 MESSAGE_SEQ_MAX_RETRIES: int = 5   # 메시지 seq 동시 발급 충돌 시 재시도 횟수
 
 # 제목 생성·임베딩 모델 설정은 config/models.yaml 의 title / embedding 섹션으로 이관됨.
-# wellbot.services.core.config.get_config().title / .embedding 으로 접근.
+# wellbot.services.core.settings.get_config().title / .embedding 으로 접근.
 
 # ── UI ──
 SCROLL_THRESHOLD: int = 100        # 자동 스크롤 유지 판정(px)

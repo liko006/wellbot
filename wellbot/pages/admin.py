@@ -170,7 +170,7 @@ def _admin_content() -> rx.Component:
     )
 
 
-def admin() -> rx.Component:
+def admin_page() -> rx.Component:
     """Admin 페이지."""
     return rx.box(
         rx.cond(
