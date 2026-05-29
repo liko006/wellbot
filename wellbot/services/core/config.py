@@ -8,11 +8,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
 import yaml
 
-# .env 파일에서 환경변수 로드 (AWS_REGION 등)
-load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
+from wellbot.paths import (
+    AGENTS_YAML,
+    GREETINGS_YAML,
+    MODELS_YAML,
+    PROMPTS_DIR,
+    PROMPTS_YAML,
+)
 
 
 @dataclass(frozen=True)
@@ -43,12 +47,32 @@ class PromptTemplate:
 
 
 @dataclass(frozen=True)
+class TitleConfig:
+    """대화 제목 생성용 경량 모델 설정."""
+
+    model_id: str
+    max_tokens: int
+    temperature: float
+    system_prompt: str
+
+
+@dataclass(frozen=True)
+class EmbeddingConfig:
+    """임베딩 모델 설정."""
+
+    model_id: str
+    dimension: int
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """앱 전체 설정."""
 
     system_prompt: str
     models: tuple[ModelConfig, ...]
     prompts: tuple[PromptTemplate, ...]
+    title: TitleConfig
+    embedding: EmbeddingConfig
     agent_modes: tuple[AgentMode, ...] = ()
 
     def get_model(self, name: str) -> ModelConfig | None:
@@ -103,11 +127,6 @@ class AgentMode:
     icon: str = "message-circle"
 
 
-_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "models.yaml"
-_PROMPTS_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "prompts.yaml"
-_PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "config" / "prompts"
-_AGENTS_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "agents.yaml"
-
 _config: AppConfig | None = None
 
 
@@ -116,8 +135,8 @@ def _load_prompt_config() -> tuple[str, tuple[PromptTemplate, ...]]:
     # prompts.yaml 읽기
     prompt_entries: list[dict[str, str] | str] = []
     default_prompt = "default"
-    if _PROMPTS_CONFIG_PATH.exists():
-        with open(_PROMPTS_CONFIG_PATH, encoding="utf-8") as f:
+    if PROMPTS_YAML.exists():
+        with open(PROMPTS_YAML, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         default_prompt = raw.get("default", "default")
         prompt_entries = raw.get("prompts", [])
@@ -135,8 +154,8 @@ def _load_prompt_config() -> tuple[str, tuple[PromptTemplate, ...]]:
 
     # .md 파일 수집
     by_name: dict[str, PromptTemplate] = {}
-    if _PROMPTS_DIR.exists():
-        for f in _PROMPTS_DIR.glob("*.md"):
+    if PROMPTS_DIR.exists():
+        for f in PROMPTS_DIR.glob("*.md"):
             content = f.read_text(encoding="utf-8").strip()
             by_name[f.stem] = PromptTemplate(
                 name=f.stem,
@@ -167,10 +186,10 @@ def _load_prompt_config() -> tuple[str, tuple[PromptTemplate, ...]]:
 
 def _load_agent_modes() -> tuple[AgentMode, ...]:
     """config/agents.yaml에서 에이전트 모드를 로드한다."""
-    if not _AGENTS_CONFIG_PATH.exists():
+    if not AGENTS_YAML.exists():
         return (AgentMode(id="chat", name="기본 대화", icon="message-circle"),)
     try:
-        with open(_AGENTS_CONFIG_PATH, encoding="utf-8") as f:
+        with open(AGENTS_YAML, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         items = raw.get("agent_modes", [])
         return tuple(AgentMode(**item) for item in items) if items else (
@@ -183,7 +202,7 @@ def _load_agent_modes() -> tuple[AgentMode, ...]:
 def load_config(path: Path | None = None) -> AppConfig:
     """YAML 파일에서 설정을 로드한다."""
     if path is None:
-        path = _CONFIG_PATH
+        path = MODELS_YAML
 
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
@@ -191,12 +210,34 @@ def load_config(path: Path | None = None) -> AppConfig:
     models = tuple(ModelConfig(**m) for m in raw.get("models", []))
     system_prompt, prompts = _load_prompt_config()
     agent_modes = _load_agent_modes()
+    title = _build_title_config(raw.get("title", {}))
+    embedding = _build_embedding_config(raw.get("embedding", {}))
 
     return AppConfig(
         system_prompt=system_prompt,
         models=models,
         prompts=prompts,
+        title=title,
+        embedding=embedding,
         agent_modes=agent_modes,
+    )
+
+
+def _build_title_config(raw: dict) -> TitleConfig:
+    """models.yaml 의 title 섹션을 TitleConfig 로 변환."""
+    return TitleConfig(
+        model_id=raw.get("model_id", ""),
+        max_tokens=int(raw.get("max_tokens", 30)),
+        temperature=float(raw.get("temperature", 0.3)),
+        system_prompt=str(raw.get("system_prompt", "")).strip(),
+    )
+
+
+def _build_embedding_config(raw: dict) -> EmbeddingConfig:
+    """models.yaml 의 embedding 섹션을 EmbeddingConfig 로 변환."""
+    return EmbeddingConfig(
+        model_id=raw.get("model_id", ""),
+        dimension=int(raw.get("dimension", 1024)),
     )
 
 
@@ -210,7 +251,6 @@ def get_config() -> AppConfig:
 
 # ── 환영 메시지 ──
 
-_GREETINGS_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "greetings.yaml"
 _DEFAULT_GREETING = "오늘은 무슨 이야기를 할까요?"
 _greetings: tuple[str, ...] | None = None
 
@@ -220,7 +260,7 @@ def get_greetings() -> tuple[str, ...]:
     global _greetings
     if _greetings is None:
         try:
-            with open(_GREETINGS_PATH, encoding="utf-8") as f:
+            with open(GREETINGS_YAML, encoding="utf-8") as f:
                 raw = yaml.safe_load(f) or {}
             items = raw.get("greetings", [])
             _greetings = tuple(items) if items else (_DEFAULT_GREETING,)

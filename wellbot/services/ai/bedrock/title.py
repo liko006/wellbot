@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-from wellbot.constants import (
-    TITLE_MAX_TOKENS,
-    TITLE_MODEL_ID,
-    TITLE_SYSTEM_PROMPT,
-    TITLE_TEMPERATURE,
-)
 from wellbot.services.ai.bedrock.client import get_client
+from wellbot.services.core.config import get_config
 
 
 def generate_title(user_msg: str, assistant_msg: str) -> str:
     """경량 모델로 대화 제목을 생성한다."""
+    cfg = get_config().title
     client = get_client()
     messages = [
         {
@@ -22,10 +18,10 @@ def generate_title(user_msg: str, assistant_msg: str) -> str:
     ]
     try:
         response = client.converse(
-            modelId=TITLE_MODEL_ID,
+            modelId=cfg.model_id,
             messages=messages,
-            system=[{"text": TITLE_SYSTEM_PROMPT}],
-            inferenceConfig={"maxTokens": TITLE_MAX_TOKENS, "temperature": TITLE_TEMPERATURE},
+            system=[{"text": cfg.system_prompt}],
+            inferenceConfig={"maxTokens": cfg.max_tokens, "temperature": cfg.temperature},
         )
         output = response.get("output", {})
         content = output.get("message", {}).get("content", [])

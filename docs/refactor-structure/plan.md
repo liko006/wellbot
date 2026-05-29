@@ -351,9 +351,9 @@ known-first-party = ["wellbot"]
 - [x] 1-B ChatState 헬퍼 모듈 추출 (`state/chat_helpers/`) ✅ 2026-05-29 — 1,261줄 → 925줄 (-336)
 - [x] 2-A `services/` 도메인 패키지 그룹화 ✅ 2026-05-29 — auth/chat/ai/files/admin/core 6개 그룹, 호출부 import 일괄 갱신 후 shim 전량 제거 (평탄도 완전 해소)
 - [x] 2-B `bedrock_client.py` 분리 ✅ 2026-05-29 — ai/bedrock/{client,converse,tool_loop,title,image}.py 5모듈, 원본은 삭제
-- [ ] 3-A `wellbot/paths.py` 신설
-- [ ] 3-B `constants.py` → YAML/env 이관
-- [ ] 3-C `load_dotenv` 명시 호출
+- [x] 3-A `wellbot/paths.py` 신설 ✅ 2026-05-29 — `Path(__file__).resolve().parent.parent.parent` 패턴 6곳 모두 단일 모듈로 통합
+- [x] 3-B `constants.py` → YAML 이관 ✅ 2026-05-29 — TITLE_* / EMBEDDING_* 5개 상수를 `config/models.yaml` 의 title/embedding 섹션으로 이전 (튜닝 파라미터는 constants 유지)
+- [x] 3-C 모듈 import 시 사이드이펙트 제거 ✅ 2026-05-29 — `wellbot/env.py::init_env()` 신설 + DB_URL / JWT_SECRET 검증을 lazy 화. 환경변수 없이 entrypoint import 통과
 - [ ] 4-A 모델 도메인 별칭
 - [ ] 4-B 페이지 함수명 통일 + `pages/__init__.py`
 - [ ] 4-C `services/config.py` → `settings.py`

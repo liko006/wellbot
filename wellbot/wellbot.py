@@ -5,6 +5,12 @@ Reflex 앱을 초기화하고 페이지 라우트를 등록한다.
 `api_transformer` 로 마운트한다.
 """
 
+# .env 로딩은 다른 wellbot 모듈을 import 하기 전에 수행해야 한다.
+# (서비스 모듈이 환경변수를 lazy 검증하므로 가장 먼저 호출.)
+from wellbot.env import init_env
+
+init_env()
+
 import reflex as rx
 
 from wellbot.api import api_app

@@ -3,8 +3,6 @@
 rx.Cookie 기반 세션 토큰 + DB 검증으로 로그인 상태를 유지.
 """
 
-from pathlib import Path
-
 import reflex as rx
 
 from wellbot.constants import (
@@ -12,9 +10,8 @@ from wellbot.constants import (
     REMEMBER_ME_EXPIRE_SECONDS,
     TOKEN_EXPIRE_SECONDS,
 )
+from wellbot.paths import NOTICE_MD
 from wellbot.services.auth import auth_service
-
-_NOTICE_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "notice.md"
 
 
 class AuthState(rx.State):
@@ -142,8 +139,8 @@ class AuthState(rx.State):
 
     def _load_notice(self) -> None:
         """config/notice.md 파일을 읽어 공지사항을 로드한다."""
-        if _NOTICE_PATH.exists():
-            self.notice_html = _NOTICE_PATH.read_text(encoding="utf-8").strip()
+        if NOTICE_MD.exists():
+            self.notice_html = NOTICE_MD.read_text(encoding="utf-8").strip()
         else:
             self.notice_html = ""
 

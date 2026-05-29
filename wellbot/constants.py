@@ -23,14 +23,8 @@ TITLE_MAX_LENGTH: int = 30         # 임시 제목 최대 글자 수
 DEFAULT_CONVERSATION_TITLE: str = "새 대화"
 MESSAGE_SEQ_MAX_RETRIES: int = 5   # 메시지 seq 동시 발급 충돌 시 재시도 횟수
 
-# ── 제목 생성 (경량 모델) ──
-TITLE_MODEL_ID: str = "apac.amazon.nova-lite-v1:0"
-TITLE_MAX_TOKENS: int = 30
-TITLE_TEMPERATURE: float = 0.3
-TITLE_SYSTEM_PROMPT: str = (
-    "대화의 첫 질문과 응답을 보고, 이 대화를 대표하는 짧은 제목을 한국어로 만들어주세요."
-    "15자 이내로, 제목만 출력하세요. 따옴표나 부가 설명 없이 제목 텍스트만 응답하세요."
-)
+# 제목 생성·임베딩 모델 설정은 config/models.yaml 의 title / embedding 섹션으로 이관됨.
+# wellbot.services.core.config.get_config().title / .embedding 으로 접근.
 
 # ── UI ──
 SCROLL_THRESHOLD: int = 100        # 자동 스크롤 유지 판정(px)
@@ -62,8 +56,7 @@ SPLIT_SAFETY_SIZE_MB: int = 45
 AVG_TOKENS_PER_WORD = 1.4                 # 한국어는 단어당 ~1.5토큰, 영어는 ~1.3토큰 수준이므로 평균 1.4 사용.
 CHUNK_SIZE_TOKENS: int = 1000
 CHUNK_OVERLAP_TOKENS: int = 200
-EMBEDDING_MODEL_ID: str = "amazon.titan-embed-text-v2:0"
-EMBEDDING_DIMENSION: int = 1024
+# 임베딩 모델 ID/차원은 config/models.yaml 의 embedding 섹션으로 이관됨.
 
 # ── 임베딩 병렬 처리 ──
 EMBED_MAX_WORKERS: int = 5            # 동시 임베딩 요청 수

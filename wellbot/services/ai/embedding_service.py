@@ -37,12 +37,19 @@ from wellbot.constants import (
     EMBED_MAX_RETRIES,
     EMBED_MAX_WORKERS,
     EMBED_RETRY_BASE_DELAY,
-    EMBEDDING_DIMENSION,
-    EMBEDDING_MODEL_ID,
     FAISS_CACHE_MAX_CONVERSATIONS,
 )
+from wellbot.services.core.config import get_config
 
 log = logging.getLogger(__name__)
+
+
+def _embedding_model_id() -> str:
+    return get_config().embedding.model_id
+
+
+def _embedding_dimension() -> int:
+    return get_config().embedding.dimension
 
 
 # ── Bedrock Titan 임베딩 호출 ──
@@ -62,7 +69,7 @@ def embed_text(text: str) -> np.ndarray:
     """단일 텍스트를 임베딩한다. 쓰로틀링 시 지수 백오프로 재시도.
 
     Returns:
-        shape=(EMBEDDING_DIMENSION,) float32 array.
+        shape=(_embedding_dimension(),) float32 array.
     """
     client = _get_client()
     body = json.dumps({"inputText": text}).encode("utf-8")
@@ -70,7 +77,7 @@ def embed_text(text: str) -> np.ndarray:
     for attempt in range(EMBED_MAX_RETRIES + 1):
         try:
             response = client.invoke_model(
-                modelId=EMBEDDING_MODEL_ID,
+                modelId=_embedding_model_id(),
                 body=body,
                 accept="application/json",
                 contentType="application/json",
@@ -78,9 +85,9 @@ def embed_text(text: str) -> np.ndarray:
             payload = json.loads(response["body"].read())
             embedding = payload.get("embedding") or []
             arr = np.asarray(embedding, dtype=np.float32)
-            if arr.shape[0] != EMBEDDING_DIMENSION:
+            if arr.shape[0] != _embedding_dimension():
                 raise RuntimeError(
-                    f"임베딩 차원 불일치: 예상 {EMBEDDING_DIMENSION}, 실제 {arr.shape[0]}"
+                    f"임베딩 차원 불일치: 예상 {_embedding_dimension()}, 실제 {arr.shape[0]}"
                 )
             return arr
         except ClientError as exc:
@@ -108,10 +115,10 @@ def embed_texts(texts: Sequence[str]) -> np.ndarray:
     빈 텍스트는 API 호출 없이 제로 벡터로 처리.
 
     Returns:
-        shape=(N, EMBEDDING_DIMENSION) float32 array.
+        shape=(N, _embedding_dimension()) float32 array.
     """
     if not texts:
-        return np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32)
+        return np.empty((0, _embedding_dimension()), dtype=np.float32)
 
     # 빈 텍스트는 제로 벡터로 처리 (API 호출 불필요)
     results: list[tuple[int, np.ndarray]] = []
@@ -119,7 +126,7 @@ def embed_texts(texts: Sequence[str]) -> np.ndarray:
 
     for i, text in enumerate(texts):
         if not text.strip():
-            results.append((i, np.zeros(EMBEDDING_DIMENSION, dtype=np.float32)))
+            results.append((i, np.zeros(_embedding_dimension(), dtype=np.float32)))
         else:
             to_embed.append((i, text))
 
@@ -149,7 +156,7 @@ def build_index(embeddings: np.ndarray):
     명시적으로 L2 정규화한 뒤 내적 검색 사용.
 
     Args:
-        embeddings: shape=(N, EMBEDDING_DIMENSION) float32 array.
+        embeddings: shape=(N, _embedding_dimension()) float32 array.
 
     Returns:
         faiss.IndexFlatIP 인덱스.
@@ -158,13 +165,13 @@ def build_index(embeddings: np.ndarray):
 
     if embeddings.size == 0:
         # 빈 인덱스
-        return faiss.IndexFlatIP(EMBEDDING_DIMENSION)
+        return faiss.IndexFlatIP(_embedding_dimension())
 
     # 정규화 (in-place)
     normalized = embeddings.copy()
     faiss.normalize_L2(normalized)
 
-    index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
+    index = faiss.IndexFlatIP(_embedding_dimension())
     index.add(normalized)
     return index
 
@@ -191,7 +198,7 @@ def search_index(index, query_vec: np.ndarray, top_k: int) -> tuple[np.ndarray, 
 
     Args:
         index: faiss 인덱스.
-        query_vec: shape=(EMBEDDING_DIMENSION,) float32.
+        query_vec: shape=(_embedding_dimension(),) float32.
         top_k: 반환 개수.
 
     Returns:
@@ -356,7 +363,7 @@ def load_conversation_index(smry_id: str) -> ConversationIndex:
         # build_index 는 normalize_L2 + IndexFlatIP
         index = build_index(all_vectors)
     else:
-        index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
+        index = faiss.IndexFlatIP(_embedding_dimension())
 
     return ConversationIndex(
         smry_id=smry_id,

@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 
 import bcrypt
 import jwt
-from dotenv import load_dotenv
 
 from wellbot.constants import KST, LOCK_DURATION_MINUTES, LOCK_THRESHOLD, TOKEN_EXPIRE_HOURS
 from wellbot.models.auth_token import CrtfToknN
@@ -23,11 +22,20 @@ def _ensure_aware(dt: datetime | None) -> datetime | None:
         return dt.replace(tzinfo=KST)
     return dt
 
-load_dotenv()
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "")
-if not JWT_SECRET:
-    raise RuntimeError("JWT_SECRET 환경변수가 설정되지 않았습니다.")
+def _get_jwt_secret() -> str:
+    """JWT 서명 키를 환경변수에서 조회한다.
+
+    모듈 import 시점이 아닌 첫 호출 시점에 검증하여,
+    환경변수가 필요 없는 코드 경로(예: 단위 테스트) 의 import 를 막지 않는다.
+    """
+    secret = os.environ.get("JWT_SECRET", "")
+    if not secret:
+        raise RuntimeError(
+            "JWT_SECRET 환경변수가 설정되지 않았습니다. "
+            "엔트리포인트에서 wellbot.env.init_env() 가 호출되었는지 확인하세요."
+        )
+    return secret
 
 
 def authenticate_user(emp_no: str, password: str) -> dict:
@@ -102,7 +110,7 @@ def create_session_token(emp_no: str) -> str:
         "token_id": token_id,
         "exp": int(expires.timestamp()),
     }
-    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    token = jwt.encode(payload, _get_jwt_secret(), algorithm="HS256")
 
     with get_session() as session:
         record = CrtfToknN(
@@ -123,11 +131,11 @@ def create_session_token(emp_no: str) -> str:
 
 def validate_session_token(token: str) -> dict | None:
     """세션 토큰 검증. 유효하면 사용자 정보 dict, 아니면 None."""
-    if not token or not JWT_SECRET:
+    if not token:
         return None
 
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(token, _get_jwt_secret(), algorithms=["HS256"])
     except jwt.ExpiredSignatureError:
         return None
     except jwt.InvalidTokenError:
@@ -159,12 +167,12 @@ def validate_session_token(token: str) -> dict | None:
 
 def invalidate_session_token(token: str) -> bool:
     """세션 토큰 폐기."""
-    if not token or not JWT_SECRET:
+    if not token:
         return False
 
     try:
         payload = jwt.decode(
-            token, JWT_SECRET, algorithms=["HS256"], options={"verify_exp": False}
+            token, _get_jwt_secret(), algorithms=["HS256"], options={"verify_exp": False}
         )
     except jwt.InvalidTokenError:
         return False
