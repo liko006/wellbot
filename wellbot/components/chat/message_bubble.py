@@ -7,7 +7,8 @@ AI: 좌측 정렬, 배경 없이 마크다운 렌더링.
 
 import reflex as rx
 
-from wellbot.state.chat_state import ChatState, Message
+from wellbot.state.chat_models import Message
+from wellbot.state.chat_state import ChatState
 from wellbot.styles import COLORS, MARKDOWN_COMPONENT_MAP, SPACING
 
 

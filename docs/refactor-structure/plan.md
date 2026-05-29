@@ -39,35 +39,74 @@
   - [components/chat/input_bar.py:12](../../wellbot/components/chat/input_bar.py#L12)
   - [components/chat/message_area.py:11](../../wellbot/components/chat/message_area.py#L11)
 
-**1-B. State 책임 분리**
+**1-B. State 책임 분리 — 재진단 (2026-05-29)**
 
-`ChatState` 를 mixin 4종으로 쪼개 다중상속으로 합친다 (Reflex State 는 다중상속을 지원하지만 동일 var 충돌 주의):
+> 1-A 완료 후 ChatState 내부를 다시 살펴본 결과, **mixin 다중상속 안 (案) 은 위험 대비 효과가 낮다**. 다음과 같이 접근법을 재정비한다.
+
+#### 현재 ChatState 책임 인벤토리
+
+| 책임 영역 | var (state field) | computed (@rx.var) | event handler |
+| --- | --- | --- | --- |
+| 대화 목록·전환 | `conversations`, `current_conversation_id` | `current_messages`, `has_messages`, `current_title`, `sorted_conversations` | `on_load`, `create_new_conversation`, `switch_conversation`, `delete_conversation` |
+| 입력·전송·스트리밍 | `current_input`, `is_loading`, `is_thinking`, `streaming_content`, `_cancel_requested`, `_emp_no` | `can_send`, `has_streaming` | `set_input`, `send_message`, `stop_generation` |
+| 모델/프롬프트/에이전트 모드 | `selected_model`, `thinking_enabled`, `selected_prompt`, `show_style_panel`, `selected_agent_mode` | `model_names`, `model_list`, `trigger_label`, `model_supports_thinking`, `prompt_list`, `current_system_prompt`, `agent_mode_list`, `current_agent_mode_*` | `set_model`, `toggle_thinking`, `toggle_style_panel`, `select_prompt`, `set_agent_mode` |
+| 검색 | `search_query` | `is_searching`, `has_search_results` | `set_search_query`, `clear_search_query` |
+| 환영 메시지 | `greeting_text` | — | (`_refresh_greeting` 내부 호출) |
+| 첨부 업로드/다운로드 | `pending_attachments`, `attachment_error`, `conversation_attachments`, `_pending_msg_id` | `accepted_file_extensions`, `model_supports_vision`, `has_pending_attachments`, `has_conversation_attachments`, `conversation_attachment_count`, `has_processing_attachments` | `set_attachment_error`, `remove_pending_attachment`, `download_attachment`, `trigger_upload`, `poll_attachments` |
+
+전체 21개 var, 21개 computed, 16개 event handler. 책임 간 결합도 높음:
+- `send_message` 가 conversation / 모델 / 프롬프트 / 첨부 / 스트리밍 var 를 모두 읽고 쓴다.
+- `_get_current_index`, `_ensure_conversation`, `_update_conversation` 같은 헬퍼는 거의 모든 책임이 공유.
+
+#### Mixin 다중상속 안의 문제
+
+- **Reflex State 의 var 는 클래스 정의 시점에 메타클래스가 등록**한다. 다중상속으로 합치면 MRO 순서에 따라 var 가 어느 mixin 에서 선언됐는지 추적이 어려워지고, 디버깅 시 "이 var 가 어느 파일에 있나" 가 비명시적이 된다.
+- **이벤트 핸들러가 다른 책임의 var 를 수정하는 코드 (`send_message` 내부의 `self.is_loading = ...`, `self.pending_attachments = []` 등)** 가 다수. mixin 분리 후에도 cross-mixin 접근이 그대로 남아 응집도 이득이 사라진다.
+- Reflex 가 향후 State 메타클래스/동작을 바꾸면 다중상속 패턴이 깨질 수 있다 (현재 0.8.28).
+
+#### 권장 접근법: 헬퍼 모듈 추출 (클래스 단일 유지)
+
+ChatState 클래스는 **단일 클래스로 유지**하되, 책임별로 **순수 헬퍼 모듈** 을 추출한다. State 메서드는 헬퍼에 위임만 한다.
 
 ```
-wellbot/state/chat/
-  __init__.py            # ChatState 조립 (다중상속)
-  messaging.py           # 전송·스트리밍·중단
-  conversation.py        # 목록·전환·제목 생성·삭제
-  attachment.py          # 첨부 업로드/제거 연동
-  search.py              # 대화 검색·하이라이트
+wellbot/state/
+  chat_state.py            # ChatState 클래스 (단일) - var/event handler 본체
+  chat_models.py           # 데이터 모델 (1-A 완료)
+  chat_helpers/
+    __init__.py
+    conversations.py       # 대화 빌더, persist 헬퍼 (DB I/O 위임)
+    attachments.py         # 첨부 sync/이미지 블록 변환 등 순수 함수
+    system_prompt.py       # _augment_system_with_attachments 추출
+    upload_script.py       # trigger_upload 의 JS 스크립트 생성 함수
+    download_script.py     # download_attachment 의 JS 스크립트 생성 함수
 ```
 
-- 공통 var/이벤트는 베이스 mixin 에 정의
-- 기존 import (`from wellbot.state.chat_state import ChatState`) 는 호환을 위해 `wellbot/state/chat_state.py` 를 얇은 re-export shim 으로 남긴다 → 2단계 완료 후 제거
+핵심:
+- **순수 함수만 추출** — `self` 를 인자로 받거나 받지 않는다. State var 를 읽기만 하고 새 값을 리턴해 호출부에서 `self.x = result` 로 대입. 클래스 분할 없음.
+- **JS 스크립트 빌더**(`trigger_upload`, `download_attachment` 의 거대한 f-string) 를 별도 모듈로 빼면 chat_state.py 가 즉시 ~200줄 가벼워진다.
+- **`_augment_system_with_attachments`, `_collect_image_blocks`** 도 State 의존성이 약하므로 헬퍼로 이관.
+- 위험·복잡도가 낮고, Reflex 동작과 무관하게 동작.
 
-### 작업 순서
-1. `chat_models.py` 추출 + 호출부 import 일괄 수정 (단독 PR)
-2. mixin 분리 (단독 PR)
-3. shim 제거 + 호출부 import 정리 (4단계와 함께)
+#### 예상 효과
+- chat_state.py 1,261줄 → 약 **700~800줄** 수준으로 축소 (JS 빌더 + 첨부 헬퍼 + 시스템 프롬프트 빌더 추출분)
+- mixin 다중상속의 var 추적 비용 없음
+- 추후 더 분리가 필요해지면 sub-state 도입 (`rx.State` 의 children state 패턴) 을 별도로 검토
 
-### 검증
-- `reflex run` 으로 앱 기동 확인
-- 채팅 전송 / 대화 전환 / 첨부 업로드 / 검색 4개 시나리오 수동 테스트
-- mixin 분리 후 var 이름 충돌 grep: `rg "self\." wellbot/state/chat/` 으로 동일 var 중복 탐지
+#### 작업 순서 (1-B 재정의)
+1. `state/chat_helpers/` 패키지 신설
+2. JS 스크립트 빌더 추출 (`trigger_upload`, `download_attachment` → `upload_script.py`, `download_script.py`)
+3. `_augment_system_with_attachments` → `system_prompt.py`
+4. `_collect_image_blocks` → `attachments.py`
+5. 첨부 sync 로직 (`_sync_attachments_from_db` 의 row → AttachmentInfo 변환 등) → `attachments.py`
+6. 각 단계마다 `python -m py_compile` + `reflex run` 수동 검증
 
-### 위험
-- Reflex State 다중상속 시 동일 var 재정의 → 런타임 에러. 분리 전 var 인벤토리 작성 필요
-- shim 단계에서 IDE 자동 import 가 옛 경로를 다시 만들 수 있음 → CI 에 `ruff` 의 `TID` 룰로 차단
+#### 검증
+- 채팅 전송 / 대화 전환 / 첨부 업로드 / 다운로드 / 검색 5개 시나리오 수동 테스트
+- 추출된 헬퍼는 인자/리턴 타입을 명시해 향후 단위 테스트가 가능하도록 함
+
+#### 위험
+- 헬퍼가 `self._emp_no` 같은 internal var 를 필요로 하는 경우, 함수 시그니처에 명시적으로 인자로 받아야 한다. (의존성을 숨기지 말 것)
+- 큰 f-string JS 코드의 따옴표·중괄호 이스케이프가 깨지기 쉬움 — 추출 전후로 동일성 확인 필수
 
 ---
 
@@ -287,8 +326,8 @@ known-first-party = ["wellbot"]
 
 ## 진행 체크리스트
 
-- [ ] 1-A 데이터 모델 추출 (`state/chat_models.py`)
-- [ ] 1-B `ChatState` mixin 분리
+- [x] 1-A 데이터 모델 추출 (`state/chat_models.py`) ✅ 2026-05-29
+- [x] 1-B ChatState 헬퍼 모듈 추출 (`state/chat_helpers/`) ✅ 2026-05-29 — 1,261줄 → 925줄 (-336)
 - [ ] 2-A `services/` 도메인 패키지 그룹화
 - [ ] 2-B `bedrock_client.py` 분리
 - [ ] 3-A `wellbot/paths.py` 신설

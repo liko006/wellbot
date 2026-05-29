@@ -5,7 +5,8 @@
 
 import reflex as rx
 
-from wellbot.state.chat_state import ChatState, Conversation
+from wellbot.state.chat_models import Conversation
+from wellbot.state.chat_state import ChatState
 from wellbot.state.ui_state import UIState
 from wellbot.styles import COLORS, SPACING
 

@@ -5,7 +5,8 @@
 
 import reflex as rx
 
-from wellbot.state.chat_state import AttachmentInfo, ChatState
+from wellbot.state.chat_models import AttachmentInfo
+from wellbot.state.chat_state import ChatState
 from wellbot.styles import COLORS, SPACING
 
 

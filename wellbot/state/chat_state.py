@@ -9,7 +9,6 @@ import random
 import time
 import uuid
 
-from pydantic import BaseModel
 import reflex as rx
 
 from wellbot.constants import (
@@ -26,103 +25,26 @@ from wellbot.services.bedrock_client import (
     astream_chat,
     astream_chat_with_tools,
     generate_title,
-    image_format,
 )
 from wellbot.services import attachment_service, chat_service, file_parser, response_filter, tool_executor
 from wellbot.services.config import get_config, get_greetings
-
-
-class AgentModeInfo(BaseModel):
-    """프론트엔드 표시용 에이전트 모드 정보."""
-
-    id: str
-    name: str
-    description: str = ""
-    icon: str = "message-circle"
-
-
-class ModelInfo(BaseModel):
-    """프론트엔드 표시용 모델 정보."""
-
-    name: str
-    description: str
-    supports_thinking: bool
-
-
-class PromptInfo(BaseModel):
-    """프론트엔드 표시용 프롬프트 템플릿 정보."""
-
-    name: str
-    content: str
-    description: str = ""
-
-
-class AttachmentInfo(BaseModel):
-    """프론트엔드 표시용 첨부파일 정보."""
-
-    file_no: int
-    name: str
-    mime: str = ""
-    size_bytes: int = 0
-    token_count: int = 0
-    status: str = "processing"  # "processing" | "ready" | "failed"
-
-
-class Message(BaseModel):
-    """개별 메시지 모델."""
-
-    role: str  # "user" | "assistant"
-    content: str
-    timestamp: float
-    model_name: str = ""
-    seq: int = 0
-    attachments: list[AttachmentInfo] = []
-
-
-class Conversation(BaseModel):
-    """대화 세션 모델."""
-
-    id: str
-    title: str
-    messages: list[Message]
-    created_at: float
-    model_name: str = ""
-    is_loaded: bool = False      # 메시지가 DB에서 로드되었는지
-    is_persisted: bool = False   # DB에 저장된 대화인지
-
-
-_MIME_LABELS: dict[str, str] = {
-    "application/pdf": "PDF",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Excel",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PowerPoint",
-    "application/x-hwp": "한글",
-    "application/x-hwpx": "한글",
-    "text/plain": "텍스트",
-    "text/markdown": "Markdown",
-    "image/png": "PNG 이미지",
-    "image/jpeg": "JPEG 이미지",
-    "image/webp": "WebP 이미지",
-    "image/gif": "GIF 이미지",
-}
-
-
-def _mime_to_label(mime: str) -> str:
-    """MIME 타입을 한국어 라벨로 변환."""
-    return _MIME_LABELS.get(mime, mime or "파일")
-
-
-def _new_conversation() -> Conversation:
-    """빈 대화를 생성한다."""
-    now = time.time()
-    return Conversation(
-        id=str(uuid.uuid4()),
-        title=DEFAULT_CONVERSATION_TITLE,
-        messages=[],
-        created_at=now,
-        is_loaded=True,
-        is_persisted=False,
-    )
+from wellbot.state.chat_helpers.attachments import (
+    collect_image_blocks,
+    fetch_pending_attachments,
+    rows_to_attachment_infos,
+)
+from wellbot.state.chat_helpers.download_script import build_download_script
+from wellbot.state.chat_helpers.system_prompt import augment_system_with_attachments
+from wellbot.state.chat_helpers.upload_script import build_upload_script
+from wellbot.state.chat_models import (
+    AgentModeInfo,
+    AttachmentInfo,
+    Conversation,
+    Message,
+    ModelInfo,
+    PromptInfo,
+    new_conversation,
+)
 
 
 class ChatState(rx.State):
@@ -167,7 +89,7 @@ class ChatState(rx.State):
     def _ensure_conversation(self) -> None:
         """대화가 없으면 새로 생성."""
         if not self.conversations:
-            conv = _new_conversation()
+            conv = new_conversation()
             self.conversations = [conv]
             self.current_conversation_id = conv.id
 
@@ -223,16 +145,7 @@ class ChatState(rx.State):
         """대화의 첨부파일 목록을 DB에서 로드."""
         try:
             rows = attachment_service.get_conversation_attachments(conv_id)
-            self.conversation_attachments = [
-                AttachmentInfo(
-                    file_no=r.file_no,
-                    name=r.file_name,
-                    mime=r.mime,
-                    token_count=r.token_count or 0,
-                    status="ready" if r.token_count is not None else "processing",
-                )
-                for r in rows
-            ]
+            self.conversation_attachments = rows_to_attachment_infos(rows)
         except Exception:
             self.conversation_attachments = []
 
@@ -482,7 +395,7 @@ class ChatState(rx.State):
                     (c for c in self.conversations if not c.is_persisted and not c.messages),
                     None,
                 )
-                new_conv = existing_new or _new_conversation()
+                new_conv = existing_new or new_conversation()
                 self.conversations = [new_conv, *db_conversations]
                 self.current_conversation_id = new_conv.id
             else:
@@ -533,7 +446,7 @@ class ChatState(rx.State):
         if idx is not None and not self.conversations[idx].messages:
             self._refresh_greeting()
             return
-        conv = _new_conversation()
+        conv = new_conversation()
         self.conversations = [conv, *self.conversations]
         self.current_conversation_id = conv.id
         self.current_input = ""
@@ -570,7 +483,7 @@ class ChatState(rx.State):
             if empty:
                 self.current_conversation_id = empty.id
             else:
-                new_conv = _new_conversation()
+                new_conv = new_conversation()
                 self.conversations = [new_conv, *self.conversations]
                 self.current_conversation_id = new_conv.id
 
@@ -665,93 +578,23 @@ class ChatState(rx.State):
             return None
         if not attachment_service.verify_ownership(file_no, self._emp_no):
             return None
-        return rx.call_script(
-            f"""
-            (async function() {{
-                try {{
-                    let backendBase = '';
-                    try {{
-                        const envResp = await fetch('/env.json');
-                        const env = await envResp.json();
-                        const pingUrl = env.PING || '';
-                        if (pingUrl) {{
-                            const u = new URL(pingUrl);
-                            const loc = window.location;
-                            const isLocalDev = (
-                                (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1') &&
-                                (u.hostname === 'localhost' || u.hostname === '127.0.0.1') &&
-                                u.port !== loc.port
-                            );
-                            if (isLocalDev) {{
-                                backendBase = loc.protocol + '//' + loc.hostname + ':' + u.port;
-                            }}
-                        }}
-                    }} catch(e) {{}}
-
-                    const resp = await fetch(backendBase + '/api/download/{file_no}', {{
-                        method: 'POST',
-                        credentials: 'include',
-                    }});
-                    if (!resp.ok) {{
-                        const err = await resp.json().catch(function() {{ return {{}}; }});
-                        alert(err.detail || '다운로드 실패');
-                        return;
-                    }}
-                    const blob = await resp.blob();
-                    const cd = resp.headers.get('Content-Disposition') || '';
-                    const fnMatch = cd.match(/filename\\*=UTF-8''(.+)/);
-                    const filename = fnMatch ? decodeURIComponent(fnMatch[1]) : 'download';
-                    const objUrl = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = objUrl;
-                    a.download = filename;
-                    a.style.display = 'none';
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(objUrl);
-                }} catch (e) {{
-                    console.error('[wellbot download]', e);
-                }}
-            }})();
-            """
-        )
+        return rx.call_script(build_download_script(file_no))
 
     def _sync_attachments_from_db(self) -> None:
         """업로드 직후 DB 를 폴링해 pending 상태를 갱신한다.
 
         conversation_attachments 에 이미 있는 파일(= 전송 완료)은 제외하고,
         방금 업로드했지만 아직 메시지로 전송하지 않은 파일만 pending 에 표시.
-
-        메시지가 아직 DB 에 저장되기 전이면 _pending_msg_id 로 직접 조회한다.
         """
-        if not self._emp_no or not self.current_conversation_id:
-            return
-        try:
-            if self._pending_msg_id:
-                # 메시지 미저장 상태: msg_id 로 직접 조회
-                rows = attachment_service.get_attachments_by_msg_id(
-                    self._pending_msg_id
-                )
-            else:
-                rows = attachment_service.get_conversation_attachments(
-                    self.current_conversation_id
-                )
-        except Exception:
-            return
         sent: set[int] = {a.file_no for a in self.conversation_attachments}
-
-        self.pending_attachments = [
-            AttachmentInfo(
-                file_no=r.file_no,
-                name=r.file_name,
-                mime=r.mime,
-                token_count=r.token_count or 0,
-                status="ready" if r.token_count is not None else "processing",
-            )
-            for r in rows
-            if r.file_no not in sent
-        ]
+        pending = fetch_pending_attachments(
+            emp_no=self._emp_no,
+            conv_id=self.current_conversation_id,
+            pending_msg_id=self._pending_msg_id,
+            already_sent=sent,
+        )
+        if pending is not None:
+            self.pending_attachments = pending
 
     @rx.event(background=True)
     async def poll_attachments(self) -> None:
@@ -801,189 +644,19 @@ class ChatState(rx.State):
             self._pending_msg_id = uuid.uuid4().hex[:50]
         msg_id = self._pending_msg_id
 
-        accept = self.accepted_file_extensions
-        max_mb = FILE_MAX_SIZE_MB
-        max_per_msg = FILE_MAX_PER_MESSAGE
-        current_count = len(self.pending_attachments)
-
-        # JS: 파일 선택 → fetch POST /api/upload (백엔드 직접)
-        # Nginx/ALB 프록시 환경: 상대 경로 (/api/upload) 사용
-        # 로컬 개발 (포트 분리) 환경: env.json PING origin 과 window.location.origin 비교
-        # 완료 알림은 Python 측 polling 으로 DB 에서 감지
-        script = f"""
-(async function() {{
-  try {{
-    // 백엔드 URL 결정
-    // 기본: 상대 경로 (Nginx/ALB 리버스 프록시 환경)
-    // 로컬 개발 (localhost 포트 분리) 환경에서만 origin 을 붙인다
-    let backendBase = '';
-    try {{
-      const envResp = await fetch('/env.json');
-      const env = await envResp.json();
-      const pingUrl = env.PING || '';
-      if (pingUrl) {{
-        const u = new URL(pingUrl);
-        const loc = window.location;
-        // 둘 다 localhost 이고 포트만 다른 경우 = 로컬 개발 환경
-        const isLocalDev = (
-          (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1') &&
-          (u.hostname === 'localhost' || u.hostname === '127.0.0.1') &&
-          u.port !== loc.port
-        );
-        if (isLocalDev) {{
-          // 쿠키가 전달되도록 hostname 을 현재 페이지와 동일하게 맞춘다
-          backendBase = loc.protocol + '//' + loc.hostname + ':' + u.port;
-        }}
-        // 그 외 (ALB/Nginx 프록시 등): 상대 경로 사용 (backendBase = '')
-      }}
-    }} catch(e) {{}}
-
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.multiple = true;
-    input.accept = '{accept}';
-    input.style.display = 'none';
-    document.body.appendChild(input);
-
-    const files = await new Promise((resolve) => {{
-      input.onchange = () => resolve(Array.from(input.files || []));
-      input.addEventListener('cancel', () => resolve([]));
-      input.click();
-    }});
-    document.body.removeChild(input);
-    if (!files.length) return;
-
-    const maxPerMsg = {max_per_msg};
-    const current = {current_count};
-    if (files.length + current > maxPerMsg) {{
-      alert(`메시지당 최대 ${{maxPerMsg}}개까지 첨부 가능합니다.`);
-      return;
-    }}
-
-    const maxBytes = {max_mb} * 1024 * 1024;
-    const errors = [];
-    for (const file of files) {{
-      if (file.size > maxBytes) {{
-        errors.push(`'${{file.name}}' 파일이 {max_mb}MB 를 초과합니다.`);
-        continue;
-      }}
-      const form = new FormData();
-      form.append('file', file);
-      form.append('conversation_id', '{conv_id}');
-      form.append('message_id', '{msg_id}');
-      try {{
-        const resp = await fetch(backendBase + '/api/upload', {{
-          method: 'POST',
-          body: form,
-          credentials: 'include',
-        }});
-        if (!resp.ok) {{
-          const data = await resp.json().catch(() => ({{}}));
-          errors.push(`'${{file.name}}': ${{data.detail || resp.status}}`);
-        }}
-      }} catch (err) {{
-        errors.push(`'${{file.name}}': ${{err && err.message ? err.message : err}}`);
-      }}
-    }}
-    if (errors.length) alert(errors.join('\\n'));
-  }} catch (err) {{
-    console.error('[wellbot upload] ', err);
-  }}
-}})();
-"""
+        script = build_upload_script(
+            accept=self.accepted_file_extensions,
+            conv_id=conv_id,
+            msg_id=msg_id,
+            max_mb=FILE_MAX_SIZE_MB,
+            max_per_msg=FILE_MAX_PER_MESSAGE,
+            current_count=len(self.pending_attachments),
+        )
         # JS 실행 + Python 측 polling 을 함께 반환
         return [
             rx.call_script(script),
             ChatState.poll_attachments,
         ]
-
-    def _augment_system_with_attachments(
-        self,
-        base_prompt: str,
-        conv_id: str,
-    ) -> str:
-        """system prompt 에 현재 대화의 첨부파일 메타 목록을 append 한다.
-
-        파일은 `[#file_no] file_name` 형식으로 노출하여, LLM 이
-        `search_attachment` 호출 시 file_ids 로 정확 매칭하도록 유도한다.
-        """
-        if not conv_id:
-            return base_prompt
-        try:
-            atts = attachment_service.get_conversation_attachments(conv_id)
-        except Exception:
-            return base_prompt
-
-        if not atts:
-            return base_prompt
-
-        # 인덱스 누락 파일 조회 (캐시 hit 가정, 실패 시 무시)
-        missing_set: set[str] = set()
-        try:
-            from wellbot.services import embedding_service
-            conv_index = embedding_service.get_cache().get(conv_id)
-            if conv_index is not None:
-                missing_set = set(conv_index.missing_files)
-        except Exception:
-            missing_set = set()
-
-        lines: list[str] = [
-            "",
-            "## 이 대화에 첨부된 파일",
-            (
-                "아래 파일들이 대화에 첨부되어 있습니다. "
-                "사용자의 질문이 첨부 파일과 관련될 가능성이 있으면 "
-                "`search_attachment` 도구를 호출해 실제 내용을 확인한 뒤 답변하세요. "
-                "여러 파일을 검색할 때는 한 번의 호출에 `file_ids` 배열로 일괄 지정하세요 "
-                "(파일별로 분할 호출하지 말 것). "
-                "각 항목 앞의 [#NNN] 숫자가 file_id 입니다 - 이 값을 그대로 사용하면 "
-                "정확 매칭이 보장됩니다. "
-                "검색 결과가 비면 같은 의도의 쿼리로 재시도하지 말고 "
-                "사용자에게 못 찾았음을 안내하거나 일반 지식으로 답변하세요."
-            ),
-            "",
-        ]
-        for a in atts:
-            mime = a.mime or ""
-            type_label = _mime_to_label(mime)
-            tokens = a.token_count
-            token_str = f"{tokens:,} 토큰" if tokens is not None and tokens > 0 else "처리 중"
-            extras = [type_label, token_str]
-            if a.file_name in missing_set:
-                extras.append("인덱스 미준비")
-            lines.append(f"[#{a.file_no}] {a.file_name} ({', '.join(extras)})")
-        return f"{base_prompt}\n\n" + "\n".join(lines)
-
-    def _collect_image_blocks(
-        self,
-        attachments: list[AttachmentInfo],
-        model,
-    ) -> list[dict]:
-        """첨부 목록에서 이미지만 골라 Bedrock Converse image block 으로 변환."""
-        if not attachments:
-            return []
-
-        supports_vision = getattr(model, "supports_vision", False)
-        blocks: list[dict] = []
-
-        for a in attachments:
-            fmt = image_format(a.name)
-            if not fmt:
-                continue  # 이미지 아님
-
-            if not supports_vision:
-                # vision 미지원 모델 - UI 에서 사용자에게 이미 알렸다고 가정, 스킵
-                continue
-
-            try:
-                data = attachment_service.download_original_bytes(a.file_no)
-            except Exception:
-                data = None
-            if not data:
-                continue
-            blocks.append({"format": fmt, "bytes": data})
-
-        return blocks
 
     @rx.event(background=True)
     async def send_message(self, form_data: dict | None = None) -> None:
@@ -1018,16 +691,7 @@ class ChatState(rx.State):
                     fresh = attachment_service.get_attachments_by_msg_id(
                         self._pending_msg_id
                     )
-                    refreshed: list[AttachmentInfo] = [
-                        AttachmentInfo(
-                            file_no=r.file_no,
-                            name=r.file_name,
-                            mime=r.mime,
-                            token_count=r.token_count or 0,
-                            status="ready" if r.token_count is not None else "processing",
-                        )
-                        for r in fresh
-                    ]
+                    refreshed = rows_to_attachment_infos(fresh)
                     if refreshed:
                         self.pending_attachments = refreshed
                 except Exception:
@@ -1129,10 +793,10 @@ class ChatState(rx.State):
             base_system = prompt.content if prompt else cfg.system_prompt
 
             # 대화에 붙은 전체 첨부파일 메타를 system prompt 에 append
-            system_prompt = self._augment_system_with_attachments(base_system, conv_id)
+            system_prompt = augment_system_with_attachments(base_system, conv_id)
 
             # 이번 turn 의 이미지 첨부를 content block 으로 변환 (마지막 user 메시지에만)
-            image_blocks = self._collect_image_blocks(turn_attachments, model)
+            image_blocks = collect_image_blocks(turn_attachments, model)
             if image_blocks and api_messages:
                 api_messages[-1] = {**api_messages[-1], "image_blocks": image_blocks}
 

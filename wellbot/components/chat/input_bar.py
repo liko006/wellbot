@@ -9,7 +9,8 @@ ChatGPT/Claude 스타일 입력 바.
 import reflex as rx
 
 from wellbot.components.chat.attachment_chip import attachment_chip_list
-from wellbot.state.chat_state import ChatState, ModelInfo, PromptInfo
+from wellbot.state.chat_models import ModelInfo, PromptInfo
+from wellbot.state.chat_state import ChatState
 from wellbot.styles import COLORS, SPACING
 
 
