@@ -13,7 +13,6 @@ from wellbot.state.chat_state import ChatState
 from wellbot.state.ui_state import UIState
 from wellbot.styles import COLORS, SPACING
 
-# 아이콘 공통 크기
 _ICON_SIZE = 18
 _ICON_BOX = "36px"
 
@@ -82,13 +81,11 @@ def _logo_expand_button() -> rx.Component:
     """접힌 상태 로고: hover 시 사이드바 열기 아이콘으로 전환."""
     return rx.tooltip(
         rx.box(
-            # 기본: North Star 로고
             rx.box(
                 north_star_icon(size=_ICON_SIZE),
                 class_name="logo-default",
                 transition="opacity 0.15s ease",
             ),
-            # hover: 사이드바 열기 아이콘
             rx.box(
                 rx.icon("panel-left-open", size=_ICON_SIZE),
                 class_name="logo-hover",
@@ -164,7 +161,7 @@ def _expanded_header() -> rx.Component:
 
 
 def _search_input() -> rx.Component:
-    """대화 검색 입력 박스 - 더 이상 사이드바 내에서 사용하지 않음 (모달로 이동)."""
+    """대화 검색 입력 박스 - 검색 기능은 모달로 이전, 빈 fragment 반환"""
     return rx.fragment()
 
 
@@ -204,7 +201,7 @@ def user_profile() -> rx.Component:
         flex_shrink="0",
     )
 
-    # 비밀번호 변경 다이얼로그 (팝오버 밖에 위치)
+    # 비밀번호 변경 다이얼로그 (팝오버 밖에 위치해야 팝오버 닫힌 뒤에도 유지됨)
     change_pw_dialog = rx.dialog.root(
         rx.dialog.content(
             rx.dialog.title("비밀번호 변경", size="4"),
@@ -214,7 +211,6 @@ def user_profile() -> rx.Component:
                 color=COLORS["text_secondary"],
                 margin_bottom="1em",
             ),
-            # 성공 메시지
             rx.cond(
                 AuthState.chpw_success,
                 rx.vstack(
@@ -239,7 +235,6 @@ def user_profile() -> rx.Component:
                     spacing="3",
                     width="100%",
                 ),
-                # 입력 폼
                 rx.form(
                     rx.vstack(
                         rx.vstack(
@@ -279,7 +274,6 @@ def user_profile() -> rx.Component:
                             spacing="1",
                             width="100%",
                         ),
-                        # 에러 메시지
                         rx.cond(
                             AuthState.chpw_error != "",
                             rx.callout(
@@ -289,7 +283,6 @@ def user_profile() -> rx.Component:
                                 width="100%",
                             ),
                         ),
-                        # 버튼
                         rx.flex(
                             rx.button(
                                 "취소",
@@ -320,10 +313,8 @@ def user_profile() -> rx.Component:
         on_open_change=lambda open: rx.cond(~open, AuthState.close_change_password, None),  # type: ignore
     )
 
-    # 팝오버 메뉴 항목 (공통)
     def _popover_menu() -> rx.Component:
         return rx.vstack(
-            # 사용자 정보
             rx.vstack(
                 rx.text(
                     AuthState.current_user_nm,
@@ -339,7 +330,6 @@ def user_profile() -> rx.Component:
                 padding="0.25em 0.5em",
             ),
             rx.separator(size="4"),
-            # 메뉴 항목
             rx.cond(
                 AuthState.current_user_role == "ADMIN",
                 rx.hstack(
@@ -402,7 +392,6 @@ def user_profile() -> rx.Component:
         change_pw_dialog,
         rx.cond(
             UIState.sidebar_expanded,
-            # 펼침: 프로필 전체가 팝오버 트리거
             rx.popover.root(
                 rx.popover.trigger(
                     rx.hstack(
@@ -443,7 +432,6 @@ def user_profile() -> rx.Component:
                     max_width="240px",
                 ),
             ),
-            # 접힘: 아바타만 (클릭 시 메뉴)
             rx.center(
                 rx.popover.root(
                     rx.popover.trigger(
@@ -484,7 +472,6 @@ def sidebar() -> rx.Component:
     """Sidebar 메인 컴포넌트."""
     return rx.box(
         rx.vstack(
-            # 상단 영역
             rx.cond(
                 UIState.sidebar_expanded,
                 rx.vstack(
@@ -508,7 +495,6 @@ def sidebar() -> rx.Component:
                 ),
                 _collapsed_nav(),
             ),
-            # 대화 목록 / 빈 공간
             rx.cond(
                 UIState.sidebar_expanded,
                 conversation_list(),

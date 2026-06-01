@@ -1,9 +1,9 @@
 """Bedrock Converse tool use 핸들러.
 
-LLM 이 호출할 수 있는 도구(tool) 의 스펙을 정의하고, 실제 실행을 담당.
+LLM 이 호출할 수 있는 도구(tool) 의 스펙을 정의하고 실제 실행을 담당.
 
-[Tool List]
-- `search_attachment`
+구조:
+    - search_attachment: 첨부파일 의미 검색
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import logging
 from typing import Any
 
 from wellbot.constants import SEARCH_TOP_K
-from wellbot.services import embedding_service
+from wellbot.services.ai import embedding_service
 
 log = logging.getLogger(__name__)
 
@@ -70,11 +70,10 @@ SEARCH_ATTACHMENT_TOOL: dict = {
 
 
 def build_tool_config() -> dict:
-    """Bedrock Converse 의 `toolConfig` 파라미터 전체를 반환."""
+    """Bedrock Converse 의 toolConfig 파라미터 전체 반환"""
     return {
         "tools": [SEARCH_ATTACHMENT_TOOL],
-        # auto: LLM 이 자율적으로 사용 여부 결정
-        "toolChoice": {"auto": {}},
+        "toolChoice": {"auto": {}},  # auto: LLM 이 자율적으로 사용 여부 결정
     }
 
 
@@ -123,14 +122,14 @@ def execute_tool(
     tool_input: dict[str, Any],
     smry_id: str,
 ) -> dict:
-    """LLM 이 호출한 도구를 실제 실행하고 결과를 반환한다.
+    """LLM 이 호출한 도구를 실제 실행하고 결과 반환.
 
     Returns:
-        Bedrock Converse `toolResult.content` 블록에 넣을 dict.
+        Bedrock Converse toolResult.content 블록에 넣을 dict.
         성공: {"text": "...", "_meta": {...}}
         실패: {"text": "...", "status": "error"}
 
-        `_meta` 는 호출자(루프 가드)가 활용할 수 있는 부가 정보 -
+        _meta 는 호출자(루프 가드)가 활용할 수 있는 부가 정보 -
         {result_count: int, fallback: str | None}
     """
     try:
@@ -144,7 +143,7 @@ def execute_tool(
 
 
 def _run_search_attachment(tool_input: dict[str, Any], smry_id: str) -> dict:
-    """`search_attachment` 실제 실행."""
+    """search_attachment 실제 실행"""
     query = (tool_input.get("query") or "").strip()
     if not query:
         return {"text": "query 파라미터가 비어있습니다.", "status": "error"}
@@ -205,7 +204,7 @@ def _run_search_attachment(tool_input: dict[str, Any], smry_id: str) -> dict:
 
 
 def parse_tool_input(raw_json: str) -> dict:
-    """스트림에서 누적된 JSON 문자열을 파싱. 실패 시 빈 dict."""
+    """스트림에서 누적된 JSON 문자열 파싱. 실패 시 빈 dict"""
     try:
         data = json.loads(raw_json)
         return data if isinstance(data, dict) else {}

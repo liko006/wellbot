@@ -1,4 +1,4 @@
-"""사원마스터 (emp_m) model."""
+"""사원마스터 ORM 모델 (DB 테이블: emp_m)"""
 
 from datetime import datetime
 from typing import Optional
@@ -9,8 +9,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
-class EmpM(Base):
-    """사원마스터."""
+class Employee(Base):
+    """사원마스터 (DB 테이블: emp_m)"""
 
     __tablename__ = "emp_m"
 
@@ -56,3 +56,7 @@ class EmpM(Base):
     acnt_sts_nm: Mapped[str] = mapped_column(
         "ACNT_STS_NM", String(50), comment="계정상태명",
     )
+
+
+# 하위 호환을 위한 약어 alias (구 코드/외부 import 용)
+EmpM = Employee

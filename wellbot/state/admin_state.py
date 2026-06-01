@@ -9,13 +9,13 @@ import os
 import reflex as rx
 from dotenv import load_dotenv
 
-from wellbot.services import admin_service
+from wellbot.services.admin import admin_service
 
 load_dotenv()
 
 
 class AdminState(rx.State):
-    """관리 페이지 상태."""
+    """관리 페이지 상태 관리"""
 
     # ── 인증 ──
     is_authenticated: bool = False
@@ -51,7 +51,7 @@ class AdminState(rx.State):
         self.auth_error = ""
 
     def check_admin_auth(self) -> None:
-        """관리자 인증: .env 비밀번호 또는 DB ADMIN 계정."""
+        """.env 비밀번호 또는 DB ADMIN 계정으로 관리자 인증"""
         password = self.auth_password.strip()
         emp_no = self.auth_emp_no.strip()
 
@@ -59,7 +59,6 @@ class AdminState(rx.State):
             self.auth_error = "비밀번호를 입력해주세요."
             return
 
-        # 1) 사원번호 없이 비밀번호만 → .env ADMIN_PASSWORD 체크
         if not emp_no:
             env_pw = os.environ.get("ADMIN_PASSWORD", "")
             if hmac.compare_digest(password, env_pw):
@@ -71,7 +70,6 @@ class AdminState(rx.State):
             self.auth_error = "비밀번호가 올바르지 않습니다."
             return
 
-        # 2) 사원번호 + 비밀번호 → DB 인증
         if admin_service.authenticate_admin(emp_no, password):
             self.is_authenticated = True
             self.admin_label = emp_no
@@ -82,7 +80,7 @@ class AdminState(rx.State):
         self.auth_error = "사원번호 또는 비밀번호가 올바르지 않습니다."
 
     async def admin_logout(self) -> rx.event.EventSpec:
-        """로그아웃: AdminState 초기화 + DB 계정이면 AuthState 세션도 정리."""
+        """로그아웃. AdminState 초기화 + DB 계정이면 AuthState 세션도 정리"""
         is_super = self.admin_label == "SUPER"
 
         self.is_authenticated = False
@@ -91,13 +89,12 @@ class AdminState(rx.State):
         self.auth_password = ""
         self.auth_error = ""
 
-        # DB ADMIN 계정인 경우 AuthState 세션도 함께 정리
         if not is_super:
             from wellbot.state.auth_state import AuthState
 
             auth = await self.get_state(AuthState)
             if auth.auth_token:
-                from wellbot.services import auth_service
+                from wellbot.services.auth import auth_service
 
                 auth_service.invalidate_session_token(auth.auth_token)
             auth.auth_token = ""
@@ -113,7 +110,7 @@ class AdminState(rx.State):
 
     @rx.var
     def dept_options(self) -> list[str]:
-        """부서 select용 옵션 목록 ('코드 - 부서명')."""
+        """부서 select 옵션 목록. '코드 - 부서명' 형식"""
         return [
             f"{d.get('dept_cd', '')} - {d.get('dept_nm', '')}"
             for d in self.depts
@@ -121,20 +118,19 @@ class AdminState(rx.State):
 
     @rx.var
     def dept_codes(self) -> list[str]:
-        """부서 코드만 추출한 목록."""
+        """부서 코드 목록"""
         return [d.get("dept_cd", "") for d in self.depts]
 
     @rx.var
     def dept_display_options(self) -> list[str]:
-        """부서 select용 표시 목록 ('부서명(코드)')."""
+        """부서 select 표시 목록. '부서명(코드)' 형식"""
         return [
             f"{d.get('dept_nm', '')}({d.get('dept_cd', '')})"
             for d in self.depts
         ]
 
     def _dept_display_to_code(self, display: str) -> str:
-        """'부서명(코드)' → 부서코드 추출."""
-        # 마지막 '(' 이후 ')' 이전 문자열이 코드
+        """'부서명(코드)' → 부서코드 추출"""
         start = display.rfind("(")
         end = display.rfind(")")
         if start != -1 and end != -1 and end > start:
@@ -167,13 +163,11 @@ class AdminState(rx.State):
             self.error_message = f"에이전트 로드 실패: {e}"
 
     async def on_admin_load(self) -> rx.event.EventSpec | None:
-        """페이지 로드 시: AuthState ADMIN 역할이면 자동 인증, 아니면 비밀번호 요구."""
-        # SUPER(env 비밀번호)로 직접 인증한 경우 → 유지
+        """페이지 로드 시 인증 확인. AuthState 의 ADMIN 역할이면 자동 인증"""
         if self.is_authenticated and self.admin_label == "SUPER":
             self._load_all()
             return None
 
-        # DB ADMIN 계정인 경우 → AuthState 재검증
         from wellbot.state.auth_state import AuthState
         auth = await self.get_state(AuthState)
         if auth.is_authenticated and auth.current_user_role == "ADMIN":
@@ -182,7 +176,6 @@ class AdminState(rx.State):
             self._load_all()
             return None
 
-        # AuthState 인증이 없으면 AdminState도 초기화
         self.is_authenticated = False
         self.admin_label = ""
         return None
@@ -218,13 +211,13 @@ class AdminState(rx.State):
         self.form_data = {**self.form_data, field: value}
 
     def set_form_dept(self, display: str) -> None:
-        """부서 드롭다운 선택 시 '부서명(코드)' → 코드 변환 후 form_data에 저장."""
+        """부서 드롭다운 선택 시 '부서명(코드)' → 코드 변환 후 form_data 에 저장"""
         code = self._dept_display_to_code(display)
         self.form_data = {**self.form_data, "pstn_dept_cd": code}
 
     @rx.var
     def form_dept_display(self) -> str:
-        """현재 form_data의 pstn_dept_cd에 대응하는 '부서명(코드)' 표시값."""
+        """현재 form_data 의 pstn_dept_cd 에 대응하는 '부서명(코드)' 표시값"""
         code = self.form_data.get("pstn_dept_cd", "")
         if not code:
             return ""
@@ -236,7 +229,7 @@ class AdminState(rx.State):
     # ── CRUD 이벤트 ──
 
     def save_dept(self) -> None:
-        """부서 생성/수정."""
+        """부서 생성/수정"""
         try:
             fd = self.form_data
             if not fd.get("dept_cd") or not fd.get("dept_nm"):
@@ -258,7 +251,7 @@ class AdminState(rx.State):
             self.error_message = str(e)
 
     def delete_dept(self, dept_cd: str) -> None:
-        """부서 삭제."""
+        """부서 삭제"""
         try:
             admin_service.delete_dept(dept_cd)
             self.load_depts()
@@ -267,7 +260,7 @@ class AdminState(rx.State):
             self.error_message = str(e)
 
     def save_employee(self) -> None:
-        """사원 생성/수정."""
+        """사원 생성/수정"""
         try:
             fd = self.form_data
             if not fd.get("emp_no") or not fd.get("user_nm"):
@@ -302,7 +295,7 @@ class AdminState(rx.State):
             self.error_message = str(e)
 
     def delete_employee(self, emp_no: str) -> None:
-        """사원 삭제."""
+        """사원 삭제"""
         try:
             admin_service.delete_employee(emp_no)
             self.load_employees()
@@ -311,7 +304,7 @@ class AdminState(rx.State):
             self.error_message = str(e)
 
     def save_agent(self) -> None:
-        """에이전트 생성/수정."""
+        """에이전트 생성/수정"""
         try:
             fd = self.form_data
             if not fd.get("agnt_id") or not fd.get("agnt_nm"):
@@ -344,7 +337,7 @@ class AdminState(rx.State):
             self.error_message = str(e)
 
     def delete_agent(self, key: str) -> None:
-        """에이전트 삭제 (key = 'agnt_id|agnt_seq')."""
+        """에이전트 삭제. key 형식은 'agnt_id|agnt_seq'"""
         try:
             parts = key.split("|")
             admin_service.delete_agent(parts[0], int(parts[1]))

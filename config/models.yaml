@@ -46,3 +46,16 @@ models:
     top_p: 0.9
     supports_vision: true
     supports_document: true
+
+# 대화 제목 생성 (경량 모델)
+title:
+  model_id: "apac.amazon.nova-lite-v1:0"
+  max_tokens: 30
+  temperature: 0.3
+  system_prompt: |
+    대화의 첫 질문과 응답을 보고, 이 대화를 대표하는 짧은 제목을 한국어로 만들어주세요.15자 이내로, 제목만 출력하세요. 따옴표나 부가 설명 없이 제목 텍스트만 응답하세요.
+
+# 임베딩 모델
+embedding:
+  model_id: "amazon.titan-embed-text-v2:0"
+  dimension: 1024

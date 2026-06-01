@@ -133,7 +133,7 @@ def _success_message() -> rx.Component:
     )
 
 
-def register() -> rx.Component:
+def register_page() -> rx.Component:
     """회원가입 페이지."""
     return rx.box(
         rx.center(

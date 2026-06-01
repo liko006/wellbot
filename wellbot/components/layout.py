@@ -12,7 +12,7 @@ from wellbot.styles import COLORS
 
 
 def chat_layout(main_content: rx.Component) -> rx.Component:
-    """2단 레이아웃: Sidebar(접이식) + 메인 영역."""
+    """2단 레이아웃: Sidebar(접이식) + 메인 영역"""
     return rx.fragment(
         rx.hstack(
             sidebar(),

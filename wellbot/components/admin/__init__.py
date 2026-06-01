@@ -4,7 +4,6 @@ import reflex as rx
 
 from wellbot.styles import COLORS
 
-# 테이블 공통 border 스타일
 _CELL_BORDER = f"1px solid {rx.color('gray', 5)}"
 
 

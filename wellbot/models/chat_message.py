@@ -1,4 +1,4 @@
-"""챗봇메시지상세 (chtb_msg_d) model."""
+"""챗봇메시지상세 ORM 모델 (DB 테이블: chtb_msg_d)"""
 
 from datetime import datetime
 from typing import Optional
@@ -9,8 +9,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
-class ChtbMsgD(Base):
-    """챗봇메시지상세."""
+class ChatMessage(Base):
+    """챗봇메시지상세 (DB 테이블: chtb_msg_d)"""
 
     __tablename__ = "chtb_msg_d"
 
@@ -65,3 +65,7 @@ class ChtbMsgD(Base):
     upd_dtm: Mapped[datetime] = mapped_column(
         "UPD_DTM", DateTime, comment="수정일시",
     )
+
+
+# 하위 호환을 위한 약어 alias (구 코드/외부 import 용)
+ChtbMsgD = ChatMessage

@@ -1,7 +1,4 @@
-"""Wellbot 설정 상수.
-
-설정값을 중앙 관리
-"""
+"""Wellbot 설정 상수 - 중앙 집중 관리"""
 
 from zoneinfo import ZoneInfo
 
@@ -10,7 +7,7 @@ KST = ZoneInfo("Asia/Seoul")
 
 # ── 인증/세션 ──
 TOKEN_EXPIRE_HOURS: int = 6
-TOKEN_EXPIRE_SECONDS: int = TOKEN_EXPIRE_HOURS * 3600  # 쿠키 max_age용
+TOKEN_EXPIRE_SECONDS: int = TOKEN_EXPIRE_HOURS * 3600  # 쿠키 max_age 환산값
 REMEMBER_ME_EXPIRE_DAYS: int = 30  # 아이디 기억하기 쿠키 유효기간(일)
 REMEMBER_ME_EXPIRE_SECONDS: int = REMEMBER_ME_EXPIRE_DAYS * 86400
 LOCK_THRESHOLD: int = 5            # 로그인 실패 잠금 횟수
@@ -23,14 +20,8 @@ TITLE_MAX_LENGTH: int = 30         # 임시 제목 최대 글자 수
 DEFAULT_CONVERSATION_TITLE: str = "새 대화"
 MESSAGE_SEQ_MAX_RETRIES: int = 5   # 메시지 seq 동시 발급 충돌 시 재시도 횟수
 
-# ── 제목 생성 (경량 모델) ──
-TITLE_MODEL_ID: str = "apac.amazon.nova-lite-v1:0"
-TITLE_MAX_TOKENS: int = 30
-TITLE_TEMPERATURE: float = 0.3
-TITLE_SYSTEM_PROMPT: str = (
-    "대화의 첫 질문과 응답을 보고, 이 대화를 대표하는 짧은 제목을 한국어로 만들어주세요."
-    "15자 이내로, 제목만 출력하세요. 따옴표나 부가 설명 없이 제목 텍스트만 응답하세요."
-)
+# 제목 생성·임베딩 모델 설정은 config/models.yaml 의 title / embedding 섹션으로 이관됨.
+# wellbot.services.core.settings.get_config().title / .embedding 으로 접근.
 
 # ── UI ──
 SCROLL_THRESHOLD: int = 100        # 자동 스크롤 유지 판정(px)
@@ -59,11 +50,10 @@ SPLIT_SAFETY_PAGES: int = 90
 SPLIT_SAFETY_SIZE_MB: int = 45
 
 # ── 청킹 & 임베딩 ──
-AVG_TOKENS_PER_WORD = 1.4                 # 한국어는 단어당 ~1.5토큰, 영어는 ~1.3토큰 수준이므로 평균 1.4 사용.
+AVG_TOKENS_PER_WORD = 1.4                 # 한국어 ~1.5·영어 ~1.3 기준 평균값
 CHUNK_SIZE_TOKENS: int = 1000
 CHUNK_OVERLAP_TOKENS: int = 200
-EMBEDDING_MODEL_ID: str = "amazon.titan-embed-text-v2:0"
-EMBEDDING_DIMENSION: int = 1024
+# 임베딩 모델 ID/차원은 config/models.yaml 의 embedding 섹션으로 이관됨.
 
 # ── 임베딩 병렬 처리 ──
 EMBED_MAX_WORKERS: int = 5            # 동시 임베딩 요청 수

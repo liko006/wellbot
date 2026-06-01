@@ -5,11 +5,11 @@
 
 import reflex as rx
 
-from wellbot.state.chat_state import ChatState, Conversation
+from wellbot.state.chat_models import Conversation
+from wellbot.state.chat_state import ChatState
 from wellbot.state.ui_state import UIState
 from wellbot.styles import COLORS, SPACING
 
-# 사이드바와 동일한 아이콘 크기 토큰
 _ICON_SIZE = 18
 _ICON_BOX = "36px"
 
@@ -116,11 +116,10 @@ def _search_results() -> rx.Component:
 
 
 def search_modal() -> rx.Component:
-    """채팅 검색 모달 - 화면 중앙에 오버레이 팝업."""
+    """채팅 검색 모달 - 화면 중앙에 오버레이 팝업"""
     return rx.cond(
         UIState.show_search_modal,
         rx.box(
-            # 배경 오버레이
             rx.box(
                 position="fixed",
                 top="0",
@@ -134,10 +133,8 @@ def search_modal() -> rx.Component:
                     UIState.close_search,
                 ],
             ),
-            # 모달 본체
             rx.box(
                 rx.vstack(
-                    # 검색 입력 헤더
                     rx.hstack(
                         rx.icon(
                             "search",
@@ -189,7 +186,6 @@ def search_modal() -> rx.Component:
                         padding_y="0.625em",
                         border_bottom=f"1px solid {COLORS['border']}",
                     ),
-                    # 결과 영역
                     rx.box(
                         _search_results(),
                         flex="1",

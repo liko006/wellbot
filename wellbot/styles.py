@@ -1,11 +1,11 @@
 """디자인 토큰 및 테마 설정.
 
-rx.color() 기반으로 다크/라이트 모드 자동 전환.
+rx.color() 기반으로 다크/라이트 모드 자동 전환 지원.
 """
 
 import reflex as rx
 
-# 색상 팔레트 - rx.color() 기반 (다크/라이트 자동 전환)
+# rx.color() 기반 — 다크/라이트 모드 자동 전환
 COLORS = {
     "sidebar_bg": rx.color("gray", 2),
     "sidebar_hover": rx.color("gray", 4),
@@ -26,7 +26,6 @@ COLORS = {
     "scrollbar_thumb": rx.color("gray", 6),
 }
 
-# 간격 토큰
 SPACING = {
     "sidebar_width": "260px",
     "sidebar_collapsed_width": "60px",
@@ -40,7 +39,6 @@ SPACING = {
     "padding_component": "1em",
 }
 
-# 타이포그래피
 TYPOGRAPHY = {
     "font_family": "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
     "heading_size": "6",
@@ -48,7 +46,6 @@ TYPOGRAPHY = {
     "small_size": "2",
 }
 
-# 글로벌 스타일
 GLOBAL_STYLE = {
     "font_family": TYPOGRAPHY["font_family"],
     "::selection": {
@@ -82,7 +79,6 @@ GLOBAL_STYLE = {
     },
 }
 
-# 앱 테마
 THEME = rx.theme(
     appearance="dark",
     has_background=True,
@@ -93,12 +89,12 @@ THEME = rx.theme(
 
 
 def _table_border() -> str:
-    """테이블 border 색상 문자열."""
+    """테이블 border 색상 문자열"""
     return f"1px solid {rx.color('gray', 6)}"
 
 
 def _custom_codeblock(value: object, **props) -> rx.Component:
-    """코드블럭 - 언어 라벨 + 복사 버튼 헤더 포함."""
+    """코드블럭 - 언어 라벨 + 복사 버튼 헤더 포함"""
     from reflex.components.datadisplay.code import CodeBlock
 
     language = props.pop("language", "")
@@ -140,7 +136,6 @@ def _custom_codeblock(value: object, **props) -> rx.Component:
             justify="between",
             border_bottom=f"1px solid {rx.color('gray', 5)}",
         ),
-        # 코드 본문
         CodeBlock.create(value, wrap_long_lines=True, **props),
         background=rx.color("gray", 2),
         border_radius="8px",
@@ -151,7 +146,7 @@ def _custom_codeblock(value: object, **props) -> rx.Component:
     )
 
 
-# rx.markdown 공통 component_map (테이블 border 포함)
+# rx.markdown 공통 component_map — 테이블 border·코드블럭 커스텀 적용
 MARKDOWN_COMPONENT_MAP: dict = {
     "code": lambda text: rx.code(text, color_scheme="gray", variant="ghost"),
     "pre": _custom_codeblock,

@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import reflex as rx
 
-from wellbot.state.chat_state import AttachmentInfo, ChatState
+from wellbot.state.chat_models import AttachmentInfo
+from wellbot.state.chat_state import ChatState
 from wellbot.styles import COLORS, SPACING
 
 
@@ -52,7 +53,6 @@ def _status_indicator(status: str) -> rx.Component:
         rx.cond(
             status == "failed",
             rx.icon("triangle-alert", size=14, color="#e5484d"),
-            # processing
             rx.spinner(size="1"),
         ),
     )
@@ -95,7 +95,7 @@ def attachment_chip(att: AttachmentInfo) -> rx.Component:
 
 
 def attachment_chip_list() -> rx.Component:
-    """pending_attachments + 에러 메시지를 표시한다."""
+    """pending_attachments 목록 + 첨부 에러 메시지 표시"""
     return rx.cond(
         ChatState.has_pending_attachments | (ChatState.attachment_error != ""),
         rx.vstack(

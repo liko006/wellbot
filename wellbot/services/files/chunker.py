@@ -1,11 +1,10 @@
 """텍스트 청킹 서비스.
 
 파싱된 문서 텍스트를 검색용 청크로 분할.
-
 토큰 카운팅은 간단한 추정(공백 단위 단어 × 1.3)을 사용.
 
 Bedrock Titan embedding 의 입력 한도는 8192 토큰
--> CHUNK_SIZE_TOKENS=1000 은 안전.
+→ CHUNK_SIZE_TOKENS=1000 은 안전.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from wellbot.constants import CHUNK_OVERLAP_TOKENS, CHUNK_SIZE_TOKENS, AVG_TOKEN
 
 @dataclass(frozen=True)
 class Chunk:
-    """청킹 결과."""
+    """청킹 결과"""
 
     seq: int          # 청크 순번 (0부터)
     text: str         # 청크 텍스트
@@ -28,7 +27,7 @@ class Chunk:
 def estimate_tokens(text: str) -> int:
     """간단한 토큰 수 추정.
 
-    정확한 토크나이저를 사용하지 않아도 청킹/가드 용도로 충분.
+    정확한 토크나이저 없이도 청킹/가드 용도로 충분.
     """
     if not text:
         return 0
@@ -37,7 +36,7 @@ def estimate_tokens(text: str) -> int:
 
 
 def _split_paragraphs(text: str) -> list[str]:
-    """빈 줄 기준으로 문단 분리. 문단 내부는 그대로 유지."""
+    """빈 줄 기준 문단 분리. 문단 내부는 그대로 유지"""
     paragraphs: list[str] = []
     current: list[str] = []
     for line in text.splitlines():
@@ -57,7 +56,7 @@ def chunk_text(
     size: int = CHUNK_SIZE_TOKENS,
     overlap: int = CHUNK_OVERLAP_TOKENS,
 ) -> list[Chunk]:
-    """텍스트를 토큰 기반 청크로 분할한다.
+    """텍스트를 토큰 기반 청크로 분할.
 
     전략:
         1. 문단 단위로 먼저 그룹핑 (가능한 한 의미 단위 보존)
@@ -71,7 +70,7 @@ def chunk_text(
         overlap: 청크 간 겹침 토큰 수
 
     Returns:
-        순서대로 정렬된 청크 목록.
+        순서대로 정렬된 청크 목록
     """
     text = (text or "").strip()
     if not text:
@@ -101,12 +100,11 @@ def chunk_text(
             )
         )
         seq += 1
-        # overlap 처리: 마지막 문단에서 overlap 만큼 남김
         if overlap > 0 and buffer:
             tail = buffer[-1]
             tail_tokens = estimate_tokens(tail)
             if tail_tokens <= overlap:
-                # 문단 전체를 다음 청크 시작에 포함
+                # 문단 전체가 overlap 범위 안이면 다음 청크에 그대로 포함
                 buffer = [tail]
                 buffer_tokens = tail_tokens
                 return
@@ -123,8 +121,8 @@ def chunk_text(
     for paragraph in paragraphs:
         p_tokens = estimate_tokens(paragraph)
 
-        # 단일 문단이 size 초과 → 강제 단어 분할
         if p_tokens > size:
+            # 단일 문단이 size 초과 → 의미 단위 보존 불가. 단어 기준 강제 분할
             flush()
             for sub in _force_split_by_words(paragraph, size, overlap):
                 chunks.append(
@@ -137,7 +135,6 @@ def chunk_text(
                 seq += 1
             continue
 
-        # 현재 버퍼 + 문단 > size → 청크 종결
         if buffer_tokens + p_tokens > size and buffer:
             flush()
 
@@ -153,12 +150,12 @@ def _force_split_by_words(
     size: int,
     overlap: int,
 ) -> list[str]:
-    """단일 문단이 size 를 초과할 때 단어 단위로 강제 분할."""
+    """단일 문단이 size 초과 시 단어 단위 강제 분할"""
     words = text.split()
     if not words:
         return []
 
-    # 토큰 ≈ 단어 * AVG_TOKENS_PER_WORD → 단어 수 = size / AVG_TOKENS_PER_WORD
+    # 토큰 ≈ 단어 × AVG_TOKENS_PER_WORD → 단어 수 = size / AVG_TOKENS_PER_WORD
     words_per_chunk = max(1, int(size / AVG_TOKENS_PER_WORD))
     overlap_words = max(0, int(overlap / AVG_TOKENS_PER_WORD)) if overlap > 0 else 0
 
@@ -174,7 +171,7 @@ def _force_split_by_words(
 
 
 def chunks_to_jsonl(chunks: Iterable[Chunk]) -> bytes:
-    """청크 목록을 JSONL 바이트로 직렬화 (S3 저장용)."""
+    """청크 목록을 JSONL 바이트로 직렬화 (S3 저장용)"""
     import json
 
     lines = [
@@ -188,7 +185,7 @@ def chunks_to_jsonl(chunks: Iterable[Chunk]) -> bytes:
 
 
 def chunks_from_jsonl(data: bytes) -> list[Chunk]:
-    """JSONL 바이트를 청크 목록으로 역직렬화."""
+    """JSONL 바이트를 청크 목록으로 역직렬화"""
     import json
 
     chunks: list[Chunk] = []

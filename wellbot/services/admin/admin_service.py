@@ -1,4 +1,4 @@
-"""Admin CRUD 서비스 - 부서, 사원, 에이전트."""
+"""Admin CRUD 서비스 - 부서, 사원, 에이전트"""
 
 import uuid
 from datetime import datetime
@@ -9,14 +9,14 @@ from wellbot.constants import KST
 
 import bcrypt
 
-from wellbot.models.agent import AgntM
-from wellbot.models.dept import DeptM
-from wellbot.models.employee import EmpM
-from wellbot.services.database import get_session
+from wellbot.models.agent import Agent
+from wellbot.models.dept import Dept
+from wellbot.models.employee import Employee
+from wellbot.services.core.database import get_session
 
 
 def _to_dict(row: Any) -> dict:
-    """SQLAlchemy 모델 인스턴스를 Reflex 직렬화 호환 dict로 변환."""
+    """SQLAlchemy 모델 인스턴스를 Reflex 직렬화 호환 dict 로 변환"""
     result = {}
     for col in row.__table__.columns:
         val = getattr(row, col.key if hasattr(col, "key") else col.name)
@@ -29,7 +29,7 @@ def _to_dict(row: Any) -> dict:
 
 
 def _to_dict_model(row: Any) -> dict:
-    """mapped_column의 Python 속성명 기반으로 dict 변환."""
+    """mapped_column 의 Python 속성명 기반으로 dict 변환"""
     mapper = row.__class__.__mapper__
     result = {}
     for prop in mapper.column_attrs:
@@ -46,9 +46,9 @@ def _to_dict_model(row: Any) -> dict:
 
 
 def list_depts() -> list[dict]:
-    """부서 목록 조회."""
+    """부서 목록 조회"""
     with get_session() as session:
-        rows = session.query(DeptM).order_by(DeptM.dept_cd).all()
+        rows = session.query(Dept).order_by(Dept.dept_cd).all()
         return [_to_dict_model(r) for r in rows]
 
 
@@ -59,10 +59,10 @@ def create_dept(
     mm_tokn: int | None = None,
     prmn_mdl: dict | None = None,
 ) -> dict:
-    """부서 생성."""
+    """부서 생성"""
     now = datetime.now(KST)
     with get_session() as session:
-        dept = DeptM(
+        dept = Dept(
             dept_cd=dept_cd,
             dept_nm=dept_nm,
             dd_clby_tokn_ecnt=dd_tokn,
@@ -79,9 +79,9 @@ def create_dept(
 
 
 def update_dept(dept_cd: str, **kwargs: Any) -> dict:
-    """부서 수정."""
+    """부서 수정"""
     with get_session() as session:
-        dept = session.query(DeptM).get(dept_cd)
+        dept = session.query(Dept).get(dept_cd)
         if not dept:
             raise ValueError(f"부서 '{dept_cd}'를 찾을 수 없습니다.")
         for key, val in kwargs.items():
@@ -94,9 +94,9 @@ def update_dept(dept_cd: str, **kwargs: Any) -> dict:
 
 
 def delete_dept(dept_cd: str) -> bool:
-    """부서 삭제."""
+    """부서 삭제"""
     with get_session() as session:
-        dept = session.query(DeptM).get(dept_cd)
+        dept = session.query(Dept).get(dept_cd)
         if not dept:
             return False
         session.delete(dept)
@@ -107,9 +107,9 @@ def delete_dept(dept_cd: str) -> bool:
 
 
 def list_employees() -> list[dict]:
-    """사원 목록 조회 (비밀번호 제외)."""
+    """사원 목록 조회 (비밀번호 제외)"""
     with get_session() as session:
-        rows = session.query(EmpM).order_by(EmpM.emp_no).all()
+        rows = session.query(Employee).order_by(Employee.emp_no).all()
         result = []
         for r in rows:
             d = _to_dict_model(r)
@@ -126,11 +126,11 @@ def create_employee(
     pstn_dept_cd: str,
     acnt_sts_nm: str = "ACTIVE",
 ) -> dict:
-    """사원 생성 (bcrypt 해싱)."""
+    """사원 생성 (bcrypt 해싱)"""
     now = datetime.now(KST)
     hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     with get_session() as session:
-        emp = EmpM(
+        emp = Employee(
             emp_no=emp_no,
             ecr_pwd=hashed,
             user_nm=user_nm,
@@ -152,9 +152,9 @@ def create_employee(
 
 
 def update_employee(emp_no: str, **kwargs: Any) -> dict:
-    """사원 수정 (password 포함 시 bcrypt 재해싱)."""
+    """사원 수정 (password 포함 시 bcrypt 재해싱)"""
     with get_session() as session:
-        emp = session.query(EmpM).get(emp_no)
+        emp = session.query(Employee).get(emp_no)
         if not emp:
             raise ValueError(f"사원 '{emp_no}'를 찾을 수 없습니다.")
         if "password" in kwargs:
@@ -173,9 +173,9 @@ def update_employee(emp_no: str, **kwargs: Any) -> dict:
 
 
 def delete_employee(emp_no: str) -> bool:
-    """사원 삭제."""
+    """사원 삭제"""
     with get_session() as session:
-        emp = session.query(EmpM).get(emp_no)
+        emp = session.query(Employee).get(emp_no)
         if not emp:
             return False
         session.delete(emp)
@@ -183,9 +183,9 @@ def delete_employee(emp_no: str) -> bool:
 
 
 def authenticate_admin(emp_no: str, password: str) -> bool:
-    """DB 기반 관리자 인증 (ADMIN 역할 + bcrypt 검증)."""
+    """DB 기반 관리자 인증 (ADMIN 역할 + bcrypt 검증)"""
     with get_session() as session:
-        emp = session.query(EmpM).get(emp_no)
+        emp = session.query(Employee).get(emp_no)
         if not emp or emp.user_role_nm != "ADMIN":
             return False
         if not emp.ecr_pwd:
@@ -197,9 +197,9 @@ def authenticate_admin(emp_no: str, password: str) -> bool:
 
 
 def list_agents() -> list[dict]:
-    """에이전트 목록 조회."""
+    """에이전트 목록 조회"""
     with get_session() as session:
-        rows = session.query(AgntM).order_by(AgntM.agnt_id, AgntM.agnt_seq).all()
+        rows = session.query(Agent).order_by(Agent.agnt_id, Agent.agnt_seq).all()
         return [_to_dict_model(r) for r in rows]
 
 
@@ -212,10 +212,10 @@ def create_agent(
     agnt_dscr_cntt: str = "",
     use_yn: str = "Y",
 ) -> dict:
-    """에이전트 생성."""
+    """에이전트 생성"""
     now = datetime.now(KST)
     with get_session() as session:
-        agent = AgntM(
+        agent = Agent(
             agnt_id=agnt_id,
             agnt_seq=agnt_seq,
             agnt_nm=agnt_nm,
@@ -234,9 +234,9 @@ def create_agent(
 
 
 def update_agent(agnt_id: str, agnt_seq: int, **kwargs: Any) -> dict:
-    """에이전트 수정."""
+    """에이전트 수정"""
     with get_session() as session:
-        agent = session.query(AgntM).get((agnt_id, agnt_seq))
+        agent = session.query(Agent).get((agnt_id, agnt_seq))
         if not agent:
             raise ValueError(f"에이전트 '{agnt_id}-{agnt_seq}'를 찾을 수 없습니다.")
         for key, val in kwargs.items():
@@ -249,9 +249,9 @@ def update_agent(agnt_id: str, agnt_seq: int, **kwargs: Any) -> dict:
 
 
 def delete_agent(agnt_id: str, agnt_seq: int) -> bool:
-    """에이전트 삭제."""
+    """에이전트 삭제"""
     with get_session() as session:
-        agent = session.query(AgntM).get((agnt_id, agnt_seq))
+        agent = session.query(Agent).get((agnt_id, agnt_seq))
         if not agent:
             return False
         session.delete(agent)

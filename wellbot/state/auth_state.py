@@ -3,8 +3,6 @@
 rx.Cookie 기반 세션 토큰 + DB 검증으로 로그인 상태를 유지.
 """
 
-from pathlib import Path
-
 import reflex as rx
 
 from wellbot.constants import (
@@ -12,13 +10,12 @@ from wellbot.constants import (
     REMEMBER_ME_EXPIRE_SECONDS,
     TOKEN_EXPIRE_SECONDS,
 )
-from wellbot.services import auth_service
-
-_NOTICE_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "notice.md"
+from wellbot.paths import NOTICE_MD
+from wellbot.services.auth import auth_service
 
 
 class AuthState(rx.State):
-    """인증 관련 상태."""
+    """인증 관련 상태 관리"""
 
     # ── 공지사항 ──
     notice_html: str = ""
@@ -55,7 +52,7 @@ class AuthState(rx.State):
     _easter_egg_clicks: int = 0
 
     def handle_easter_egg_click(self) -> rx.event.EventSpec | None:
-        """로그인 페이지 아이콘 클릭 카운터. 5회 연속 클릭 시 /admin 이동."""
+        """로그인 페이지 아이콘 클릭 카운터. 5회 연속 클릭 시 /admin 으로 이동"""
         self._easter_egg_clicks += 1
         if self._easter_egg_clicks >= 5:
             self._easter_egg_clicks = 0
@@ -73,13 +70,13 @@ class AuthState(rx.State):
         self.login_error = ""
 
     def toggle_remember_me(self, checked: bool) -> None:
-        """아이디 기억하기 체크박스 토글."""
+        """아이디 기억하기 체크박스 토글"""
         self.remember_me = checked
 
     # ── 로그인 ──
 
     def handle_login(self, _form_data: dict | None = None) -> rx.event.EventSpec | None:
-        """로그인 처리."""
+        """로그인 처리"""
         emp_no = self.login_emp_no.strip()
         password = self.login_password.strip()
 
@@ -95,11 +92,9 @@ class AuthState(rx.State):
             self.is_logging_in = False
             return None
 
-        # 토큰 생성 + 쿠키 저장
         token = auth_service.create_session_token(emp_no)
         self.auth_token = token
 
-        # 아이디 기억하기 처리
         if self.remember_me:
             self.remembered_emp_no = emp_no
         else:
@@ -116,7 +111,7 @@ class AuthState(rx.State):
         return rx.redirect("/")
 
     def _set_user_info(self, user: dict) -> None:
-        """사용자 정보를 State에 반영."""
+        """사용자 정보를 State 에 반영"""
         self.is_authenticated = True
         self.current_emp_no = user.get("emp_no", "")
         self.current_user_nm = user.get("user_nm", "")
@@ -126,7 +121,7 @@ class AuthState(rx.State):
     # ── 인증 확인 (on_load) ──
 
     def check_auth(self) -> rx.event.EventSpec | None:
-        """페이지 로드 시 인증 확인. 미인증이면 /login으로 리다이렉트."""
+        """페이지 로드 시 인증 확인. 미인증이면 /login 으로 리다이렉트"""
         if not self.auth_token:
             self.is_authenticated = False
             return rx.redirect("/login")
@@ -141,17 +136,16 @@ class AuthState(rx.State):
         return None
 
     def _load_notice(self) -> None:
-        """config/notice.md 파일을 읽어 공지사항을 로드한다."""
-        if _NOTICE_PATH.exists():
-            self.notice_html = _NOTICE_PATH.read_text(encoding="utf-8").strip()
+        """config/notice.md 파일을 읽어 공지사항 로드"""
+        if NOTICE_MD.exists():
+            self.notice_html = NOTICE_MD.read_text(encoding="utf-8").strip()
         else:
             self.notice_html = ""
 
     def check_login_page(self) -> rx.event.EventSpec | None:
-        """로그인 페이지 로드 시: 이미 인증되었으면 /로 리다이렉트."""
+        """로그인 페이지 로드 시 인증 확인. 이미 인증된 경우 / 로 리다이렉트"""
         self._load_notice()
 
-        # 아이디 기억하기 쿠키에서 사원번호 복원
         if self.remembered_emp_no:
             self.login_emp_no = self.remembered_emp_no
             self.remember_me = True
@@ -170,7 +164,7 @@ class AuthState(rx.State):
     # ── 로그아웃 ──
 
     def logout(self) -> rx.event.EventSpec:
-        """로그아웃: 토큰 폐기 + 쿠키 삭제."""
+        """로그아웃. 토큰 폐기 + 쿠키 삭제"""
         if self.auth_token:
             auth_service.invalidate_session_token(self.auth_token)
 
@@ -188,16 +182,16 @@ class AuthState(rx.State):
     _reg_dept_options: list[dict] = []
 
     def load_dept_list(self) -> None:
-        """회원가입 페이지 로드 시 부서 목록 조회."""
+        """회원가입 페이지 로드 시 부서 목록 조회"""
         self._reg_dept_options = auth_service.list_dept_options()
 
     @rx.var
     def reg_dept_names(self) -> list[str]:
-        """부서명 목록 (드롭다운 표시용)."""
+        """드롭다운에 표시할 부서명 목록"""
         return [d.get("name", "") for d in self._reg_dept_options]
 
     def _dept_name_to_code(self, name: str) -> str:
-        """부서명 → 부서코드 변환."""
+        """부서명 → 부서코드 변환"""
         for d in self._reg_dept_options:
             if d.get("name") == name:
                 return d.get("code", "")
@@ -231,13 +225,13 @@ class AuthState(rx.State):
     reg_dept_display: str = ""  # 드롭다운에 표시되는 부서명
 
     def set_reg_dept(self, dept_name: str) -> None:
-        """부서 선택 시 부서명 → 부서코드 변환."""
+        """부서 선택 시 부서명 → 부서코드 변환"""
         self.reg_dept_display = dept_name
         self.reg_dept_cd = self._dept_name_to_code(dept_name)
         self.reg_error = ""
 
     def handle_register(self, _form_data: dict | None = None) -> None:
-        """회원가입 처리."""
+        """회원가입 처리"""
         emp_no = self.reg_emp_no.strip()
         password = self.reg_password
         confirm = self.reg_password_confirm
@@ -278,7 +272,7 @@ class AuthState(rx.State):
     is_changing_password: bool = False
 
     def open_change_password(self) -> None:
-        """비밀번호 변경 다이얼로그를 연다."""
+        """비밀번호 변경 다이얼로그 열기"""
         self.show_change_password = True
         self.chpw_current = ""
         self.chpw_new = ""
@@ -287,7 +281,7 @@ class AuthState(rx.State):
         self.chpw_success = False
 
     def close_change_password(self) -> None:
-        """비밀번호 변경 다이얼로그를 닫는다."""
+        """비밀번호 변경 다이얼로그 닫기"""
         self.show_change_password = False
         self.chpw_current = ""
         self.chpw_new = ""
@@ -308,7 +302,7 @@ class AuthState(rx.State):
         self.chpw_error = ""
 
     def handle_change_password(self, _form_data: dict | None = None) -> None:
-        """비밀번호 변경 처리."""
+        """비밀번호 변경 처리"""
         current = self.chpw_current
         new_pw = self.chpw_new
         confirm = self.chpw_confirm

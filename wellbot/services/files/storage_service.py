@@ -2,14 +2,15 @@
 
 첨부 파일 원본 및 파생물(chunks.jsonl, index.faiss) 을
 S3 버킷에 저장/조회/삭제.
-
-멀티파트 업로드를 통해 대용량 파일을 스트리밍으로 처리
--> 서버 메모리 부담을 최소화.
+멀티파트 업로드로 대용량 파일을 스트리밍 처리
+→ 서버 메모리 부담 최소화.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import BinaryIO, Iterator
@@ -17,20 +18,26 @@ from typing import BinaryIO, Iterator
 import boto3
 from botocore.exceptions import ClientError
 
+log = logging.getLogger(__name__)
+
 # ── 설정 ──
-MULTIPART_CHUNK_SIZE: int = 5 * 1024 * 1024  # 5MB (S3 multipart 최소 단위)
+MULTIPART_CHUNK_SIZE: int = 5 * 1024 * 1024  # S3 multipart 최소 단위 (5MB)
 PRESIGNED_URL_EXPIRES: int = 3600            # 1시간
 
 
 @lru_cache(maxsize=1)
 def _get_client():
-    """S3 클라이언트를 생성한다 (싱글턴). boto3 가 환경변수에서 자격증명 자동 로드."""
+    """S3 클라이언트 싱글턴.
+
+    S3_REGION 미설정 시 AWS_REGION, 그것도 없으면 ap-northeast-2 폴백.
+    boto3 가 환경변수에서 자격증명 자동 로드.
+    """
     region = os.environ.get("S3_REGION", os.environ.get("AWS_REGION", "ap-northeast-2"))
     return boto3.client("s3", region_name=region)
 
 
 def _get_bucket() -> str:
-    """S3 버킷 이름을 환경변수에서 읽는다."""
+    """S3_BUCKET_NAME 환경변수에서 버킷명 조회. 미설정 시 RuntimeError"""
     bucket = os.environ.get("S3_BUCKET_NAME")
     if not bucket:
         raise RuntimeError("S3_BUCKET_NAME 환경변수가 설정되지 않았습니다.")
@@ -38,16 +45,16 @@ def _get_bucket() -> str:
 
 
 def _get_key_prefix() -> str:
-    """S3 키 프리픽스를 환경변수에서 읽는다.
+    """S3_KEY_PREFIX 환경변수에서 키 프리픽스 조회.
 
     모듈 로드 시점이 아닌 호출 시점에 평가하여
-    load_dotenv() 이후에도 올바른 값을 반환한다.
+    load_dotenv() 이후에도 올바른 값을 반환.
     """
     return os.environ.get("S3_KEY_PREFIX", "files")
 
 
 def build_prefix(emp_no: str, smry_id: str, file_no: int) -> str:
-    """파일 저장 prefix 를 생성한다.
+    """파일 저장 prefix 생성.
 
     구조: {S3_KEY_PREFIX}/{emp_no}/{smry_id}/{file_no}/
     """
@@ -62,12 +69,12 @@ def upload_streaming(
     s3_key: str,
     content_type: str | None = None,
 ) -> None:
-    """파일 스트림을 S3 에 multipart 업로드한다.
+    """파일 스트림을 S3 에 multipart 업로드.
 
     Args:
-        file_stream: 업로드할 파일의 바이너리 스트림 (read() 지원).
-        s3_key: S3 오브젝트 키 (prefix 포함 전체 경로).
-        content_type: MIME 타입. 미지정 시 S3 가 기본값 사용.
+        file_stream: 업로드할 파일의 바이너리 스트림 (read() 지원)
+        s3_key: S3 오브젝트 키 (prefix 포함 전체 경로)
+        content_type: MIME 타입. 미지정 시 S3 가 기본값 사용
     """
     client = _get_client()
     bucket = _get_bucket()
@@ -76,7 +83,6 @@ def upload_streaming(
     if content_type:
         extra_args["ContentType"] = content_type
 
-    # TransferConfig 를 사용하면 boto3 가 자동으로 multipart 처리
     from boto3.s3.transfer import TransferConfig
 
     config = TransferConfig(
@@ -85,12 +91,17 @@ def upload_streaming(
         use_threads=True,
     )
 
+    start = time.perf_counter()
     client.upload_fileobj(
         file_stream,
         bucket,
         s3_key,
         ExtraArgs=extra_args,
         Config=config,
+    )
+    log.info(
+        "s3 upload (stream) key=%s", s3_key,
+        extra={"key": s3_key, "elapsed_ms": int((time.perf_counter() - start) * 1000)},
     )
 
 
@@ -99,7 +110,7 @@ def upload_bytes(
     s3_key: str,
     content_type: str | None = None,
 ) -> None:
-    """바이트 데이터를 S3 에 업로드한다 (소형 파생물용)."""
+    """바이트 데이터를 S3 에 업로드 (소형 파생물용)"""
     client = _get_client()
     bucket = _get_bucket()
 
@@ -113,10 +124,12 @@ def upload_bytes(
         kwargs["ContentType"] = content_type
 
     client.put_object(**kwargs)
+    log.info("s3 upload (bytes) key=%s size=%d", s3_key, len(data),
+             extra={"key": s3_key, "bytes": len(data)})
 
 
 def download_bytes(s3_key: str) -> bytes:
-    """S3 오브젝트를 바이트로 다운로드한다."""
+    """S3 오브젝트를 바이트로 다운로드"""
     client = _get_client()
     bucket = _get_bucket()
     response = client.get_object(Bucket=bucket, Key=s3_key)
@@ -124,7 +137,7 @@ def download_bytes(s3_key: str) -> bytes:
 
 
 def download_to_file(s3_key: str, target_path: Path) -> None:
-    """S3 오브젝트를 로컬 파일로 다운로드한다 (대용량용)."""
+    """S3 오브젝트를 로컬 파일로 다운로드 (대용량용)"""
     client = _get_client()
     bucket = _get_bucket()
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,7 +145,7 @@ def download_to_file(s3_key: str, target_path: Path) -> None:
 
 
 def head_object(s3_key: str) -> dict | None:
-    """오브젝트 메타 조회. 존재하지 않으면 None."""
+    """오브젝트 메타 조회. 존재하지 않으면 None"""
     client = _get_client()
     bucket = _get_bucket()
     try:
@@ -144,7 +157,7 @@ def head_object(s3_key: str) -> dict | None:
 
 
 def object_exists(s3_key: str) -> bool:
-    """오브젝트 존재 여부."""
+    """오브젝트 존재 여부"""
     return head_object(s3_key) is not None
 
 
@@ -153,10 +166,10 @@ def get_presigned_url(
     expires_in: int = PRESIGNED_URL_EXPIRES,
     filename: str = "",
 ) -> str:
-    """presigned GET URL 을 발급한다 (다운로드용).
+    """presigned GET URL 발급 (다운로드용).
 
     filename 이 지정되면 Content-Disposition: attachment 헤더를 포함하여
-    브라우저가 파일을 직접 다운로드하도록 유도한다.
+    브라우저가 파일을 직접 다운로드하도록 유도.
     """
     client = _get_client()
     bucket = _get_bucket()
@@ -172,7 +185,7 @@ def get_presigned_url(
 
 
 def list_objects(prefix: str) -> list[str]:
-    """prefix 하위의 모든 오브젝트 키를 반환한다."""
+    """prefix 하위의 모든 오브젝트 키 반환"""
     client = _get_client()
     bucket = _get_bucket()
 
@@ -185,17 +198,17 @@ def list_objects(prefix: str) -> list[str]:
 
 
 def delete_object(s3_key: str) -> None:
-    """단일 오브젝트를 삭제한다. 키가 없어도 예외를 발생시키지 않는다 (S3 표준)."""
+    """단일 오브젝트 삭제. 키가 없어도 예외를 발생시키지 않음 (S3 표준)"""
     client = _get_client()
     bucket = _get_bucket()
     client.delete_object(Bucket=bucket, Key=s3_key)
 
 
 def delete_prefix(prefix: str) -> int:
-    """prefix 하위의 모든 오브젝트를 삭제한다.
+    """prefix 하위의 모든 오브젝트 삭제.
 
     Returns:
-        삭제된 오브젝트 개수.
+        삭제된 오브젝트 개수
     """
     client = _get_client()
     bucket = _get_bucket()
@@ -204,7 +217,7 @@ def delete_prefix(prefix: str) -> int:
     if not keys:
         return 0
 
-    # delete_objects 는 한 번에 최대 1000개
+    # S3 delete_objects API 는 한 번에 최대 1000개 제한
     deleted = 0
     for i in range(0, len(keys), 1000):
         batch = keys[i : i + 1000]
@@ -213,11 +226,13 @@ def delete_prefix(prefix: str) -> int:
             Delete={"Objects": [{"Key": k} for k in batch]},
         )
         deleted += len(batch)
+    log.info("s3 delete prefix=%s deleted=%d", prefix, deleted,
+             extra={"prefix": prefix, "deleted": deleted})
     return deleted
 
 
 def iter_download_stream(s3_key: str, chunk_size: int = 8192) -> Iterator[bytes]:
-    """S3 오브젝트를 청크 단위로 스트리밍 다운로드한다."""
+    """S3 오브젝트를 청크 단위로 스트리밍 다운로드"""
     client = _get_client()
     bucket = _get_bucket()
     response = client.get_object(Bucket=bucket, Key=s3_key)

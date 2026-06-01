@@ -9,9 +9,9 @@ import reflex as rx
 
 
 def north_star_icon(size: int = 20, **props) -> rx.Component:
-    """8갈래 별 아이콘 (둥근 끝, 가로 강조)."""
+    """8갈래 별 아이콘 (둥근 끝, 가로 강조)"""
     center = size / 2
-    # 각 갈래 길이: 가로/세로는 길게, 대각선은 짧게
+    # 가로/세로 갈래는 길게, 대각선 갈래는 짧게 설정해 가로 강조 효과
     long = size * 0.46
     short = size * 0.32
     stroke_w = size * 0.1

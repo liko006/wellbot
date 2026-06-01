@@ -9,7 +9,8 @@ ChatGPT/Claude 스타일 입력 바.
 import reflex as rx
 
 from wellbot.components.chat.attachment_chip import attachment_chip_list
-from wellbot.state.chat_state import ChatState, ModelInfo, PromptInfo
+from wellbot.state.chat_models import ModelInfo, PromptInfo
+from wellbot.state.chat_state import ChatState
 from wellbot.styles import COLORS, SPACING
 
 
@@ -58,7 +59,7 @@ def _model_item(model: ModelInfo) -> rx.Component:
 
 
 def _thinking_toggle_row() -> rx.Component:
-    """확장 사고 토글 행. 미지원 모델에서는 비활성화 상태로 표시."""
+    """확장 사고 토글 행. 미지원 모델에서는 비활성화 상태로 표시"""
     return rx.hstack(
         rx.vstack(
             rx.text(
@@ -192,11 +193,8 @@ def _model_popover() -> rx.Component:
         ),
         rx.popover.content(
             rx.vstack(
-                # 모델 목록
                 rx.foreach(ChatState.model_list, _model_item),
-                # 구분선
                 rx.separator(size="4", color=COLORS["border"]),
-                # 확장 사고 토글
                 _thinking_toggle_row(),
                 spacing="1",
                 width="100%",
@@ -322,17 +320,12 @@ def input_bar() -> rx.Component:
     """하단 고정 메시지 입력 바."""
     return rx.box(
         rx.vstack(
-            # 스타일 선택 패널
             _style_panel(),
-            # 첨부 분석 중 안내 (입력 박스 위 pill)
             _processing_toast(),
-            # 입력 컨테이너 (둥근 박스)
             rx.box(
                 rx.form(
                     rx.vstack(
-                        # 첨부 파일 칩 영역
                         attachment_chip_list(),
-                        # 텍스트 입력 영역
                         rx.text_area(
                             value=ChatState.current_input,
                             placeholder="WellBot에게 질문하세요!",
@@ -358,17 +351,12 @@ def input_bar() -> rx.Component:
                                 },
                             },
                         ),
-                        # 하단: 첨부 + 모델 팝오버 + 전송
                         rx.hstack(
-                            # + 메뉴 팝오버
                             _plus_menu_popover(),
                             rx.spacer(),
-                            # 모델 선택 팝오버
                             _model_popover(),
-                            # 전송/중지 버튼
                             rx.cond(
                                 ChatState.is_loading,
-                                # 중지 버튼
                                 rx.icon_button(
                                     rx.icon("square", size=14),
                                     size="2",
@@ -381,7 +369,6 @@ def input_bar() -> rx.Component:
                                     _hover={"bg": COLORS["accent_hover"]},
                                     on_click=ChatState.stop_generation,
                                 ),
-                                # 전송 버튼
                                 rx.icon_button(
                                     rx.icon("arrow-up", size=16),
                                     size="2",
@@ -432,7 +419,6 @@ def input_bar() -> rx.Component:
                     "border_color": COLORS["accent_hover"],
                 },
             ),
-            # 하단 안내 텍스트
             rx.text(
                 "WellBot은 실수할 수 있습니다. WellBot의 출력 결과를 확인하고 활용하세요.",
                 size="1",

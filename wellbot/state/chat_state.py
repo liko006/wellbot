@@ -1,16 +1,18 @@
 """대화 상태 관리 - ChatState.
 
-메시지 전송, 대화 생성/전환/삭제, Bedrock 스트리밍 응답 처리를 담당.
-DB 연동으로 대화 이력을 영속화(persistence) 보장.
+메시지 전송, 대화 생성/전환/삭제, Bedrock 스트리밍 응답 처리 담당.
+DB 연동으로 대화 이력 영속화 보장.
 """
 
 import asyncio
+import logging
 import random
 import time
 import uuid
 
-from pydantic import BaseModel
 import reflex as rx
+
+from wellbot.logger import log_context
 
 from wellbot.constants import (
     DEFAULT_CONVERSATION_TITLE,
@@ -22,111 +24,37 @@ from wellbot.constants import (
     TOOL_USE_MAX_ITERATIONS,
     UPSTAGE_SUPPORTED_EXTS,
 )
-from wellbot.services.bedrock_client import (
+from wellbot.services.ai.bedrock import (
     astream_chat,
     astream_chat_with_tools,
     generate_title,
-    image_format,
 )
-from wellbot.services import attachment_service, chat_service, file_parser, response_filter, tool_executor
-from wellbot.services.config import get_config, get_greetings
+from wellbot.services.chat import chat_service, response_filter, tool_executor
+from wellbot.services.core.settings import get_config, get_greetings
+from wellbot.services.files import attachment_service, file_parser
+from wellbot.state.chat_helpers.attachments import (
+    collect_image_blocks,
+    fetch_pending_attachments,
+    rows_to_attachment_infos,
+)
+from wellbot.state.chat_helpers.download_script import build_download_script
+from wellbot.state.chat_helpers.system_prompt import augment_system_with_attachments
+from wellbot.state.chat_helpers.upload_script import build_upload_script
+from wellbot.state.chat_models import (
+    ChatModeInfo,
+    AttachmentInfo,
+    Conversation,
+    Message,
+    ModelInfo,
+    PromptInfo,
+    new_conversation,
+)
 
-
-class AgentModeInfo(BaseModel):
-    """프론트엔드 표시용 에이전트 모드 정보."""
-
-    id: str
-    name: str
-    description: str = ""
-    icon: str = "message-circle"
-
-
-class ModelInfo(BaseModel):
-    """프론트엔드 표시용 모델 정보."""
-
-    name: str
-    description: str
-    supports_thinking: bool
-
-
-class PromptInfo(BaseModel):
-    """프론트엔드 표시용 프롬프트 템플릿 정보."""
-
-    name: str
-    content: str
-    description: str = ""
-
-
-class AttachmentInfo(BaseModel):
-    """프론트엔드 표시용 첨부파일 정보."""
-
-    file_no: int
-    name: str
-    mime: str = ""
-    size_bytes: int = 0
-    token_count: int = 0
-    status: str = "processing"  # "processing" | "ready" | "failed"
-
-
-class Message(BaseModel):
-    """개별 메시지 모델."""
-
-    role: str  # "user" | "assistant"
-    content: str
-    timestamp: float
-    model_name: str = ""
-    seq: int = 0
-    attachments: list[AttachmentInfo] = []
-
-
-class Conversation(BaseModel):
-    """대화 세션 모델."""
-
-    id: str
-    title: str
-    messages: list[Message]
-    created_at: float
-    model_name: str = ""
-    is_loaded: bool = False      # 메시지가 DB에서 로드되었는지
-    is_persisted: bool = False   # DB에 저장된 대화인지
-
-
-_MIME_LABELS: dict[str, str] = {
-    "application/pdf": "PDF",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Excel",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PowerPoint",
-    "application/x-hwp": "한글",
-    "application/x-hwpx": "한글",
-    "text/plain": "텍스트",
-    "text/markdown": "Markdown",
-    "image/png": "PNG 이미지",
-    "image/jpeg": "JPEG 이미지",
-    "image/webp": "WebP 이미지",
-    "image/gif": "GIF 이미지",
-}
-
-
-def _mime_to_label(mime: str) -> str:
-    """MIME 타입을 한국어 라벨로 변환."""
-    return _MIME_LABELS.get(mime, mime or "파일")
-
-
-def _new_conversation() -> Conversation:
-    """빈 대화를 생성한다."""
-    now = time.time()
-    return Conversation(
-        id=str(uuid.uuid4()),
-        title=DEFAULT_CONVERSATION_TITLE,
-        messages=[],
-        created_at=now,
-        is_loaded=True,
-        is_persisted=False,
-    )
+log = logging.getLogger(__name__)
 
 
 class ChatState(rx.State):
-    """채팅 관련 상태를 관리하는 State 클래스."""
+    """채팅 관련 상태 관리"""
 
     conversations: list[Conversation] = []
     current_conversation_id: str = ""
@@ -140,8 +68,8 @@ class ChatState(rx.State):
     show_style_panel: bool = False
     greeting_text: str = ""
 
-    # ── 에이전트 모드 ──
-    selected_agent_mode: str = "chat"
+    # ── 채팅 모드 ──
+    selected_chat_mode: str = "chat"
 
     # ── 대화 검색 ──
     search_query: str = ""
@@ -154,29 +82,29 @@ class ChatState(rx.State):
     # ── 생성 중지 ──
     _cancel_requested: bool = False
 
-    # 인증된 사용자 (on_load에서 캐시)
+    # on_load 시점에 캐시된 인증 사용자 사번
     _emp_no: str = ""
 
-    # 첨부파일 업로드 시 미리 생성한 메시지 ID (send_message에서 재사용)
+    # 첨부파일-메시지 매핑용 msg_id. trigger_upload 에서 생성 후 send_message 에서 재사용
     _pending_msg_id: str = ""
 
     def _refresh_greeting(self) -> None:
-        """환영 메시지를 랜덤으로 갱신."""
+        """환영 메시지를 랜덤으로 갱신"""
         self.greeting_text = random.choice(get_greetings())
 
     def _ensure_conversation(self) -> None:
-        """대화가 없으면 새로 생성."""
+        """대화가 없으면 새로 생성"""
         if not self.conversations:
-            conv = _new_conversation()
+            conv = new_conversation()
             self.conversations = [conv]
             self.current_conversation_id = conv.id
 
     def _get_current_index(self) -> int | None:
-        """현재 대화의 인덱스 반환. 못 찾으면 자동 복구 시도."""
+        """현재 대화의 인덱스 반환. 없으면 자동 복구 시도"""
         for i, conv in enumerate(self.conversations):
             if conv.id == self.current_conversation_id:
                 return i
-        # 자동 복구: current_id가 conversations에 없는 경우
+        # current_id 가 conversations 에 없는 경우 자동 복구
         if self.conversations:
             self.current_conversation_id = self.conversations[0].id
             return 0
@@ -184,7 +112,7 @@ class ChatState(rx.State):
         return 0 if self.conversations else None
 
     def _update_conversation(self, idx: int, **kwargs: object) -> None:
-        """대화 업데이트."""
+        """지정 인덱스 대화를 불변 방식으로 갱신"""
         conv = self.conversations[idx]
         updated = Conversation(
             id=conv.id,
@@ -200,7 +128,7 @@ class ChatState(rx.State):
         ]
 
     def _load_messages_for(self, idx: int) -> None:
-        """DB에서 대화의 메시지를 로드."""
+        """DB 에서 대화 메시지 로드. 이미 로드된 경우 첨부파일 목록만 갱신"""
         conv = self.conversations[idx]
         if conv.is_loaded:
             self._load_conversation_attachments(conv.id)
@@ -220,19 +148,10 @@ class ChatState(rx.State):
         self._load_conversation_attachments(conv.id)
 
     def _load_conversation_attachments(self, conv_id: str) -> None:
-        """대화의 첨부파일 목록을 DB에서 로드."""
+        """DB 에서 대화 첨부파일 목록 로드"""
         try:
             rows = attachment_service.get_conversation_attachments(conv_id)
-            self.conversation_attachments = [
-                AttachmentInfo(
-                    file_no=r.file_no,
-                    name=r.file_name,
-                    mime=r.mime,
-                    token_count=r.token_count or 0,
-                    status="ready" if r.token_count is not None else "processing",
-                )
-                for r in rows
-            ]
+            self.conversation_attachments = rows_to_attachment_infos(rows)
         except Exception:
             self.conversation_attachments = []
 
@@ -240,7 +159,7 @@ class ChatState(rx.State):
 
     @rx.var
     def current_messages(self) -> list[Message]:
-        """현재 대화의 메시지 목록."""
+        """현재 대화의 메시지 목록"""
         idx = self._get_current_index()
         if idx is None:
             return []
@@ -248,72 +167,73 @@ class ChatState(rx.State):
 
     @rx.var
     def has_messages(self) -> bool:
-        """현재 대화에 메시지가 있는지 여부."""
+        """현재 대화에 메시지가 하나 이상 존재하는지 여부"""
         return len(self.current_messages) > 0
 
     @rx.var
     def current_title(self) -> str:
-        """현재 대화의 제목."""
+        """현재 대화의 제목"""
         idx = self._get_current_index()
         if idx is None:
             return ""
         return self.conversations[idx].title
 
     @rx.var
-    def agent_mode_list(self) -> list[AgentModeInfo]:
-        """사용 가능한 에이전트 모드 목록."""
+    def chat_mode_list(self) -> list[ChatModeInfo]:
+        """설정에서 읽은 사용 가능한 채팅 모드 목록"""
         try:
             cfg = get_config()
             return [
-                AgentModeInfo(
+                ChatModeInfo(
                     id=a.id, name=a.name,
                     description=a.description, icon=a.icon,
                 )
-                for a in cfg.agent_modes
+                for a in cfg.chat_modes
             ]
         except Exception:
+            log.warning("채팅 모드 목록 로드 실패", exc_info=True)
             return []
 
     @rx.var
-    def current_agent_mode_name(self) -> str:
-        """현재 선택된 에이전트 모드 이름."""
+    def current_chat_mode_name(self) -> str:
+        """현재 선택된 채팅 모드의 표시 이름"""
         try:
             cfg = get_config()
-            mode = cfg.get_agent_mode(self.selected_agent_mode)
+            mode = cfg.get_chat_mode(self.selected_chat_mode)
             return mode.name if mode else "기본 대화"
         except Exception:
             return "기본 대화"
 
     @rx.var
-    def current_agent_mode_icon(self) -> str:
-        """현재 선택된 에이전트 모드 아이콘."""
+    def current_chat_mode_icon(self) -> str:
+        """현재 선택된 채팅 모드의 아이콘 식별자"""
         try:
             cfg = get_config()
-            mode = cfg.get_agent_mode(self.selected_agent_mode)
+            mode = cfg.get_chat_mode(self.selected_chat_mode)
             return mode.icon if mode else "message-circle"
         except Exception:
             return "message-circle"
 
     @rx.var
     def has_conversation_attachments(self) -> bool:
-        """현재 대화에 첨부파일이 있는지 여부."""
+        """현재 대화에 전송 완료된 첨부파일이 하나 이상 존재하는지 여부"""
         return len(self.conversation_attachments) > 0
 
     @rx.var
     def conversation_attachment_count(self) -> int:
-        """현재 대화의 첨부파일 수."""
+        """현재 대화의 전송 완료 첨부파일 수"""
         return len(self.conversation_attachments)
 
     @rx.var
     def has_processing_attachments(self) -> bool:
-        """처리 중인 첨부파일이 있는지 여부."""
+        """pending 목록 중 아직 처리 중인 첨부파일이 있는지 여부"""
         return any(a.status == "processing" for a in self.pending_attachments)
 
     @rx.var
     def can_send(self) -> bool:
-        """전송 가능 여부.
+        """현재 입력 상태가 전송 가능한지 여부.
 
-        처리 중인 첨부파일이 있으면 전송 차단.
+        처리 중인 첨부파일이 있거나 로딩 중이면 전송 차단.
         """
         if self._get_current_index() is None:
             return False
@@ -328,7 +248,7 @@ class ChatState(rx.State):
         """시간 역순으로 정렬된 대화 목록.
 
         빈 미저장 대화는 숨기되, 현재 활성 대화는 항상 표시.
-        검색어가 있으면 제목 부분 일치(대소문자 무시)로 필터링.
+        검색어가 있으면 제목 부분 일치(대소문자 구분 없음)로 필터링.
         """
         current_id = self.current_conversation_id
         visible = [
@@ -342,25 +262,26 @@ class ChatState(rx.State):
 
     @rx.var
     def is_searching(self) -> bool:
-        """검색어가 입력된 상태인지 여부."""
+        """검색어가 입력된 상태인지 여부"""
         return self.search_query.strip() != ""
 
     @rx.var
     def has_search_results(self) -> bool:
-        """검색 결과가 하나 이상 있는지 여부."""
+        """검색 결과가 하나 이상 존재하는지 여부"""
         return len(self.sorted_conversations) > 0
 
     @rx.var
     def model_names(self) -> list[str]:
-        """사용 가능한 모델 이름 목록."""
+        """설정에서 읽은 사용 가능한 모델 이름 목록"""
         try:
             return get_config().model_names
         except Exception:
+            log.warning("모델 이름 목록 로드 실패", exc_info=True)
             return []
 
     @rx.var
     def model_list(self) -> list[ModelInfo]:
-        """팝오버 표시용 모델 목록."""
+        """팝오버 표시용 모델 목록"""
         try:
             cfg = get_config()
             return [
@@ -372,11 +293,12 @@ class ChatState(rx.State):
                 for m in cfg.models
             ]
         except Exception:
+            log.warning("모델 목록 로드 실패", exc_info=True)
             return []
 
     @rx.var
     def trigger_label(self) -> str:
-        """모델 선택 트리거 버튼 라벨."""
+        """모델 선택 트리거 버튼 라벨"""
         label = self.selected_model
         if self.thinking_enabled and self.model_supports_thinking:
             label += " 확장"
@@ -384,12 +306,12 @@ class ChatState(rx.State):
 
     @rx.var
     def has_streaming(self) -> bool:
-        """스트리밍 중인 텍스트 컨텐츠가 있는지 여부."""
+        """응답 스트리밍이 진행 중이며 표시할 텍스트가 있는지 여부"""
         return self.is_loading and bool(self.streaming_content) and not self.is_thinking
 
     @rx.var
     def model_supports_thinking(self) -> bool:
-        """현재 선택된 모델이 thinking을 지원하는지 여부."""
+        """현재 선택된 모델이 extended thinking 을 지원하는지 여부"""
         try:
             cfg = get_config()
             model = cfg.get_model(self.selected_model)
@@ -399,20 +321,20 @@ class ChatState(rx.State):
 
     @rx.var
     def prompt_list(self) -> list[PromptInfo]:
-        """사용 가능한 프롬프트 템플릿 목록."""
+        """설정에서 읽은 사용 가능한 프롬프트 템플릿 목록"""
         try:
             cfg = get_config()
             return [
                 PromptInfo(name=p.name, content=p.content, description=p.description)
                 for p in cfg.prompts
             ]
-        except Exception as e:
-            print(f"[prompt_list] 프롬프트 로드 실패: {e}")
+        except Exception as exc:
+            log.exception("프롬프트 로드 실패: %s", exc)
             return []
 
     @rx.var
     def current_system_prompt(self) -> str:
-        """현재 선택된 시스템 프롬프트 내용."""
+        """현재 선택된 시스템 프롬프트 내용"""
         try:
             cfg = get_config()
             p = cfg.get_prompt(self.selected_prompt)
@@ -422,19 +344,23 @@ class ChatState(rx.State):
 
     # ── Event handlers ──
 
-    def set_agent_mode(self, mode_id: str) -> None:
-        """에이전트 모드를 변경한다."""
-        self.selected_agent_mode = mode_id
+    def set_chat_mode(self, mode_id: str) -> None:
+        """채팅 모드 변경"""
+        self.selected_chat_mode = mode_id
 
     def stop_generation(self) -> None:
-        """사용자가 생성 중지를 요청한다."""
+        """생성 중지 요청. 로딩 중이 아니면 무시"""
         if not self.is_loading:
             return
         self._cancel_requested = True
 
     async def on_load(self) -> None:
-        """페이지 로드 시 초기화: DB에서 대화 목록 로드."""
-        # AuthState에서 emp_no 획득
+        """페이지 로드 시 초기화.
+
+        AuthState 에서 사번 취득 후 모델·프롬프트 기본값 설정,
+        DB 에서 대화 목록 로드. 이미 로드된 경우 재조회 생략.
+        """
+        # AuthState 에서 emp_no 취득
         from wellbot.state.auth_state import AuthState
         auth = await self.get_state(AuthState)
         self._emp_no = auth.current_emp_no
@@ -451,17 +377,17 @@ class ChatState(rx.State):
                         self.selected_prompt = p.name
                         break
         except Exception:
-            pass
+            log.debug("기본 모델/프롬프트 선택값 초기화 실패", exc_info=True)
 
         # 환영 메시지 초기화
         self._refresh_greeting()
 
-        # 이미 DB에서 대화를 로드한 상태면 재조회하지 않음
+        # 이미 DB 대화를 로드한 상태면 재조회 생략
         has_db_conversations = any(c.is_persisted for c in self.conversations)
         if has_db_conversations:
             return
 
-        # DB에서 대화 목록 로드
+        # DB 에서 대화 목록 로드
         if self._emp_no:
             convs = chat_service.list_conversations(self._emp_no)
             db_conversations = [
@@ -477,12 +403,12 @@ class ChatState(rx.State):
                 for c in convs
             ]
             if db_conversations:
-                # 기존 빈 새 대화가 있으면 재사용, 없으면 새로 생성
+                # 기존 빈 미저장 대화가 있으면 재사용, 없으면 새로 생성
                 existing_new = next(
                     (c for c in self.conversations if not c.is_persisted and not c.messages),
                     None,
                 )
-                new_conv = existing_new or _new_conversation()
+                new_conv = existing_new or new_conversation()
                 self.conversations = [new_conv, *db_conversations]
                 self.current_conversation_id = new_conv.id
             else:
@@ -491,25 +417,28 @@ class ChatState(rx.State):
             self._ensure_conversation()
 
     def set_model(self, name: str) -> None:
-        """사용 모델을 변경한다."""
+        """사용 모델 변경. thinking 은 모델 변경 시 비활성화"""
         self.selected_model = name
         self.thinking_enabled = False
 
     def toggle_thinking(self, checked: bool) -> None:
-        """thinking 활성화/비활성화를 토글한다."""
+        """extended thinking 활성화/비활성화 토글"""
         self.thinking_enabled = checked
 
     def toggle_style_panel(self) -> None:
-        """스타일 패널 표시/숨김을 토글한다."""
+        """스타일 패널 표시/숨김 토글"""
         self.show_style_panel = not self.show_style_panel
 
     def select_prompt(self, name: str) -> None:
-        """시스템 프롬프트 템플릿을 선택하고 패널을 닫는다."""
+        """시스템 프롬프트 템플릿 선택 후 패널 닫기.
+
+        프롬프트가 실제로 변경됐고 대화가 DB 에 저장된 경우 system 메시지 기록.
+        """
         prev_prompt = self.selected_prompt
         self.selected_prompt = name
         self.show_style_panel = False
 
-        # 프롬프트가 변경되고, 대화가 DB에 저장된 상태면 system 메시지 기록
+        # 프롬프트가 변경됐고 대화가 저장된 상태면 system 메시지 기록
         if name != prev_prompt and self._emp_no:
             idx = self._get_current_index()
             if idx is not None and self.conversations[idx].is_persisted:
@@ -525,15 +454,15 @@ class ChatState(rx.State):
                             emp_no=self._emp_no, model_name=name,
                         )
                 except Exception:
-                    pass
+                    log.warning("프롬프트 변경 system 메시지 저장 실패", exc_info=True)
 
     def create_new_conversation(self) -> None:
-        """새 대화를 생성한다. 현재 대화가 비어있으면 무시."""
+        """새 대화 생성. 현재 대화가 비어있으면 무시"""
         idx = self._get_current_index()
         if idx is not None and not self.conversations[idx].messages:
             self._refresh_greeting()
             return
-        conv = _new_conversation()
+        conv = new_conversation()
         self.conversations = [conv, *self.conversations]
         self.current_conversation_id = conv.id
         self.current_input = ""
@@ -541,7 +470,7 @@ class ChatState(rx.State):
         self._refresh_greeting()
 
     def switch_conversation(self, conv_id: str) -> None:
-        """대화를 전환한다. 미로드 시 DB에서 메시지 로드."""
+        """대화 전환. 메시지 미로드 시 DB 에서 로드"""
         self.current_conversation_id = conv_id
         self.current_input = ""
         self.search_query = ""
@@ -553,16 +482,16 @@ class ChatState(rx.State):
         )
 
     def delete_conversation(self, conv_id: str) -> None:
-        """대화를 삭제한다. DB에서도 삭제."""
+        """대화 삭제. DB 에 저장된 경우 DB 에서도 제거"""
         conv = next((c for c in self.conversations if c.id == conv_id), None)
         if conv and conv.is_persisted:
             try:
                 chat_service.delete_conversation(conv_id, self._emp_no)
             except Exception:
-                pass
+                log.warning("대화 삭제 실패 conv_id=%s", conv_id, exc_info=True)
         self.conversations = [c for c in self.conversations if c.id != conv_id]
         if conv_id == self.current_conversation_id:
-            # 빈 새 대화가 이미 있으면 그쪽으로, 없으면 새로 생성
+            # 빈 미저장 대화가 있으면 그쪽으로 이동, 없으면 새로 생성
             empty = next(
                 (c for c in self.conversations if not c.messages and not c.is_persisted),
                 None,
@@ -570,27 +499,30 @@ class ChatState(rx.State):
             if empty:
                 self.current_conversation_id = empty.id
             else:
-                new_conv = _new_conversation()
+                new_conv = new_conversation()
                 self.conversations = [new_conv, *self.conversations]
                 self.current_conversation_id = new_conv.id
 
     def set_input(self, value: str) -> None:
-        """입력 필드 값을 설정한다."""
+        """입력 필드 값 설정"""
         self.current_input = value
 
     def set_search_query(self, value: str) -> None:
-        """대화 검색어를 설정한다."""
+        """대화 검색어 설정"""
         self.search_query = value
 
     def clear_search_query(self) -> None:
-        """검색어를 초기화한다."""
+        """검색어 초기화"""
         self.search_query = ""
 
     # ── 첨부파일 ──
 
     @rx.var
     def accepted_file_extensions(self) -> str:
-        """현재 파서 모드 + 현재 선택된 모델의 vision 지원에 따라 허용 확장자 CSV."""
+        """파일 선택 대화상자용 허용 확장자 CSV.
+
+        FILE_PARSER_MODE 와 현재 모델의 vision 지원 여부를 조합해 결정.
+        """
         mode = (FILE_PARSER_MODE or "local").lower()
         if mode == "local":
             allowed = set(LOCAL_SUPPORTED_EXTS | file_parser.IMAGE_EXTS)
@@ -599,7 +531,7 @@ class ChatState(rx.State):
         else:
             allowed = set(LOCAL_SUPPORTED_EXTS | UPSTAGE_SUPPORTED_EXTS)
 
-        # 현재 모델이 vision 미지원이면 이미지 확장자 제외
+        # vision 미지원 모델이면 이미지 확장자 제외
         if not self.model_supports_vision:
             allowed -= set(file_parser.IMAGE_EXTS)
 
@@ -607,7 +539,7 @@ class ChatState(rx.State):
 
     @rx.var
     def model_supports_vision(self) -> bool:
-        """현재 모델이 이미지 입력을 지원하는지."""
+        """현재 선택된 모델이 이미지 입력(vision)을 지원하는지 여부"""
         try:
             cfg = get_config()
             model = cfg.get_model(self.selected_model)
@@ -617,11 +549,14 @@ class ChatState(rx.State):
 
     @rx.var
     def has_pending_attachments(self) -> bool:
-        """첨부 칩 영역 표시 여부."""
+        """전송 전 대기 중인 첨부파일이 있는지 여부 (첨부 칩 영역 표시 제어)"""
         return len(self.pending_attachments) > 0
 
     def _ensure_conversation_persisted(self) -> str:
-        """파일 업로드 전에 대화를 DB 에 persist 하고 ID 반환."""
+        """파일 업로드 전 대화를 DB 에 저장하고 대화 ID 반환.
+
+        이미 저장된 경우 저장 생략. 대화 생성 실패 시 빈 문자열 반환.
+        """
         self._ensure_conversation()
         idx = self._get_current_index()
         if idx is None:
@@ -637,127 +572,57 @@ class ChatState(rx.State):
                 )
                 self._update_conversation(idx, is_persisted=True)
             except Exception:
-                pass
+                log.warning("대화 영속화 실패 conv_id=%s", conv.id, exc_info=True)
         return conv.id
 
     def set_attachment_error(self, message: str) -> None:
-        """첨부 관련 에러 메시지 설정."""
+        """첨부 관련 오류 메시지 설정"""
         self.attachment_error = message
 
     def remove_pending_attachment(self, file_no: int) -> None:
-        """pending 목록에서 제거 (UI 삭제 버튼)."""
+        """pending 목록에서 첨부파일 제거. DB 에서도 삭제"""
         if self._emp_no:
             try:
                 attachment_service.delete_attachment(file_no, self._emp_no)
             except Exception:
-                pass
+                log.warning("첨부 삭제 실패 file_no=%s", file_no, exc_info=True)
         self.pending_attachments = [
             a for a in self.pending_attachments if a.file_no != file_no
         ]
 
     def download_attachment(self, file_no: int) -> rx.event.EventSpec | None:
-        """첨부파일 다운로드 (백엔드 프록시 경유).
+        """첨부파일 다운로드 스크립트 실행.
 
-        upload 과 동일한 fetch POST 패턴을 사용하여
-        프론트엔드 라우터 간섭을 회피한다.
+        백엔드 프록시 경유 fetch POST 방식으로 프론트엔드 라우터 간섭 회피.
+        소유권 검증 실패 시 None 반환.
         """
         if not self._emp_no:
             return None
         if not attachment_service.verify_ownership(file_no, self._emp_no):
             return None
-        return rx.call_script(
-            f"""
-            (async function() {{
-                try {{
-                    let backendBase = '';
-                    try {{
-                        const envResp = await fetch('/env.json');
-                        const env = await envResp.json();
-                        const pingUrl = env.PING || '';
-                        if (pingUrl) {{
-                            const u = new URL(pingUrl);
-                            const loc = window.location;
-                            const isLocalDev = (
-                                (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1') &&
-                                (u.hostname === 'localhost' || u.hostname === '127.0.0.1') &&
-                                u.port !== loc.port
-                            );
-                            if (isLocalDev) {{
-                                backendBase = loc.protocol + '//' + loc.hostname + ':' + u.port;
-                            }}
-                        }}
-                    }} catch(e) {{}}
-
-                    const resp = await fetch(backendBase + '/api/download/{file_no}', {{
-                        method: 'POST',
-                        credentials: 'include',
-                    }});
-                    if (!resp.ok) {{
-                        const err = await resp.json().catch(function() {{ return {{}}; }});
-                        alert(err.detail || '다운로드 실패');
-                        return;
-                    }}
-                    const blob = await resp.blob();
-                    const cd = resp.headers.get('Content-Disposition') || '';
-                    const fnMatch = cd.match(/filename\\*=UTF-8''(.+)/);
-                    const filename = fnMatch ? decodeURIComponent(fnMatch[1]) : 'download';
-                    const objUrl = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = objUrl;
-                    a.download = filename;
-                    a.style.display = 'none';
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(objUrl);
-                }} catch (e) {{
-                    console.error('[wellbot download]', e);
-                }}
-            }})();
-            """
-        )
+        return rx.call_script(build_download_script(file_no))
 
     def _sync_attachments_from_db(self) -> None:
-        """업로드 직후 DB 를 폴링해 pending 상태를 갱신한다.
+        """DB 를 폴링해 pending 첨부 상태 갱신.
 
-        conversation_attachments 에 이미 있는 파일(= 전송 완료)은 제외하고,
-        방금 업로드했지만 아직 메시지로 전송하지 않은 파일만 pending 에 표시.
-
-        메시지가 아직 DB 에 저장되기 전이면 _pending_msg_id 로 직접 조회한다.
+        conversation_attachments 에 이미 있는 파일(전송 완료)은 제외하고,
+        아직 메시지로 전송하지 않은 파일만 pending 에 표시.
         """
-        if not self._emp_no or not self.current_conversation_id:
-            return
-        try:
-            if self._pending_msg_id:
-                # 메시지 미저장 상태: msg_id 로 직접 조회
-                rows = attachment_service.get_attachments_by_msg_id(
-                    self._pending_msg_id
-                )
-            else:
-                rows = attachment_service.get_conversation_attachments(
-                    self.current_conversation_id
-                )
-        except Exception:
-            return
         sent: set[int] = {a.file_no for a in self.conversation_attachments}
-
-        self.pending_attachments = [
-            AttachmentInfo(
-                file_no=r.file_no,
-                name=r.file_name,
-                mime=r.mime,
-                token_count=r.token_count or 0,
-                status="ready" if r.token_count is not None else "processing",
-            )
-            for r in rows
-            if r.file_no not in sent
-        ]
+        pending = fetch_pending_attachments(
+            emp_no=self._emp_no,
+            conv_id=self.current_conversation_id,
+            pending_msg_id=self._pending_msg_id,
+            already_sent=sent,
+        )
+        if pending is not None:
+            self.pending_attachments = pending
 
     @rx.event(background=True)
     async def poll_attachments(self) -> None:
         """업로드 트리거 후 DB 를 폴링해 UI 갱신.
 
-        모든 pending 파일이 ready 가 되면 조기 종료.
+        모든 pending 파일이 ready 상태가 되면 조기 종료.
         대용량 파일 처리를 고려해 최대 120초까지 폴링.
         """
         deadline = time.time() + 120.0
@@ -770,19 +635,19 @@ class ChatState(rx.State):
                     a.status == "ready" for a in self.pending_attachments
                 ):
                     break
-                # pending 이 비었으면 (전송 완료 등) 종료
+                # pending 이 비었으면(전송 완료 등) 종료
                 if not self.pending_attachments and not self._pending_msg_id:
                     break
             await asyncio.sleep(interval)
             interval = min(3.0, interval + 0.5)
 
     def trigger_upload(self) -> rx.event.EventSpec | None:
-        """파일 선택 다이얼로그를 열고 업로드를 트리거한다.
+        """파일 선택 다이얼로그를 열고 업로드를 트리거.
 
-        구조:
-            1. 대화가 미 persist 상태라면 DB 저장
+        흐름:
+            1. 대화가 미저장 상태라면 DB 에 먼저 저장
             2. JS 가 파일 선택 + fetch POST /api/upload 실행
-            3. `poll_attachments` 백그라운드 이벤트가 DB 를 폴링해 UI 갱신
+            3. poll_attachments 백그라운드 이벤트가 DB 를 폴링해 UI 갱신
         """
         self.attachment_error = ""
         conv_id = self._ensure_conversation_persisted()
@@ -796,205 +661,48 @@ class ChatState(rx.State):
             )
             return None
 
-        # 첨부파일-메시지 매핑용 msg_id 를 미리 생성 (send_message 에서 재사용)
+        # 첨부파일-메시지 매핑용 msg_id 를 미리 생성 후 send_message 에서 재사용
         if not self._pending_msg_id:
             self._pending_msg_id = uuid.uuid4().hex[:50]
         msg_id = self._pending_msg_id
 
-        accept = self.accepted_file_extensions
-        max_mb = FILE_MAX_SIZE_MB
-        max_per_msg = FILE_MAX_PER_MESSAGE
-        current_count = len(self.pending_attachments)
-
-        # JS: 파일 선택 → fetch POST /api/upload (백엔드 직접)
-        # Nginx/ALB 프록시 환경: 상대 경로 (/api/upload) 사용
-        # 로컬 개발 (포트 분리) 환경: env.json PING origin 과 window.location.origin 비교
-        # 완료 알림은 Python 측 polling 으로 DB 에서 감지
-        script = f"""
-(async function() {{
-  try {{
-    // 백엔드 URL 결정
-    // 기본: 상대 경로 (Nginx/ALB 리버스 프록시 환경)
-    // 로컬 개발 (localhost 포트 분리) 환경에서만 origin 을 붙인다
-    let backendBase = '';
-    try {{
-      const envResp = await fetch('/env.json');
-      const env = await envResp.json();
-      const pingUrl = env.PING || '';
-      if (pingUrl) {{
-        const u = new URL(pingUrl);
-        const loc = window.location;
-        // 둘 다 localhost 이고 포트만 다른 경우 = 로컬 개발 환경
-        const isLocalDev = (
-          (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1') &&
-          (u.hostname === 'localhost' || u.hostname === '127.0.0.1') &&
-          u.port !== loc.port
-        );
-        if (isLocalDev) {{
-          // 쿠키가 전달되도록 hostname 을 현재 페이지와 동일하게 맞춘다
-          backendBase = loc.protocol + '//' + loc.hostname + ':' + u.port;
-        }}
-        // 그 외 (ALB/Nginx 프록시 등): 상대 경로 사용 (backendBase = '')
-      }}
-    }} catch(e) {{}}
-
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.multiple = true;
-    input.accept = '{accept}';
-    input.style.display = 'none';
-    document.body.appendChild(input);
-
-    const files = await new Promise((resolve) => {{
-      input.onchange = () => resolve(Array.from(input.files || []));
-      input.addEventListener('cancel', () => resolve([]));
-      input.click();
-    }});
-    document.body.removeChild(input);
-    if (!files.length) return;
-
-    const maxPerMsg = {max_per_msg};
-    const current = {current_count};
-    if (files.length + current > maxPerMsg) {{
-      alert(`메시지당 최대 ${{maxPerMsg}}개까지 첨부 가능합니다.`);
-      return;
-    }}
-
-    const maxBytes = {max_mb} * 1024 * 1024;
-    const errors = [];
-    for (const file of files) {{
-      if (file.size > maxBytes) {{
-        errors.push(`'${{file.name}}' 파일이 {max_mb}MB 를 초과합니다.`);
-        continue;
-      }}
-      const form = new FormData();
-      form.append('file', file);
-      form.append('conversation_id', '{conv_id}');
-      form.append('message_id', '{msg_id}');
-      try {{
-        const resp = await fetch(backendBase + '/api/upload', {{
-          method: 'POST',
-          body: form,
-          credentials: 'include',
-        }});
-        if (!resp.ok) {{
-          const data = await resp.json().catch(() => ({{}}));
-          errors.push(`'${{file.name}}': ${{data.detail || resp.status}}`);
-        }}
-      }} catch (err) {{
-        errors.push(`'${{file.name}}': ${{err && err.message ? err.message : err}}`);
-      }}
-    }}
-    if (errors.length) alert(errors.join('\\n'));
-  }} catch (err) {{
-    console.error('[wellbot upload] ', err);
-  }}
-}})();
-"""
-        # JS 실행 + Python 측 polling 을 함께 반환
+        script = build_upload_script(
+            accept=self.accepted_file_extensions,
+            conv_id=conv_id,
+            msg_id=msg_id,
+            max_mb=FILE_MAX_SIZE_MB,
+            max_per_msg=FILE_MAX_PER_MESSAGE,
+            current_count=len(self.pending_attachments),
+        )
+        # JS 실행 + Python 폴링을 함께 반환
         return [
             rx.call_script(script),
             ChatState.poll_attachments,
         ]
 
-    def _augment_system_with_attachments(
-        self,
-        base_prompt: str,
-        conv_id: str,
-    ) -> str:
-        """system prompt 에 현재 대화의 첨부파일 메타 목록을 append 한다.
-
-        파일은 `[#file_no] file_name` 형식으로 노출하여, LLM 이
-        `search_attachment` 호출 시 file_ids 로 정확 매칭하도록 유도한다.
-        """
-        if not conv_id:
-            return base_prompt
-        try:
-            atts = attachment_service.get_conversation_attachments(conv_id)
-        except Exception:
-            return base_prompt
-
-        if not atts:
-            return base_prompt
-
-        # 인덱스 누락 파일 조회 (캐시 hit 가정, 실패 시 무시)
-        missing_set: set[str] = set()
-        try:
-            from wellbot.services import embedding_service
-            conv_index = embedding_service.get_cache().get(conv_id)
-            if conv_index is not None:
-                missing_set = set(conv_index.missing_files)
-        except Exception:
-            missing_set = set()
-
-        lines: list[str] = [
-            "",
-            "## 이 대화에 첨부된 파일",
-            (
-                "아래 파일들이 대화에 첨부되어 있습니다. "
-                "사용자의 질문이 첨부 파일과 관련될 가능성이 있으면 "
-                "`search_attachment` 도구를 호출해 실제 내용을 확인한 뒤 답변하세요. "
-                "여러 파일을 검색할 때는 한 번의 호출에 `file_ids` 배열로 일괄 지정하세요 "
-                "(파일별로 분할 호출하지 말 것). "
-                "각 항목 앞의 [#NNN] 숫자가 file_id 입니다 - 이 값을 그대로 사용하면 "
-                "정확 매칭이 보장됩니다. "
-                "검색 결과가 비면 같은 의도의 쿼리로 재시도하지 말고 "
-                "사용자에게 못 찾았음을 안내하거나 일반 지식으로 답변하세요."
-            ),
-            "",
-        ]
-        for a in atts:
-            mime = a.mime or ""
-            type_label = _mime_to_label(mime)
-            tokens = a.token_count
-            token_str = f"{tokens:,} 토큰" if tokens is not None and tokens > 0 else "처리 중"
-            extras = [type_label, token_str]
-            if a.file_name in missing_set:
-                extras.append("인덱스 미준비")
-            lines.append(f"[#{a.file_no}] {a.file_name} ({', '.join(extras)})")
-        return f"{base_prompt}\n\n" + "\n".join(lines)
-
-    def _collect_image_blocks(
-        self,
-        attachments: list[AttachmentInfo],
-        model,
-    ) -> list[dict]:
-        """첨부 목록에서 이미지만 골라 Bedrock Converse image block 으로 변환."""
-        if not attachments:
-            return []
-
-        supports_vision = getattr(model, "supports_vision", False)
-        blocks: list[dict] = []
-
-        for a in attachments:
-            fmt = image_format(a.name)
-            if not fmt:
-                continue  # 이미지 아님
-
-            if not supports_vision:
-                # vision 미지원 모델 - UI 에서 사용자에게 이미 알렸다고 가정, 스킵
-                continue
-
-            try:
-                data = attachment_service.download_original_bytes(a.file_no)
-            except Exception:
-                data = None
-            if not data:
-                continue
-            blocks.append({"format": fmt, "bytes": data})
-
-        return blocks
-
     @rx.event(background=True)
     async def send_message(self, form_data: dict | None = None) -> None:
-        """메시지를 전송하고 Bedrock 스트리밍 응답을 처리한다."""
+        """메시지 전송 및 Bedrock 스트리밍 응답 처리.
+
+        흐름:
+            1. 사용자 메시지 추가 및 상태 초기화
+            2. Bedrock 스트리밍 호출
+            3. 최종 AI 메시지 저장 및 상태 복구
+            4. 첫 메시지 교환 후 LLM 으로 대화 제목 자동 생성
+        """
+        # turn 단위 로그 상관관계 바인딩 (이후 모든 로그에 emp/conv/req 태그)
+        log_context.bind(
+            emp_no=self._emp_no or None,
+            conversation_id=self.current_conversation_id or None,
+            request_id=log_context.new_request_id(),
+        )
         # 1. 사용자 메시지 추가 및 상태 초기화
         blocked_processing = False
         async with self:
             text = self.current_input.strip()
             if not text or self.is_loading:
                 return
-            # 첨부파일 처리 중에는 Enter 키 제출을 차단 (버튼 disabled 우회 방지)
+            # 첨부파일 처리 중 Enter 키 제출 차단 — 버튼 disabled 우회 방지
             if self.has_processing_attachments:
                 blocked_processing = True
 
@@ -1011,27 +719,21 @@ class ChatState(rx.State):
             if idx is None:
                 return
 
-            # 이번 turn 에 첨부될 파일 (pending → message 로 이동)
-            # DB 에서 최신 상태를 다시 읽어 처리 완료 여부를 반영
+            # pending → message 로 이동할 파일 결정
+            # DB 에서 최신 상태 재조회해 처리 완료 여부 반영
             if self.pending_attachments and self._pending_msg_id:
                 try:
                     fresh = attachment_service.get_attachments_by_msg_id(
                         self._pending_msg_id
                     )
-                    refreshed: list[AttachmentInfo] = [
-                        AttachmentInfo(
-                            file_no=r.file_no,
-                            name=r.file_name,
-                            mime=r.mime,
-                            token_count=r.token_count or 0,
-                            status="ready" if r.token_count is not None else "processing",
-                        )
-                        for r in fresh
-                    ]
+                    refreshed = rows_to_attachment_infos(fresh)
                     if refreshed:
                         self.pending_attachments = refreshed
                 except Exception:
-                    pass
+                    log.warning(
+                        "전송 직전 첨부 상태 갱신 실패 msg_id=%s",
+                        self._pending_msg_id, exc_info=True,
+                    )
             turn_attachments = list(self.pending_attachments)
 
             user_msg = Message(
@@ -1042,7 +744,7 @@ class ChatState(rx.State):
             )
             updated_messages = [*self.conversations[idx].messages, user_msg]
 
-            # 첫 번째 사용자 메시지로 대화 제목 설정
+            # 첫 번째 사용자 메시지 기준으로 임시 제목 설정 (LLM 제목 생성 전 표시용)
             title = self.conversations[idx].title
             is_first_msg = not any(m.role == "user" for m in self.conversations[idx].messages)
             if is_first_msg:
@@ -1052,7 +754,7 @@ class ChatState(rx.State):
 
             self._update_conversation(idx, title=title, messages=updated_messages)
             self.current_input = ""
-            # pending → conversation_attachments 로 이동
+            # pending 첨부 → conversation_attachments 로 이동
             if self.pending_attachments:
                 self.conversation_attachments = [
                     *self.conversation_attachments,
@@ -1065,7 +767,7 @@ class ChatState(rx.State):
             self.streaming_content = ""
             self._cancel_requested = False
 
-            # DB 저장용 로컬 변수
+            # State 락 밖에서 DB 저장 시 사용할 로컬 변수
             conv_id = self.conversations[idx].id
             is_persisted = self.conversations[idx].is_persisted
             emp_no = self._emp_no
@@ -1073,17 +775,17 @@ class ChatState(rx.State):
             use_thinking = self.thinking_enabled
             prompt_name = self.selected_prompt
 
-            # 첨부파일이 있으면 미리 생성한 msg_id 사용, 없으면 새로 생성
+            # 첨부파일이 있으면 미리 생성한 msg_id 재사용, 없으면 빈 문자열
             pending_msg_id = self._pending_msg_id or ""
             self._pending_msg_id = ""  # 소비 후 초기화
 
-            # API 호출용 메시지 준비 (기존 대화의 텍스트만 - 이미지 중복 방지)
+            # API 호출용 메시지 — 텍스트만 포함 (이미지는 image_blocks 로 별도 전달해 중복 방지)
             api_messages = [
                 {"role": m.role, "content": m.content}
                 for m in updated_messages
             ]
 
-        # DB 저장: 대화 + 시스템 프롬프트 + 사용자 메시지 (State 락 밖)
+        # DB 저장: 대화·시스템 프롬프트·사용자 메시지 (State 락 밖)
         if emp_no:
             if not is_persisted:
                 chat_service.save_conversation(emp_no, conv_id, title, model_name)
@@ -1098,29 +800,43 @@ class ChatState(rx.State):
                         emp_no=emp_no, model_name=prompt_name,
                     )
                 except Exception:
-                    pass
+                    log.warning("첫 turn system 메시지 저장 실패", exc_info=True)
             elif is_first_msg:
                 chat_service.update_conversation_title(conv_id, title, emp_no)
-            chat_service.append_message(
+            user_msg_id = chat_service.append_message(
                 smry_id=conv_id,
                 role="user", content=text,
                 emp_no=emp_no, model_name=model_name,
                 provider=prompt_name,
                 msg_id=pending_msg_id or None,
             )
+            # turn 의 메시지 ID(CHTB_TLK_ID)를 로그 컨텍스트에 바인딩
+            # → 이후 스트리밍·tool·응답 로그를 conv 단위가 아닌 메시지 단위로 추적 가능
+            log_context.bind(message_id=user_msg_id)
 
-        # is_persisted 업데이트
+        # 신규 대화 저장 완료 후 is_persisted 갱신
         async with self:
             idx = self._get_current_index()
             if idx is not None and not self.conversations[idx].is_persisted:
                 self._update_conversation(idx, is_persisted=True)
 
         # 2. Bedrock 스트리밍 호출
-        content = ""
+        content = ""  # 누적 응답 텍스트
         start_time = time.time()
         input_tokens = 0
         output_tokens = 0
         provider = ""
+        log.info(
+            "chat request",
+            extra={
+                "model": model_name,
+                "prompt": prompt_name,
+                "thinking": use_thinking,
+                "attachments": len(turn_attachments),
+                "history_len": len(api_messages),
+            },
+        )
+        stream_interrupted = False
         try:
             cfg = get_config()
             model = cfg.get_model(model_name) or cfg.default_model
@@ -1128,21 +844,22 @@ class ChatState(rx.State):
             prompt = cfg.get_prompt(prompt_name)
             base_system = prompt.content if prompt else cfg.system_prompt
 
-            # 대화에 붙은 전체 첨부파일 메타를 system prompt 에 append
-            system_prompt = self._augment_system_with_attachments(base_system, conv_id)
+            # 대화 전체 첨부파일 메타를 system prompt 에 추가
+            system_prompt = augment_system_with_attachments(base_system, conv_id)
 
-            # 이번 turn 의 이미지 첨부를 content block 으로 변환 (마지막 user 메시지에만)
-            image_blocks = self._collect_image_blocks(turn_attachments, model)
+            # 이번 turn 의 이미지 첨부를 content block 으로 변환 (마지막 user 메시지에만 적용)
+            image_blocks = collect_image_blocks(turn_attachments, model)
             if image_blocks and api_messages:
                 api_messages[-1] = {**api_messages[-1], "image_blocks": image_blocks}
 
-            # 대화에 첨부파일이 있으면 tool use (search_attachment) 활성화
+            # 대화에 첨부파일이 있으면 tool use(search_attachment) 활성화
             has_attachments = False
             try:
                 has_attachments = bool(
                     attachment_service.get_conversation_attachments(conv_id)
                 )
             except Exception:
+                log.warning("첨부 보유 여부 조회 실패 conv_id=%s", conv_id, exc_info=True)
                 has_attachments = False
 
             if has_attachments:
@@ -1168,9 +885,8 @@ class ChatState(rx.State):
                     thinking_enabled=use_thinking,
                 )
 
-            stream_interrupted = False
             async for event_type, chunk in stream:
-                # 취소 확인
+                # 취소 요청 확인
                 async with self:
                     if self._cancel_requested:
                         stream_interrupted = True
@@ -1186,22 +902,23 @@ class ChatState(rx.State):
                         self.streaming_content = content
                 elif event_type == "tool_use":
                     async with self:
-                        self.is_thinking = True  # 검색 중임을 표시
+                        self.is_thinking = True  # tool 실행 중 스피너 표시
                 elif event_type == "tool_result":
-                    # 검색 결과는 LLM 이 다음 턴에서 활용 → UI 에 직접 표시 안 함
+                    # 검색 결과는 LLM 이 다음 turn 에서 활용 → UI 에 직접 표시하지 않음
                     pass
                 elif event_type == "usage":
                     input_tokens += int(chunk.get("inputTokens", 0) or 0)
                     output_tokens += int(chunk.get("outputTokens", 0) or 0)
 
-        except Exception as e:
+        except Exception:
+            log.exception("chat streaming 실패 model=%s conv_id=%s", model_name, conv_id)
             content = "오류가 발생했습니다."
 
         finally:
-            # 사고 과정 제거 (Nova 등 확장 사고 미지원 모델용)
+            # Nova 등 확장 사고 미지원 모델이 <thinking> 블록을 출력하는 경우 제거
             content = response_filter.strip_thinking(content)
 
-            # 중단된 경우 접미사 추가
+            # 중단 시 접미사 추가
             if stream_interrupted and content:
                 content += "\n\n*[생성이 중단되었습니다]*"
 
@@ -1220,7 +937,7 @@ class ChatState(rx.State):
                     updated = [*self.conversations[idx].messages, ai_msg]
                     self._update_conversation(idx, messages=updated)
                 elif idx is not None and stream_interrupted:
-                    # 텍스트 도착 전에 중단된 경우
+                    # 텍스트 수신 전 중단된 경우
                     ai_msg = Message(
                         role="assistant",
                         content="*[생성이 시작되기 전에 중단되었습니다]*",
@@ -1234,9 +951,23 @@ class ChatState(rx.State):
                 self.is_thinking = False
                 self.streaming_content = ""
 
-        # DB 저장: AI 응답 메시지 (State 락 밖) — 텍스트 없이 중단된 경우 저장 안 함
+        # 응답 완료 관측 — 중단·실패 케이스 포함 (비용·지연 추적)
+        elapsed = round(time.time() - start_time, 2)
+        log.info(
+            "chat response",
+            extra={
+                "model": model_name,
+                "provider": provider,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "elapsed_ms": int(elapsed * 1000),
+                "interrupted": stream_interrupted,
+                "chars": len(content),
+            },
+        )
+
+        # DB 저장: AI 응답 메시지 (State 락 밖). 텍스트 없이 중단된 경우 저장 생략
         if emp_no and content:
-            elapsed = round(time.time() - start_time, 2)
             chat_service.append_message(
                 smry_id=conv_id,
                 role="assistant", content=content,
@@ -1247,7 +978,7 @@ class ChatState(rx.State):
                 reply_time=elapsed,
             )
 
-        # 4. 첫 메시지 교환 후 LLM으로 제목 생성
+        # 4. 첫 메시지 교환 후 LLM 으로 대화 제목 자동 생성
         if is_first_msg and content and emp_no:
             try:
                 generated = generate_title(text, content)
@@ -1258,4 +989,4 @@ class ChatState(rx.State):
                         if idx is not None:
                             self._update_conversation(idx, title=generated)
             except Exception:
-                pass
+                log.warning("대화 제목 자동 생성 실패", exc_info=True)

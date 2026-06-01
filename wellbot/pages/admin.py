@@ -81,7 +81,6 @@ def _login_form() -> rx.Component:
 def _admin_content() -> rx.Component:
     """관리 화면 콘텐츠."""
     return rx.vstack(
-        # 헤더
         rx.hstack(
             rx.hstack(
                 rx.icon("settings-2", size=24),
@@ -138,7 +137,6 @@ def _admin_content() -> rx.Component:
             padding_bottom="1em",
             border_bottom=f"1px solid {COLORS['border']}",
         ),
-        # 성공 메시지
         rx.cond(
             AdminState.success_message != "",
             rx.callout(
@@ -148,7 +146,6 @@ def _admin_content() -> rx.Component:
                 size="1",
             ),
         ),
-        # 탭
         rx.tabs.root(
             rx.tabs.list(
                 rx.tabs.trigger("부서 관리", value="dept"),
@@ -170,7 +167,7 @@ def _admin_content() -> rx.Component:
     )
 
 
-def admin() -> rx.Component:
+def admin_page() -> rx.Component:
     """Admin 페이지."""
     return rx.box(
         rx.cond(

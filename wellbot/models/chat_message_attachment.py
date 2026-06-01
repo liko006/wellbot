@@ -1,4 +1,4 @@
-"""챗봇메시지첨부파일상세 (chtb_msg_atch_file_d) model."""
+"""챗봇메시지첨부파일상세 ORM 모델 (DB 테이블: chtb_msg_atch_file_d)"""
 
 from datetime import datetime
 
@@ -8,8 +8,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
-class ChtbMsgAtchFileD(Base):
-    """챗봇메시지첨부파일상세 - 챗봇 메시지와 첨부파일의 매핑."""
+class ChatMessageAttachment(Base):
+    """챗봇메시지첨부파일상세 (DB 테이블: chtb_msg_atch_file_d)"""
 
     __tablename__ = "chtb_msg_atch_file_d"
 
@@ -31,3 +31,7 @@ class ChtbMsgAtchFileD(Base):
     uppr_id: Mapped[str | None] = mapped_column(
         "UPPR_ID", String(20), comment="수정자아이디",
     )
+
+
+# 하위 호환을 위한 약어 alias (구 코드/외부 import 용)
+ChtbMsgAtchFileD = ChatMessageAttachment

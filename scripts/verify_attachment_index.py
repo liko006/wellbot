@@ -1,6 +1,6 @@
 """첨부파일 S3 인덱스 정합성 검증 스크립트.
 
-DB 의 처리 완료된 첨부파일(token_count > 0)에 대해:
+DB 의 처리 완료된 첨부파일(token_count > 0) 에 대해:
   1. S3 에 chunks.jsonl + index.faiss 가 실제 존재하는지 확인
   2. load_conversation_index() 가 missing_files 없이 로드되는지 확인
   3. 인덱스 ntotal 과 chunks 수의 정합성 확인
@@ -8,7 +8,7 @@ DB 의 처리 완료된 첨부파일(token_count > 0)에 대해:
 Usage:
     uv run python scripts/verify_attachment_index.py
     uv run python scripts/verify_attachment_index.py --smry SMRY_ID  # 특정 대화만
-    uv run python scripts/verify_attachment_index.py --limit 5       # 상위 N개 대화만
+    uv run python scripts/verify_attachment_index.py --limit 5       # 상위 N 개 대화만
 """
 
 from __future__ import annotations
@@ -19,19 +19,20 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-# 프로젝트 루트를 sys.path 에 추가 (scripts/ 에서 직접 실행하기 위함)
+# scripts/ 에서 직접 실행 시 패키지 임포트를 위해 프로젝트 루트를 sys.path 에 추가
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from sqlalchemy import func
 
-from wellbot.models.attachment import AtchFileM
-from wellbot.models.chat_message import ChtbMsgD
-from wellbot.models.chat_message_attachment import ChtbMsgAtchFileD
-from wellbot.services import embedding_service, storage_service
-from wellbot.services.attachment_service import get_conversation_attachments
-from wellbot.services.database import get_session
+from wellbot.models.attachment import Attachment
+from wellbot.models.chat_message import ChatMessage
+from wellbot.models.chat_message_attachment import ChatMessageAttachment
+from wellbot.services.ai import embedding_service
+from wellbot.services.core.database import get_session
+from wellbot.services.files import storage_service
+from wellbot.services.files.attachment_service import get_conversation_attachments
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,24 +42,24 @@ log = logging.getLogger("verify")
 
 
 def find_smry_ids_with_attachments(limit: int | None = None) -> list[str]:
-    """첨부파일이 있는 대화 ID 목록을 최신순으로 반환."""
+    """첨부파일이 있는 대화 ID 목록 (최신순)"""
     with get_session() as session:
         q = (
             session.query(
-                ChtbMsgD.chtb_tlk_smry_id,
-                func.max(AtchFileM.upd_dtm).label("latest"),
-                func.count(AtchFileM.atch_file_no).label("cnt"),
+                ChatMessage.chtb_tlk_smry_id,
+                func.max(Attachment.upd_dtm).label("latest"),
+                func.count(Attachment.atch_file_no).label("cnt"),
             )
             .join(
-                ChtbMsgAtchFileD,
-                ChtbMsgAtchFileD.chtb_tlk_id == ChtbMsgD.chtb_tlk_id,
+                ChatMessageAttachment,
+                ChatMessageAttachment.chtb_tlk_id == ChatMessage.chtb_tlk_id,
             )
             .join(
-                AtchFileM,
-                AtchFileM.atch_file_no == ChtbMsgAtchFileD.atch_file_no,
+                Attachment,
+                Attachment.atch_file_no == ChatMessageAttachment.atch_file_no,
             )
-            .group_by(ChtbMsgD.chtb_tlk_smry_id)
-            .order_by(func.max(AtchFileM.upd_dtm).desc())
+            .group_by(ChatMessage.chtb_tlk_smry_id)
+            .order_by(func.max(Attachment.upd_dtm).desc())
         )
         if limit:
             q = q.limit(limit)
@@ -67,7 +68,7 @@ def find_smry_ids_with_attachments(limit: int | None = None) -> list[str]:
 
 
 def verify_smry(smry_id: str) -> dict:
-    """단일 대화에 대한 검증."""
+    """단일 대화 S3 인덱스 정합성 검증"""
     print(f"\n{'=' * 70}")
     print(f"smry_id={smry_id}")
     print(f"{'=' * 70}")
@@ -94,7 +95,7 @@ def verify_smry(smry_id: str) -> dict:
             storage_service.object_exists(k) for k in original_keys
         )
 
-        # 실제 S3 prefix 하위 키 목록도 비교용으로 가져오기
+        # DB 기록과 실제 S3 키 목록을 비교하기 위해 조회
         actual_keys = (
             storage_service.list_objects(att.s3_prefix) if att.s3_prefix else []
         )
@@ -122,8 +123,8 @@ def verify_smry(smry_id: str) -> dict:
         if actual_keys:
             print(f"      실제 S3 키: {actual_keys}")
 
-    # load_conversation_index 실행
-    embedding_service.get_cache().invalidate(smry_id)  # 캐시 무시하고 실로드
+    # 캐시를 무시하고 실제 로드하여 정합성 확인
+    embedding_service.get_cache().invalidate(smry_id)
     try:
         conv_index = embedding_service.load_conversation_index(smry_id)
         print(
@@ -131,7 +132,6 @@ def verify_smry(smry_id: str) -> dict:
             f"chunks={len(conv_index.chunks)} missing={conv_index.missing_files}"
         )
 
-        # chunks 의 file_no 분포
         per_file: dict[int, int] = defaultdict(int)
         for c in conv_index.chunks:
             per_file[c["file_no"]] += 1
@@ -175,7 +175,6 @@ def main() -> int:
 
     results = [verify_smry(s) for s in smry_ids]
 
-    # 추가: RAG 검색 동작 확인
     if args.search:
         print(f"\n{'=' * 70}")
         print(f"RAG 검색 테스트: query={args.search!r}")
@@ -197,7 +196,6 @@ def main() -> int:
             except Exception as exc:
                 print(f"  smry_id={s} [FAIL] {exc}")
 
-    # 요약
     print(f"\n{'=' * 70}")
     print("요약")
     print(f"{'=' * 70}")

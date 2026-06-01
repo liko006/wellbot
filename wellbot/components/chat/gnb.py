@@ -1,15 +1,16 @@
 """채팅 영역 상단 GNB (Global Navigation Bar).
 
-좌: 에이전트 모드 드롭다운 | 중앙: 대화 제목 | 우: 첨부파일 + 다크/라이트 모드 토글
+좌: 채팅 모드 드롭다운 | 중앙: 대화 제목 | 우: 첨부파일 + 다크/라이트 모드 토글
 """
 
 import reflex as rx
 
-from wellbot.state.chat_state import AttachmentInfo, ChatState
+from wellbot.state.chat_models import AttachmentInfo
+from wellbot.state.chat_state import ChatState
 from wellbot.styles import COLORS, SPACING
 
 
-def _agent_mode_item(mode: rx.Var) -> rx.Component:
+def _chat_mode_item(mode: rx.Var) -> rx.Component:
     """드롭다운 메뉴 아이템."""
     return rx.menu.item(
         rx.hstack(
@@ -18,21 +19,21 @@ def _agent_mode_item(mode: rx.Var) -> rx.Component:
             align="center",
             gap="0.5em",
         ),
-        on_click=ChatState.set_agent_mode(mode.id),  # type: ignore
+        on_click=ChatState.set_chat_mode(mode.id),  # type: ignore
     )
 
 
-def _agent_mode_dropdown() -> rx.Component:
-    """에이전트 모드 선택 드롭다운."""
+def _chat_mode_dropdown() -> rx.Component:
+    """채팅 모드 선택 드롭다운."""
     return rx.menu.root(
         rx.menu.trigger(
             rx.button(
                 rx.icon(
-                    ChatState.current_agent_mode_icon,
+                    ChatState.current_chat_mode_icon,
                     size=14,
                 ),
                 rx.text(
-                    ChatState.current_agent_mode_name,
+                    ChatState.current_chat_mode_name,
                     size="2",
                     weight="medium",
                 ),
@@ -47,8 +48,8 @@ def _agent_mode_dropdown() -> rx.Component:
         ),
         rx.menu.content(
             rx.foreach(
-                ChatState.agent_mode_list,
-                _agent_mode_item,
+                ChatState.chat_mode_list,
+                _chat_mode_item,
             ),
             side="bottom",
             align="start",
@@ -185,14 +186,12 @@ def _color_mode_toggle() -> rx.Component:
 def chat_gnb() -> rx.Component:
     """채팅 영역 GNB."""
     return rx.hstack(
-        # 좌: 에이전트 모드
         rx.box(
-            _agent_mode_dropdown(),
+            _chat_mode_dropdown(),
             flex="1",
             display="flex",
             align_items="center",
         ),
-        # 중앙: 대화 제목
         rx.box(
             _conversation_title(),
             flex="1",
@@ -200,7 +199,6 @@ def chat_gnb() -> rx.Component:
             justify_content="center",
             align_items="center",
         ),
-        # 우: 첨부파일 + 다크/라이트 토글
         rx.hstack(
             _attachment_popover(),
             _color_mode_toggle(),

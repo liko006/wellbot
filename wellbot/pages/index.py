@@ -13,12 +13,9 @@ from wellbot.components.layout import chat_layout
 from wellbot.constants import BTN_THRESHOLD, SCROLL_THRESHOLD
 
 
-# 자동 스크롤 JavaScript
-# - MutationObserver로 메시지 영역 내 DOM 변경 감지
-# - 사용자가 하단 근처에 있을 때만 자동 스크롤
-# - 사용자가 위로 스크롤하면 자동 스크롤 중단
-# - "맨 아래로" 버튼 표시/숨김 제어
-# - setInterval로 DOM 준비될 때까지 폴링
+# 자동 스크롤 JavaScript (MutationObserver + setInterval 폴링 방식)
+# - 사용자가 위로 스크롤하면 자동 스크롤 중단, 하단 근처에서만 재개
+# - "맨 아래로" 버튼 표시/숨김 제어 포함
 AUTO_SCROLL_SCRIPT = """
 (function initAutoScroll() {
     var SCROLL_THRESHOLD = __SCROLL_THRESHOLD__;
@@ -183,7 +180,7 @@ def chat_main() -> rx.Component:
     )
 
 
-def index() -> rx.Component:
+def index_page() -> rx.Component:
     """채팅 메인 페이지."""
     return rx.fragment(
         rx.script(AUTO_SCROLL_SCRIPT),

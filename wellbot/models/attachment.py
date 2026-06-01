@@ -1,4 +1,4 @@
-"""첨부파일마스터 (atch_file_m) model."""
+"""첨부파일마스터 ORM 모델 (DB 테이블: atch_file_m)"""
 
 from datetime import datetime
 
@@ -8,8 +8,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
-class AtchFileM(Base):
-    """첨부파일마스터."""
+class Attachment(Base):
+    """첨부파일마스터 (DB 테이블: atch_file_m)"""
 
     __tablename__ = "atch_file_m"
 
@@ -37,3 +37,7 @@ class AtchFileM(Base):
     uppr_id: Mapped[str] = mapped_column(
         "UPPR_ID", String(20), comment="수정자아이디",
     )
+
+
+# 하위 호환을 위한 약어 alias (구 코드/외부 import 용)
+AtchFileM = Attachment

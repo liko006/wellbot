@@ -62,6 +62,8 @@ cover/
 
 # Django stuff:
 *.log
+# Wellbot 로그 디렉토리 (회전 파일 wellbot.log.1 등 포함)
+/logs/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal

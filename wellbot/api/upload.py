@@ -42,13 +42,15 @@ from wellbot.constants import (
     LOCAL_SUPPORTED_EXTS,
     UPSTAGE_SUPPORTED_EXTS,
 )
-from wellbot.services import attachment_service, auth_service, file_parser
+from wellbot.logger import log_context
+from wellbot.services.auth import auth_service
+from wellbot.services.files import attachment_service, file_parser
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
-# 스트리밍 다운로드 청크 크기 (메모리 점유 최소화)
+# 메모리 점유 최소화를 위한 스트리밍 청크 크기
 _STREAM_CHUNK = 1024 * 1024  # 1MB
 
 
@@ -64,7 +66,7 @@ def _allowed_extensions() -> frozenset[str]:
 
 
 def _validate_file(upload: UploadFile) -> tuple[str, str]:
-    """확장자/타입 검증. (filename, ext) 반환."""
+    """확장자/타입 검증. (filename, ext) 반환"""
     filename = (upload.filename or "").strip()
     if not filename:
         raise HTTPException(
@@ -93,9 +95,10 @@ def _validate_file(upload: UploadFile) -> tuple[str, str]:
 
 
 def _stream_to_tempfile(upload: UploadFile, max_bytes: int) -> tuple[Path, int]:
-    """업로드를 스트리밍으로 임시파일에 저장한다.
+    """업로드를 스트리밍으로 임시파일에 저장.
 
-    max_bytes 초과 시 413 에러 반환.
+    max_bytes 초과 시 413 에러.
+
     Returns:
         (임시파일 경로, 실제 바이트 크기)
     """
@@ -144,11 +147,11 @@ async def upload_attachment(
     file: UploadFile = FastAPIFile(...),
     wellbot_auth: str | None = Cookie(default=None),
 ) -> dict:
-    """대화에 첨부파일을 업로드한다.
+    """대화에 첨부파일 업로드.
 
     Form 필드:
         conversation_id: 대화 세션 ID (chtb_tlk_smry_id)
-        message_id: 메시지 고유 ID (chtb_tlk_id). 미지정 시 빈 문자열.
+        message_id: 메시지 고유 ID (chtb_tlk_id). 미지정 시 빈 문자열
         file: 업로드 파일
     Cookie:
         wellbot_auth: 로그인 세션 토큰 (JWT)
@@ -178,6 +181,9 @@ async def upload_attachment(
     # 2-1. message_id 정규화
     msg_id = (message_id or "").strip()
 
+    # 이후 모든 로그에 emp/conv/msg 상관관계 표기
+    log_context.bind(emp_no=emp_no, conversation_id=smry_id, message_id=msg_id or None)
+
     # 3. 파일 확장자 검증
     filename, ext = _validate_file(file)
 
@@ -198,7 +204,7 @@ async def upload_attachment(
     max_bytes = FILE_MAX_SIZE_MB * 1024 * 1024
     tmp_path, size_bytes = _stream_to_tempfile(file, max_bytes)
 
-    # 6. 대화 누적 용량 체크 (여기서는 Upstage/임베딩 비용 가드는 토큰 단위로만)
+    # 6. 대화 누적 용량 체크 (Upstage/임베딩 비용 가드는 별도 토큰 단위로 수행)
     total_size_mb = (size_bytes / (1024 * 1024))
     if total_size_mb > FILE_MAX_TOTAL_SIZE_MB:
         tmp_path.unlink(missing_ok=True)
@@ -230,7 +236,7 @@ async def upload_attachment(
                 detail=f"업로드 실패: {exc}",
             ) from exc
 
-        # 9. 파싱/임베딩은 백그라운드로 (클라이언트 응답 지연 방지)
+        # 9. 파싱/임베딩은 백그라운드로 — 클라이언트 응답 즉시 반환
         background.add_task(_run_process, file_no, emp_no, tmp_path)
 
         return {
@@ -247,7 +253,11 @@ async def upload_attachment(
 
 
 def _run_process(file_no: int, emp_no: str, tmp_path: Path) -> None:
-    """백그라운드 파싱·임베딩 작업. 실패해도 로깅만 하고 종료."""
+    """백그라운드 파싱·임베딩 작업. 실패해도 로깅 후 종료.
+
+    요청 스코프가 이미 해제된 뒤 실행되므로 로그 상관관계를 재바인딩.
+    """
+    log_context.bind(emp_no=emp_no, request_id=log_context.new_request_id())
     try:
         attachment_service.process_attachment(file_no, emp_no)
     except Exception as exc:
@@ -256,4 +266,4 @@ def _run_process(file_no: int, emp_no: str, tmp_path: Path) -> None:
         try:
             tmp_path.unlink(missing_ok=True)
         except Exception:
-            pass
+            log.debug("임시파일 정리 실패 path=%s", tmp_path, exc_info=True)

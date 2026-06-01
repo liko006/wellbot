@@ -175,14 +175,11 @@ def message_area() -> rx.Component:
                     ChatState.current_messages,
                     message_bubble,
                 ),
-                # 스트리밍 중인 텍스트 응답
                 rx.cond(ChatState.has_streaming, streaming_message()),
-                # Extended Thinking 인디케이터
                 rx.cond(
                     ChatState.is_loading & ChatState.is_thinking,
                     thinking_indicator(),
                 ),
-                # 로딩 인디케이터 (스트리밍/사고 시작 전)
                 rx.cond(
                     ChatState.is_loading
                     & ~ChatState.is_thinking

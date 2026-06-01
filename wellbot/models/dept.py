@@ -1,4 +1,4 @@
-"""부서마스터 (dept_m) model."""
+"""부서마스터 ORM 모델 (DB 테이블: dept_m)"""
 
 from datetime import datetime
 from typing import Optional
@@ -9,8 +9,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
-class DeptM(Base):
-    """부서마스터."""
+class Dept(Base):
+    """부서마스터 (DB 테이블: dept_m)"""
 
     __tablename__ = "dept_m"
 
@@ -41,3 +41,7 @@ class DeptM(Base):
     uppr_id: Mapped[Optional[str]] = mapped_column(
         "UPPR_ID", String(20), comment="수정자아이디",
     )
+
+
+# 하위 호환을 위한 약어 alias (구 코드/외부 import 용)
+DeptM = Dept
