@@ -1,13 +1,13 @@
 """
 kb_upload.py — KB 파일 업로드 커스텀 API
 
-rx.upload의 10MB 제한을 우회하기 위한 FastAPI 엔드포인트.
-파일을 수신하면 바로 S3에 업로드하고, 메타데이터를 반환.
-Reflex state에서는 이 메타데이터로 pending_files를 업데이트하고,
-confirm_upload 시 ingestion만 트리거.
+rx.upload 의 10MB 제한을 우회하기 위한 FastAPI 엔드포인트.
+파일을 수신하면 바로 S3 에 업로드하고, 메타데이터를 반환.
+Reflex state 에서는 이 메타데이터로 pending_files 를 업데이트하고,
+confirm_upload 시 ingestion 만 트리거.
 
 처리 흐름:
-    - pptx: json으로 변환 후 업로드 (Bedrock KB 미지원 형식)
+    - pptx: json 으로 변환 후 업로드 (Bedrock KB 미지원 형식)
     - xlsx/csv: 행 기준 분할 업로드
     - 그 외: 단일 업로드
 
@@ -53,7 +53,7 @@ async def upload_kb_files(
 ):
     """
     파일을 S3에 바로 업로드.
-    - pptx: json으로 변환 후 업로드 (Bedrock KB 미지원 형식)
+    - pptx: json 으로 변환 후 업로드 (Bedrock KB 미지원 형식)
     - xlsx/csv: 분할 업로드
     - personal: s3://{bucket}/users/{emp_no}/raw/{filename}
     - team:     s3://{bucket}/teams/{dept_cd}/raw/{filename}

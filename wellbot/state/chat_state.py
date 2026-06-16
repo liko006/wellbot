@@ -105,7 +105,7 @@ class ChatState(rx.State):
     personal_kb_exists: bool = False
     team_kb_exists: bool = False
     kb_scope_inline_expanded: bool = False      # flyout 의 'KB 검색 범위' inline expand 상태
-    kb_flyout_open: bool = False                # 지식베이스 hover_card flyout 열림 (controlled)
+    kb_flyout_open: bool = False                # 지식베이스 hover_card flyout 열림 여부 (controlled)
     ingestion_status: str = "idle"
     ingestion_error: str = ""
     pending_files: list[PendingFile] = []
@@ -381,7 +381,7 @@ class ChatState(rx.State):
 
     @rx.var
     def use_kb(self) -> bool:
-        """KB 검색 사용 여부."""
+        """KB 검색 사용 여부"""
         return len(self.kb_modes) > 0
 
     @rx.var
@@ -399,14 +399,14 @@ class ChatState(rx.State):
 
     @rx.var
     def kb_docs_empty(self) -> bool:
-        """현재 탭에서 문서가 비어 있는지 (UI 의 '업로드된 문서가 없습니다' 분기용)."""
+        """현재 탭에서 문서가 비어 있는지 여부 (UI 의 '업로드된 문서가 없습니다' 분기용)"""
         if self.kb_doc_list_tab == "shared":
             return len(self.kb_folder_list) == 0
         return len(self.kb_doc_list) == 0
 
     @rx.var
     def kb_delete_button_label(self) -> str:
-        """'선택 삭제 (N)' 버튼 레이블."""
+        """'선택 삭제 (N)' 버튼 레이블"""
         return f"선택 삭제 ({len(self.selected_kb_docs)})"
 
     # ── Event handlers ──
@@ -550,7 +550,7 @@ class ChatState(rx.State):
         """대화 전환/생성 시 KB UI 임시 상태 정리.
 
         검색 범위(kb_modes)는 세션 설정이라 유지하고, 열려있던 패널·폴더 펼침과
-        종료 상태(ready/error)의 ingest/삭제 메시지만 초기화한다.
+        종료 상태(ready/error)의 ingest/삭제 메시지만 초기화.
         진행 중인 'processing' 상태는 알림 끊김 방지를 위해 유지.
         """
         self.active_panel = ""
@@ -627,13 +627,13 @@ class ChatState(rx.State):
     # ── KB event handlers ──
 
     def set_upload_target(self, value: str) -> None:
-        """KB 업로드 대상(personal/team)을 설정한다."""
+        """KB 업로드 대상(personal/team) 설정"""
         self.upload_target = value
 
     def set_kb_doc_list_tab(self, tab: str) -> None:
-        """KB 문서 목록 탭(personal/team)을 전환하고 목록을 다시 로드한다.
+        """KB 문서 목록 탭(personal/team) 전환 후 목록 재로드.
 
-        탭 전환 시 선택 상태와 삭제 상태를 초기화한다.
+        탭 전환 시 선택 상태와 삭제 상태를 초기화.
         """
         self.kb_doc_list_tab = tab
         self.selected_kb_docs = []
@@ -642,14 +642,14 @@ class ChatState(rx.State):
         return ChatState.load_kb_docs  # type: ignore
 
     def toggle_kb_doc_selection(self, filename: str) -> None:
-        """KB 문서 다중 선택 토글."""
+        """KB 문서 다중 선택 토글"""
         if filename in self.selected_kb_docs:
             self.selected_kb_docs = [f for f in self.selected_kb_docs if f != filename]
         else:
             self.selected_kb_docs = self.selected_kb_docs + [filename]
 
     def toggle_kb_folder(self, folder_type: str) -> None:
-        """회사 KB 탭의 문서종류 폴더 펼침/접힘 토글."""
+        """회사 KB 탭의 문서종류 폴더 펼침/접힘 토글"""
         if folder_type in self.expanded_kb_folders:
             self.expanded_kb_folders = [
                 f for f in self.expanded_kb_folders if f != folder_type
@@ -770,10 +770,10 @@ class ChatState(rx.State):
             self.kb_delete_error = str(e)
 
     async def load_kb_docs(self) -> None:
-        """현재 탭(personal/team)에 해당하는 S3 파일 목록을 로드한다.
+        """현재 탭(personal/team)에 해당하는 S3 파일 목록 로드.
 
-        raw/ 와 originals/ 두 prefix 를 합쳐서 보여준다.
-        (pptx 등 변환 대상 원본은 originals/ 에 별도 저장됨)
+        raw/ 와 originals/ 두 prefix 를 합쳐서 표시.
+        (pptx 등 변환 대상 원본은 originals/ 에 별도 저장)
         """
         import asyncio as _asyncio
         from datetime import timezone as _tz, timedelta as _td
@@ -882,11 +882,11 @@ class ChatState(rx.State):
             self.kb_doc_list_loading = False
 
     def toggle_kb_scope_inline(self) -> None:
-        """지식베이스 flyout 의 'KB 검색 범위' inline expand 토글."""
+        """지식베이스 flyout 의 'KB 검색 범위' inline expand 토글"""
         self.kb_scope_inline_expanded = not self.kb_scope_inline_expanded
 
     def toggle_kb_mode(self, mode: str) -> rx.event.EventSpec | None:
-        """체크박스 토글: 해당 KB 모드를 추가/제거. KB 미존재 시 토스트 안내."""
+        """체크박스 토글: 해당 KB 모드를 추가/제거. KB 미존재 시 토스트 안내"""
         if mode == "personal" and not self.personal_kb_exists:
             return rx.toast.warning(
                 "개인 KB가 없습니다.",
@@ -907,7 +907,7 @@ class ChatState(rx.State):
     def on_plus_menu_open_change(self, is_open: bool) -> None:
         """+ 메뉴 팝오버 열림/닫힘 상태 동기화.
 
-        팝오버가 닫히면 지식베이스 flyout 도 함께 닫는다 (외부 클릭으로 전체 dismiss).
+        팝오버가 닫히면 지식베이스 flyout 도 함께 닫기 (외부 클릭으로 전체 dismiss).
         """
         self.show_plus_menu = is_open
         if not is_open:
@@ -917,7 +917,7 @@ class ChatState(rx.State):
     def on_kb_flyout_open_change(self, is_open: bool) -> None:
         """hover_card 의 open 변화 처리.
 
-        Radix 의 자동 close (mouseleave timer) 는 무시한다.
+        Radix 의 자동 close (mouseleave timer) 는 무시.
         True 로 변하는 경우만 반영해서, 한 번 열리면 명시적 사용자 행동으로만 닫힘.
         """
         if is_open:
@@ -940,7 +940,7 @@ class ChatState(rx.State):
         return rx.call_script(build_kb_download_script(s3_uri, filename))
 
     def open_panel(self, panel: str) -> None:
-        """2차 메뉴에서 기능 선택 → 메뉴 닫고 입력창 위 패널 열기."""
+        """2차 메뉴에서 기능 선택 → 메뉴 닫고 입력창 위 패널 열기"""
         self.show_plus_menu = False
         self.show_style_panel = False
         self.active_panel = panel
@@ -949,7 +949,7 @@ class ChatState(rx.State):
         """입력창 위 모든 패널 닫기. 선택값은 유지.
 
         KB 패널(검색 범위/문서 목록/업로드)의 X 버튼과 외부 영역 클릭 모두 사용.
-        스타일 패널도 같이 닫는다 (KB 패널과 동시에 열릴 일은 없으므로 no-op 인 경우 많음).
+        스타일 패널도 같이 닫기 (KB 패널과 동시에 열릴 일은 없으므로 대부분 no-op).
         ingestion/delete 의 'ready'·'error' 종료 메시지도 함께 정리.
         진행 중인 'processing' 상태는 유지하여 알림 끊김을 방지.
         회사 KB 폴더 펼침 상태는 패널 닫힐 때 초기화 (다음 열림에서 깔끔한 상태로).
@@ -965,11 +965,11 @@ class ChatState(rx.State):
             self.kb_delete_error = ""
 
     def open_file_picker(self) -> rx.event.EventSpec:
-        """KB 파일 선택 다이얼로그를 열고 파일 메타데이터를 수집한다.
+        """KB 파일 선택 다이얼로그를 열고 파일 메타데이터 수집.
 
         사용자가 다이얼로그를 취소한 경우 'cancel' 이벤트(브라우저 native)로
-        즉시 빈 배열로 resolve 한다. 이렇게 하지 않으면 Promise 가 30초 timeout
-        까지 pending 상태로 남아 다른 이벤트들이 큐에 쌓이고 UI 가 먹통처럼 보임.
+        즉시 빈 배열로 resolve. 이렇게 하지 않으면 Promise 가 30초 timeout
+        까지 pending 상태로 남아 다른 이벤트들이 큐에 쌓이고 UI 가 멈춘 것처럼 보이는 문제.
         """
         return rx.call_script(
             "(function() {"
@@ -999,7 +999,7 @@ class ChatState(rx.State):
         )
 
     def add_pending_files_from_js(self, files_meta: list[dict]) -> None:
-        """JS openKbFilePicker() 완료 후 콜백. 파일 메타데이터만 수신."""
+        """JS openKbFilePicker() 완료 후 콜백. 파일 메타데이터만 수신"""
         for meta in files_meta:
             name = meta.get("name", "")
             size = meta.get("size", 0)
@@ -1014,12 +1014,12 @@ class ChatState(rx.State):
             ]
 
     def remove_pending_file(self, filename: str) -> None:
-        """선택 목록에서 파일 제거."""
+        """선택 목록에서 파일 제거"""
         self.pending_files = [f for f in self.pending_files if f.name != filename]
         self._pending_file_data.pop(filename, None)
 
     def clear_pending_files(self) -> None:
-        """선택 목록 전체 초기화."""
+        """선택 목록 전체 초기화"""
         self.pending_files = []
         self._pending_file_data = {}
 
@@ -1032,7 +1032,7 @@ class ChatState(rx.State):
             return f"{size / (1024 * 1024):.1f} MB"
 
     def _user_friendly_error(self, error: str) -> str:
-        """기술적 에러 메시지를 사용자 친화적 메시지로 변환."""
+        """기술적 에러 메시지를 사용자 친화적 메시지로 변환"""
         e = error.lower()
         if "지원하지 않는 파일 형식" in error:
             return error
@@ -1050,7 +1050,7 @@ class ChatState(rx.State):
         return "문서 처리 중 오류가 발생했습니다. 관리자에게 문의해주세요."
 
     async def confirm_upload_via_api(self):
-        """확정 버튼 클릭 → JS로 S3 업로드 실행 → on_upload_complete 콜백."""
+        """확정 버튼 클릭 → JS 로 S3 업로드 실행 → on_upload_complete 콜백"""
         if not self.pending_files:
             return
         self.ingestion_status = "uploading"
@@ -1062,7 +1062,7 @@ class ChatState(rx.State):
         )
 
     async def on_upload_complete(self, result):
-        """JS uploadKbFilesToApi() 완료 후 콜백."""
+        """JS uploadKbFilesToApi() 완료 후 콜백"""
         if isinstance(result, str):
             import json as _json
             try:
@@ -1532,7 +1532,7 @@ class ChatState(rx.State):
 
                 def _tool_exec(name: str, tool_input: dict) -> dict:
                     # 검색 범위는 사용자의 UI 선택(kb_modes)으로 결정. kb_scope 는 LLM 에
-                    # 노출하지 않고 여기서 주입(툴 스키마에도 없음).
+                    # 노출하지 않고 여기서 주입 (툴 스키마에도 부재).
                     if name == "kb_search":
                         tool_input = {**tool_input, "kb_scope": kb_modes}
                     return tool_executor.execute_tool(name, tool_input, conv_id, emp_no)
@@ -1574,7 +1574,7 @@ class ChatState(rx.State):
                         self.is_thinking = True  # tool 실행 중 스피너 표시
                 elif event_type == "tool_result":
                     # kb_search 결과 출처 누적 (같은 source_uri 는 ranks 만 병합 — 인용 마커 매칭 보존).
-                    # search_attachment 결과는 LLM 이 다음 turn 에서 활용 → UI 에 직접 표시하지 않음
+                    # search_attachment 결과는 LLM 이 다음 turn 에서 활용 → UI 에 직접 표시 제외
                     if chunk.get("name") == "kb_search":
                         new_docs = chunk.get("source_docs") or []
                         if new_docs:
@@ -1613,7 +1613,7 @@ class ChatState(rx.State):
             if stream_interrupted and content:
                 content += "\n\n*[생성이 중단되었습니다]*"
 
-            # 출처 필터링: LLM 이 본문에 [N] 인용 마커를 표기한 청크만 남김
+            # 출처 필터링: LLM 이 본문에 [N] 인용 마커를 표기한 청크만 유지
             # 1) 본문에서 [1], [1, 3], [1][3] 등 인용 마커의 번호 추출
             # 2) 마커가 있으면 → 인용된 ranks 만 유지
             #    마커가 없으면 → '정보 없음' 패턴 검사 (LLM 이 못 찾았다고 답한 경우 제거)

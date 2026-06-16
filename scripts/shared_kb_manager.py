@@ -2,11 +2,11 @@
 shared_kb_manager.py
 
 공용 Knowledge Base 파일 업로드 및 Ingestion 관리 스크립트.
-챗봇 서버와 무관하게 관리자가 직접 CLI로 실행.
+챗봇 서버와 무관하게 관리자가 직접 CLI 로 실행.
 
 S3 경로 구조:
     shared/{folder}/raw/        ← 원본 업로드 파일
-    shared/{folder}/processed/  ← Lambda 변환 결과 (Bedrock이 바라보는 경로)
+    shared/{folder}/processed/  ← Lambda 변환 결과 (Bedrock 이 바라보는 경로)
 
 사용 예시:
     # 파일 1개 업로드 + Ingestion
@@ -19,7 +19,7 @@ S3 경로 구조:
     # 디렉토리 전체 업로드 + Ingestion
     python scripts/shared_kb_manager.py --action upload --folder policy --dir ./docs/shared_kb_docs/policy/
 
-    # 특정 폴더 Ingestion만 실행 (S3에 이미 업로드된 파일 재처리)
+    # 특정 폴더 Ingestion 만 실행 (S3 에 이미 업로드된 파일 재처리)
     python scripts/shared_kb_manager.py --action ingest --folder policy
 
     # Ingestion 상태 확인
@@ -31,7 +31,7 @@ S3 경로 구조:
     # 새 폴더(Data Source) 등록
     python scripts/shared_kb_manager.py --action add-folder --folder regulation
 
-config/knowBase.yaml 의 shared_kb 섹션에 아래 항목이 채워져 있어야 합니다:
+config/knowBase.yaml 의 shared_kb 섹션에 아래 항목 설정 필요:
     shared_kb:
         kb_id:                   "your-shared-kb-id"
         kb_role_arn:             "arn:aws:iam::ACCOUNT:role/bedrock-kb-role"
@@ -62,7 +62,7 @@ import boto3
 import pandas as pd
 import yaml
 
-# 프로젝트 루트를 sys.path에 추가 (scripts/ 에서 직접 실행하기 위함)
+# 프로젝트 루트를 sys.path 에 추가 (scripts/ 에서 직접 실행하기 위함)
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -125,9 +125,9 @@ def _ds_name(folder: str) -> str:
     """Bedrock 데이터소스 이름 생성 (ASCII 안전).
 
     Bedrock 리소스 이름은 영문/숫자/하이픈/언더스코어만 허용하므로 한글 폴더명을
-    그대로 쓸 수 없다. ASCII 슬러그 + 폴더명 해시 8자로 고유하고 유효한 이름을 만든다.
+    그대로 사용 불가. ASCII 슬러그 + 폴더명 해시 8자로 고유하고 유효한 이름 생성.
     한글 등 비ASCII 폴더는 슬러그가 비므로 해시만 사용 (콘솔 식별은 description 의
-    한글 폴더명으로 한다). 영문 폴더는 슬러그가 남아 콘솔에서도 읽기 쉽다.
+    한글 폴더명 기준). 영문 폴더는 슬러그가 남아 콘솔에서도 읽기 쉬운 이름.
         'policy' → 'aiinno-bedrock-kb-ds-shared-policy-1a2b3c4d'
         '규정'   → 'aiinno-bedrock-kb-ds-shared-7e8f9a0b'
     """
@@ -157,7 +157,7 @@ def _get_data_source_id(folder: str) -> str:
 
 def _save_data_source_id(folder: str, data_source_id: str) -> None:
     """
-    config/knowBase.yaml의 shared_kb.folders에 폴더를 추가.
+    config/knowBase.yaml 의 shared_kb.folders 에 폴더를 추가.
     yaml.dump 대신 텍스트 삽입으로 기존 주석/형식을 보존.
     """
     content = CONFIG_PATH.read_text(encoding="utf-8")
@@ -219,7 +219,7 @@ def add_folder(folder: str) -> str:
 
     resp = _bedrock_agent.create_data_source(
         knowledgeBaseId=SHARED_KB_ID,
-        # 이름은 ASCII 슬러그+해시 (한글 폴더 지원). 한글 폴더명은 description 으로 식별.
+        # 이름은 ASCII 슬러그+해시 (한글 폴더 지원). 한글 폴더명은 description 으로 식별
         name=_ds_name(folder),
         description=f"공용 KB - {folder} 폴더",
         dataSourceConfiguration={
@@ -295,7 +295,7 @@ def _cleanup_existing_parts(folder: str, stem: str, ext: str) -> None:
 
 
 def _split_and_upload_tabular(folder: str, file_path: str) -> list[str]:
-    """xlsx/csv를 ROWS_PER_SPLIT 행 단위로 분할해서 S3 raw/ 에 저장."""
+    """xlsx/csv 를 ROWS_PER_SPLIT 행 단위로 분할해서 S3 raw/ 에 저장"""
     path = Path(file_path)
     ext  = path.suffix.lower()
     stem = path.stem
@@ -343,8 +343,8 @@ def _split_and_upload_tabular(folder: str, file_path: str) -> list[str]:
 # ──────────────────────────────────────────────
 def convert_pptx_to_json(file_path: str) -> str:
     """
-    pptx 파일을 슬라이드별 구조화된 JSON으로 변환.
-    Bedrock KB가 pptx를 직접 지원하지 않으므로 업로드 전에 변환.
+    pptx 파일을 슬라이드별 구조화된 JSON 으로 변환.
+    Bedrock KB 가 pptx 를 직접 지원하지 않으므로 업로드 전에 변환.
     반환: 변환된 json 파일 경로 (예: report.pptx → report_pptx.json)
     """
     from pptx import Presentation
@@ -416,7 +416,7 @@ def collect_files_from_dir(dir_path: str) -> list[str]:
 def upload_files(folder: str, file_paths: list[str]) -> list[str]:
     """
     여러 파일을 S3 shared/{folder}/raw/ 에 업로드.
-    - pptx: 원본을 S3에 보관 후 json으로 변환하여 인덱싱용 업로드
+    - pptx: 원본을 S3 에 보관 후 json 으로 변환하여 인덱싱용 업로드
     - xlsx/csv: ROWS_PER_SPLIT 행 단위로 분할 업로드
     - 그 외: 형식별 크기 제한 검증 후 단일 업로드 (기본 100MB)
     - 업로드 실패 시 부분 업로드된 파일 롤백
@@ -433,13 +433,13 @@ def upload_files(folder: str, file_paths: list[str]) -> list[str]:
             raise FileNotFoundError(f"파일 없음: {file_path}")
         _validate_file_size(file_path)
 
-    # pptx → json 변환 (원본은 S3에 별도 보관, 인덱싱은 json으로)
+    # pptx → json 변환 (원본은 S3 에 별도 보관, 인덱싱은 json 으로)
     converted_files: list[str] = []
     resolved_paths: list[str] = []
     for file_path in file_paths:
         ext = Path(file_path).suffix.lower()
         if ext in CONVERTIBLE_EXTS:
-            # 원본 pptx를 S3에 보관 (다운로드용)
+            # 원본 pptx 를 S3 에 보관 (다운로드용)
             original_key = f"{_raw_prefix(folder)}{Path(file_path).name}"
             with open(file_path, "rb") as f:
                 _s3.put_object(Bucket=S3_BUCKET, Key=original_key, Body=f)
@@ -529,7 +529,7 @@ def poll_ingestion_status(folder: str, job_id: str) -> str:
 
 
 def upload_and_ingest(folder: str, file_paths: list[str]) -> None:
-    """파일 목록 전체 업로드 → Ingestion 1회 실행 → 완료 대기."""
+    """파일 목록 전체 업로드 → Ingestion 1회 실행 → 완료 대기"""
     uploaded = upload_files(folder, file_paths)
     if not uploaded:
         print("업로드된 파일이 없습니다.")

@@ -33,7 +33,7 @@ _CHUNK_SIZE = 8192
 
 @lru_cache(maxsize=1)
 def _get_s3():
-    """S3 클라이언트 (싱글턴)."""
+    """S3 클라이언트 (싱글턴)"""
     return boto3.client("s3")
 
 
@@ -43,7 +43,7 @@ class KbDownloadRequest(BaseModel):
 
 
 def _check_access(key: str, emp_no: str) -> None:
-    """S3 key 기반 접근 권한 확인. 거부 시 HTTPException."""
+    """S3 key 기반 접근 권한 확인, 거부 시 HTTPException"""
     if key.startswith(f"users/{emp_no}/"):
         return  # 본인 개인 KB
     if key.startswith("shared/"):
@@ -65,7 +65,7 @@ async def download_kb_file(
     req: KbDownloadRequest,
     wellbot_auth: str | None = Cookie(default=None),
 ) -> StreamingResponse:
-    """KB 출처 문서를 S3 에서 읽어 클라이언트로 스트리밍한다.
+    """KB 출처 문서를 S3 에서 읽어 클라이언트로 스트리밍.
 
     Body:
         s3_uri:   "s3://bucket/key" 형식의 S3 URI

@@ -39,7 +39,7 @@ from typing import Optional
 import boto3
 from botocore.exceptions import ClientError
 
-# 프로젝트 루트를 sys.path 에 추가 (scripts/ 에서 직접 실행하기 위함)
+# 프로젝트 루트를 sys.path 에 추가 (scripts/ 에서 직접 실행하기 위한 목적)
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -71,7 +71,7 @@ def _vector_index_name(emp_no: str) -> str:
 
 
 def _raw_prefix_root(emp_no: str) -> str:
-    """users/{emp_no}/ 전체 (raw/ + originals/ 포함)."""
+    """users/{emp_no}/ 전체 (raw/ + originals/ 포함)"""
     return f"users/{emp_no}/"
 
 
@@ -83,7 +83,7 @@ def _processed_prefix(emp_no: str) -> str:
 # DB 조회 / 삭제
 # ──────────────────────────────────────────────
 def fetch_kb_info_from_db(emp_no: str) -> Optional[dict]:
-    """DB 의 AGNT_MMRY_USE_N 에서 개인 KB 정보 조회. 미등록이면 None."""
+    """DB 의 AGNT_MMRY_USE_N 에서 개인 KB 정보 조회. 미등록이면 None"""
     with get_session() as session:
         row = (
             session.query(AgntMmryUseN)
@@ -104,7 +104,7 @@ def fetch_kb_info_from_db(emp_no: str) -> Optional[dict]:
 
 
 def delete_db_row(emp_no: str) -> int:
-    """AGNT_MMRY_USE_N 의 PERSONAL 행 삭제. 반환: 삭제된 행 수."""
+    """AGNT_MMRY_USE_N 의 PERSONAL 행 삭제. 반환: 삭제된 행 수"""
     with get_session() as session:
         deleted = (
             session.query(AgntMmryUseN)
@@ -123,7 +123,7 @@ def delete_db_row(emp_no: str) -> int:
 # Bedrock 조회 / 삭제
 # ──────────────────────────────────────────────
 def find_kb_by_name(bedrock_agent, kb_name: str) -> Optional[dict]:
-    """Bedrock 에서 이름으로 KB 검색 (DB 정보 없을 때 fallback)."""
+    """Bedrock 에서 이름으로 KB 검색 (DB 정보 없을 때 fallback)"""
     try:
         paginator = bedrock_agent.get_paginator("list_knowledge_bases")
         for page in paginator.paginate():
@@ -140,7 +140,7 @@ def find_kb_by_name(bedrock_agent, kb_name: str) -> Optional[dict]:
 
 
 def check_ingestion_in_progress(bedrock_agent, kb_id: str, data_source_id: str) -> bool:
-    """진행 중인 ingestion job 이 있는지 확인."""
+    """진행 중인 ingestion job 이 있는지 확인"""
     try:
         resp = bedrock_agent.list_ingestion_jobs(
             knowledgeBaseId=kb_id,
@@ -157,7 +157,7 @@ def check_ingestion_in_progress(bedrock_agent, kb_id: str, data_source_id: str) 
 
 
 def delete_data_source(bedrock_agent, kb_id: str, data_source_id: str) -> bool:
-    """Data Source 삭제. 반환: 실제로 삭제했으면 True, 이미 없었으면 False."""
+    """Data Source 삭제. 반환: 실제로 삭제했으면 True, 이미 없었으면 False"""
     try:
         bedrock_agent.delete_data_source(
             knowledgeBaseId=kb_id,
@@ -172,7 +172,7 @@ def delete_data_source(bedrock_agent, kb_id: str, data_source_id: str) -> bool:
 
 
 def delete_knowledge_base(bedrock_agent, kb_id: str) -> bool:
-    """KB 삭제. 반환: 실제 삭제했으면 True."""
+    """KB 삭제. 반환: 실제 삭제했으면 True"""
     try:
         bedrock_agent.delete_knowledge_base(knowledgeBaseId=kb_id)
         return True
@@ -187,7 +187,7 @@ def delete_knowledge_base(bedrock_agent, kb_id: str) -> bool:
 # S3 Vectors 삭제
 # ──────────────────────────────────────────────
 def delete_vector_index(s3vectors, vector_bucket: str, index_name: str) -> bool:
-    """S3 Vectors index 삭제. 반환: 실제 삭제했으면 True."""
+    """S3 Vectors index 삭제. 반환: 실제 삭제했으면 True"""
     try:
         s3vectors.delete_index(
             vectorBucketName=vector_bucket,
@@ -206,7 +206,7 @@ def delete_vector_index(s3vectors, vector_bucket: str, index_name: str) -> bool:
 # S3 일반 객체 조회 / 삭제
 # ──────────────────────────────────────────────
 def list_s3_keys(s3, bucket: str, prefix: str) -> list[str]:
-    """prefix 하위 모든 객체 키 반환."""
+    """prefix 하위 모든 객체 키 반환"""
     keys: list[str] = []
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
@@ -216,7 +216,7 @@ def list_s3_keys(s3, bucket: str, prefix: str) -> list[str]:
 
 
 def delete_s3_keys(s3, bucket: str, keys: list[str]) -> int:
-    """S3 객체 일괄 삭제 (1000개 배치). 반환: 삭제된 객체 수."""
+    """S3 객체 일괄 삭제 (1000개 배치). 반환: 삭제된 객체 수"""
     if not keys:
         return 0
     deleted = 0
@@ -234,7 +234,7 @@ def delete_s3_keys(s3, bucket: str, keys: list[str]) -> int:
 # 메인 흐름
 # ──────────────────────────────────────────────
 def gather_resources(emp_no: str, kb_cfg: dict, clients: dict) -> dict:
-    """삭제 대상 리소스 정보 수집 (DB + AWS 조회)."""
+    """삭제 대상 리소스 정보 수집 (DB + AWS 조회)"""
     s3 = clients["s3"]
     bedrock_agent = clients["bedrock_agent"]
 
@@ -265,7 +265,7 @@ def gather_resources(emp_no: str, kb_cfg: dict, clients: dict) -> dict:
 
 
 def print_preview(emp_no: str, info: dict) -> None:
-    """삭제될 리소스 미리보기 출력."""
+    """삭제될 리소스 미리보기 출력"""
     print(f"\n📋 다음 리소스가 삭제됩니다 (emp_no={emp_no}):")
 
     if info["db_record"]:
@@ -293,7 +293,7 @@ def print_preview(emp_no: str, info: dict) -> None:
 
 
 def execute_cleanup(emp_no: str, info: dict, clients: dict) -> None:
-    """실제 삭제 수행. 의존성 역순으로 진행."""
+    """실제 삭제 수행. 의존성 역순으로 진행"""
     s3 = clients["s3"]
     bedrock_agent = clients["bedrock_agent"]
     s3vectors = clients["s3vectors"]
@@ -411,8 +411,8 @@ def main() -> None:
         and not info["processed_keys"]
     )
     if nothing_to_delete:
-        # S3 Vectors index 존재 여부는 API 호출 없이는 확신 못 함.
-        # 그래도 위 4개가 모두 비었으면 사실상 정리할 게 없다고 보고 알림.
+        # S3 Vectors index 존재 여부는 API 호출 없이는 확신 불가
+        # 그래도 위 4개가 모두 비었으면 사실상 정리할 게 없다고 보고 알림
         print("\nℹ 정리할 리소스가 없는 것 같습니다. (S3 Vectors index 는 별도로 시도해주세요)")
 
     if args.dry_run:

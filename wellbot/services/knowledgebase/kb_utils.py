@@ -83,7 +83,7 @@ ROWS_PER_SPLIT = 50_000          # xlsx/csv 행 기준 분할 단위
 
 TABULAR_EXTS = {".xlsx", ".csv"}
 
-# Bedrock KB가 지원하지 않지만, 업로드 시 변환 처리하는 형식
+# Bedrock KB 가 지원하지 않지만, 업로드 시 변환 처리하는 형식
 CONVERTIBLE_EXTS = {".pptx"}
 
 
@@ -91,7 +91,7 @@ def get_originals_prefix(raw_prefix: str) -> str:
     """raw/ prefix 를 originals/ prefix 로 변환.
 
     pptx 등 변환이 필요한 파일의 원본은 Bedrock 의 inclusionPrefix(raw/) 밖에
-    저장해서 ingestion 대상에서 제외한다. 다운로드와 문서 목록 조회용도로만 사용.
+    저장해서 ingestion 대상에서 제외. 다운로드와 문서 목록 조회용도로만 사용.
 
     예: 'users/123/raw/'  → 'users/123/originals/'
         'teams/A1/raw/'   → 'teams/A1/originals/'
@@ -119,7 +119,7 @@ MAX_FILE_SIZE_DEFAULT = 100 * 1024 * 1024  # 100MB
 def validate_file_size(file_bytes: bytes, filename: str) -> None:
     """
     파일 형식별 크기 제한 검증.
-    xlsx/csv는 분할 업로드로 처리되므로 제한 없음.
+    xlsx/csv 는 분할 업로드로 처리되므로 제한 없음.
     """
     ext = Path(filename).suffix.lower()
     limit = MAX_FILE_SIZES.get(ext, MAX_FILE_SIZE_DEFAULT)
@@ -141,7 +141,7 @@ def cleanup_existing_parts(
     bucket: str, prefix: str, stem: str, ext: str,
 ) -> None:
     """
-    동일 파일명의 기존 분할 파트를 S3에서 삭제.
+    동일 파일명의 기존 분할 파트를 S3 에서 삭제.
     재업로드 시 파트 수/시트 구성이 달라져서 오래된 파트가 남는 것을 방지.
 
     파트 명명: '{stem}_part{N}.ext' (csv·단일시트 xlsx) 또는
@@ -206,10 +206,10 @@ def split_and_upload_tabular(
     filename: str,
 ) -> list[str]:
     """
-    xlsx/csv를 ROWS_PER_SPLIT 행 단위로 분할해서 S3에 저장.
+    xlsx/csv 를 ROWS_PER_SPLIT 행 단위로 분할해서 S3 에 저장.
     업로드 전 기존 분할 파트를 정리해서 오래된 데이터 잔류를 방지.
 
-    xlsx 는 **모든 시트**를 각각 분할 업로드한다 (시트명 보존). 멀티시트면 파일명에
+    xlsx 는 **모든 시트**를 각각 분할 업로드 (시트명 보존). 멀티시트면 파일명에
     시트 슬러그를 포함('{stem}_{sheet}_part{N}.xlsx'), 단일시트면 기존 명명 유지.
     반환: 업로드된 S3 URI 목록
     """
@@ -242,9 +242,9 @@ def split_and_upload_tabular(
 # ──────────────────────────────────────────────
 def convert_pptx_to_json(file_bytes: bytes, filename: str) -> tuple[bytes, str]:
     """
-    pptx 파일을 슬라이드별 구조화된 JSON으로 변환.
-    Bedrock KB가 pptx를 지원하지 않으므로, 업로드 전에 json으로 변환하여
-    Lambda의 parse_json이 처리할 수 있도록 함.
+    pptx 파일을 슬라이드별 구조화된 JSON 으로 변환.
+    Bedrock KB 가 pptx 를 지원하지 않으므로, 업로드 전에 json 으로 변환하여
+    Lambda 의 parse_json 이 처리 가능하도록 전처리.
 
     반환: (json_bytes, 변환된_파일명)
         예: ("report.pptx" → b'{...}', "report_pptx.json")
@@ -534,9 +534,9 @@ def delete_files_from_kb(bucket: str, prefix: str, filenames: list[str]) -> None
 
     pptx 의 경우 원본(originals/) 과 인덱싱본(raw/_pptx.json) 둘 다 삭제.
     삭제 후 ingestion job 을 실행해야 Bedrock 이 변경을 감지하여
-    S3 Vectors 의 해당 파일 벡터를 제거한다 (호출자가 직접 트리거).
+    S3 Vectors 의 해당 파일 벡터를 제거 (호출자가 직접 트리거).
 
-    S3 delete_object 는 멱등이므로 키가 없어도 예외를 던지지 않는다.
+    S3 delete_object 는 멱등이므로 키가 없어도 예외를 던지지 않음.
     """
     originals = get_originals_prefix(prefix)
     keys_to_delete: list[str] = []

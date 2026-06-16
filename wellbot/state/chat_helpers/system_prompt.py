@@ -64,10 +64,10 @@ def augment_system_with_attachments(base_prompt: str, conv_id: str) -> str:
 
 
 def augment_system_with_kb(base_prompt: str, kb_modes: list[str]) -> str:
-    """system prompt 에 KB 활성화 안내를 append 한다.
+    """system prompt 에 KB 활성화 안내 append.
 
-    LLM 이 `kb_search` 도구를 능동적으로 호출하도록 어떤 KB 가 활성화됐는지
-    명시하고 사용 지침 + 인용 표기 규칙을 제공한다.
+    LLM 이 kb_search 도구를 능동적으로 호출하도록 어떤 KB 가 활성화됐는지
+    명시하고 사용 지침 + 인용 표기 규칙 제공.
     """
     if not kb_modes:
         return base_prompt

@@ -16,7 +16,7 @@ _kb_config: dict | None = None
 
 
 # .env 로 옮겨진 KB 인프라 키 (yaml 의 personal_kb / shared_kb 양 섹션에 동일하게 주입)
-# s3_bucket 은 채팅 첨부파일 버킷(S3_BUCKET_NAME)과 동일 자원이라 같은 env var 를 공유한다.
+# s3_bucket 은 채팅 첨부파일 버킷(S3_BUCKET_NAME)과 동일 자원이라 같은 env var 를 공유
 _KB_INFRA_ENV_KEYS = {
     "s3_bucket":              "S3_BUCKET_NAME",
     "s3_intermediate_bucket": "KB_S3_INTERMEDIATE_BUCKET",
@@ -27,10 +27,10 @@ _KB_INFRA_ENV_KEYS = {
 
 
 def get_kb_config() -> dict:
-    """knowBase.yaml + .env 의 KB_* 변수를 병합해 KB 설정을 반환한다 (캐싱).
+    """knowBase.yaml + .env 의 KB_* 변수를 병합해 KB 설정을 반환 (캐싱).
 
     인프라 자원(S3 버킷, Lambda ARN 등)은 .env 의 KB_* 변수에서 주입되어
-    personal_kb / shared_kb 양 섹션에 동일한 값으로 채워진다.
+    personal_kb / shared_kb 양 섹션에 동일한 값으로 채워짐.
     """
     global _kb_config
     if _kb_config is None:

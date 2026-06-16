@@ -1,10 +1,10 @@
 """KB(Knowledge Base) 도메인 패키지.
 
-개인/팀/공용 KB 의 생성·조회·의미검색·파일 관리를 담당.
+개인/팀/공용 KB 의 생성·조회·의미검색·파일 관리를 담당
 
-공개 진입점을 아래로 재노출한다. 단, personal/team 양쪽에 동명으로 존재하는
-`start_ingestion` / `upload_and_ingest` 는 모호성 때문에 재노출하지 않으므로
-해당 서브모듈에서 직접 import 한다.
+공개 진입점을 아래로 재노출. 단, personal/team 양쪽에 동명으로 존재하는
+start_ingestion / upload_and_ingest 는 모호성 때문에 재노출하지 않으므로
+해당 서브모듈에서 직접 import.
     예) from wellbot.services.knowledgebase.personal_kb_manager import upload_and_ingest
 """
 

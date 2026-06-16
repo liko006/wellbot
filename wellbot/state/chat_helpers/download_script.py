@@ -64,11 +64,11 @@ def build_download_script(file_no: int) -> str:
 
 
 def build_kb_download_script(s3_uri: str, filename: str) -> str:
-    """KB 출처 문서 다운로드를 실행하는 JS 본문 반환.
+    """KB 출처 문서 다운로드를 실행하는 JS 본문 반환
 
     백엔드 프록시(POST /api/download_kb)로 S3 문서를 받아 a[download] 로 저장.
     내부망에서 presigned URL 직접 사용이 막히는 환경 대응. 첨부 다운로드와 달리
-    파일 식별자가 file_no 가 아닌 s3_uri 이므로 JSON body 로 전달한다.
+    파일 식별자가 file_no 가 아닌 s3_uri 이므로 JSON body 로 전달.
     """
     uri_js = json.dumps(s3_uri)
     name_js = json.dumps(filename)

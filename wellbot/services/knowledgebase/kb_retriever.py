@@ -5,13 +5,13 @@ Bedrock KB Retrieve 순수 로직 모듈.
 공용 KB / 팀 KB / 개인 KB 를 선택적으로 조회하고 결과를 병합.
 
 kb_modes (복수 선택 가능):
-    ["shared"]              → 공용 KB만
-    ["team"]                → 팀 KB만
-    ["personal"]            → 개인 KB만
+    ["shared"]              → 공용 KB 만
+    ["team"]                → 팀 KB 만
+    ["personal"]            → 개인 KB 만
     ["shared", "personal"]  → 공용 + 개인
     ["shared", "team", "personal"] → 전체
 
-결과 병합: 각 KB에서 top_k개 조회 → score 기준 정렬 → 최종 top_k개 반환
+결과 병합: 각 KB 에서 top_k 개 조회 → score 기준 정렬 → 최종 top_k 개 반환
 """
 
 import logging
@@ -37,13 +37,13 @@ def _region() -> str:
 
 @lru_cache(maxsize=1)
 def _shared_kb_id() -> str:
-    """공용 KB ID. 최초 호출 시 1회 로드 후 캐싱."""
+    """공용 KB ID. 최초 호출 시 1회 로드 후 캐싱"""
     return get_kb_config().get("shared_kb", {}).get("kb_id", "")
 
 
 @lru_cache(maxsize=1)
 def _get_client():
-    """Bedrock Agent Runtime 클라이언트 (싱글턴)."""
+    """Bedrock Agent Runtime 클라이언트 (싱글턴)"""
     return boto3.client("bedrock-agent-runtime", region_name=_region())
 
 
@@ -54,7 +54,7 @@ def _map_to_original_uri(s3_uri: str) -> str:
     """Bedrock 이 반환하는 indexed 파일 URI 를 사용자에게 노출할 원본 URI 로 변환.
 
     pptx 의 경우: raw/{name}_pptx.json → originals/{name}.pptx
-    그 외 형식은 변경 없이 그대로 반환.
+    그 외 형식은 변경 없이 그대로 반환
     """
     if s3_uri.endswith("_pptx.json") and "/raw/" in s3_uri:
         base, _, filename = s3_uri.rpartition("/")
@@ -73,7 +73,7 @@ def _retrieve_single(
     top_k: int,
     source: str,
 ) -> list[dict[str, Any]]:
-    """단일 KB에서 Retrieve 호출. 결과에 source 태그 부착."""
+    """단일 KB 에서 Retrieve 호출. 결과에 source 태그 부착"""
     try:
         resp = _get_client().retrieve(
             knowledgeBaseId=kb_id,
@@ -119,7 +119,7 @@ def _merge_results(
     top_k: int,
     min_score: float = KB_MIN_SCORE,
 ) -> list[dict[str, Any]]:
-    """모든 KB 결과를 score 기준 정렬 후 상위 top_k개 반환.
+    """모든 KB 결과를 score 기준 정렬 후 상위 top_k 개 반환.
 
     min_score 미만의 청크는 무관 결과로 간주하여 제외.
     이로써 LLM 이 '찾을 수 없음'으로 답변하는데도 저점수 출처가 표시되는 것을 방지.
@@ -133,7 +133,7 @@ def _merge_results(
 
 
 def _format_context(results: list[dict[str, Any]]) -> str:
-    """병합된 결과를 LLM 프롬프트용 컨텍스트 문자열로 포맷팅."""
+    """병합된 결과를 LLM 프롬프트용 컨텍스트 문자열로 포맷팅"""
     if not results:
         return "관련 문서를 찾을 수 없습니다."
 
@@ -163,9 +163,9 @@ def retrieve(
     top_k: int = KB_SEARCH_TOP_K,
 ) -> dict[str, Any]:
     """
-    kb_modes에 포함된 KB들을 각각 조회하고 결과를 병합하여 반환.
+    kb_modes 에 포함된 KB 들을 각각 조회하고 결과를 병합하여 반환.
 
-    각 KB에서 top_k개씩 조회 → score 기준 정렬 → 최종 top_k개 반환.
+    각 KB 에서 top_k 개씩 조회 → score 기준 정렬 → 최종 top_k 개 반환.
 
     반환값:
     {

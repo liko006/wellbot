@@ -1,7 +1,7 @@
 """지식베이스(KB) UI 컴포넌트.
 
 입력 바의 + 메뉴에서 진입하는 KB 관련 패널/플라이아웃 모음.
-input_bar.py 가 길어져 KB 전용 컴포넌트를 이 모듈로 분리했다.
+input_bar.py 가 길어져 KB 전용 컴포넌트를 이 모듈로 분리.
 
 공개 진입점 (input_bar 에서 import):
     kb_flyout         - + 메뉴의 '지식베이스' hover flyout (검색 범위/문서목록/업로드)
@@ -22,8 +22,8 @@ from wellbot.styles import COLORS, SPACING
 def kb_flyout() -> rx.Component:
     """지식베이스 서브 항목 — hover 시 오른쪽 flyout (hover_card).
 
-    'KB 검색 범위' 는 클릭 시 inline 으로 확장되어 체크박스가 펼쳐진다.
-    '문서 목록', '업로드' 는 클릭 시 입력창 위 패널을 연다.
+    'KB 검색 범위' 는 클릭 시 inline 으로 확장되어 체크박스가 펼쳐짐.
+    '문서 목록', '업로드' 는 클릭 시 입력창 위 패널을 엶.
     """
     def _item(icon: str, label: str, on_click) -> rx.Component:
         return rx.hstack(
@@ -137,7 +137,7 @@ def kb_flyout() -> rx.Component:
 
 
 def _scope_checkbox(label: str, mode: str) -> rx.Component:
-    """KB 검색 범위 체크박스 항목."""
+    """KB 검색 범위 체크박스 항목"""
     return rx.hstack(
         rx.checkbox(
             checked=ChatState.kb_modes.contains(mode),
@@ -152,7 +152,7 @@ def _scope_checkbox(label: str, mode: str) -> rx.Component:
 
 
 def _pending_file_row(f: PendingFile) -> rx.Component:
-    """대기 중인 KB 업로드 파일 행."""
+    """대기 중인 KB 업로드 파일 행"""
     return rx.hstack(
         file_icon_by_name(f.name),
         rx.text(
@@ -179,7 +179,7 @@ def _pending_file_row(f: PendingFile) -> rx.Component:
 
 
 def _kb_docs_tab_btn(label: str, tab: str) -> rx.Component:
-    """문서 목록 탭 버튼."""
+    """문서 목록 탭 버튼"""
     is_active = ChatState.kb_doc_list_tab == tab
     is_team = tab == "team"
     is_disabled = is_team & (~ChatState.team_kb_exists | (ChatState.dept_cd == ""))
@@ -205,7 +205,7 @@ def _kb_docs_tab_btn(label: str, tab: str) -> rx.Component:
 
 
 def _kb_doc_row(doc: rx.Var) -> rx.Component:
-    """문서 목록 행."""
+    """문서 목록 행"""
     return rx.hstack(
         # 체크박스 (개인/팀 탭에서 표시, 회사 탭에서는 공간만 차지하여 정렬 유지)
         rx.box(
@@ -269,7 +269,7 @@ def _kb_doc_row(doc: rx.Var) -> rx.Component:
 
 
 def _kb_shared_file_row(doc: KbSharedFile) -> rx.Component:
-    """회사 KB 의 파일 행 (폴더 안에 들여쓰기로 표시)."""
+    """회사 KB 의 파일 행 (폴더 안에 들여쓰기로 표시)"""
     return rx.hstack(
         # 토글 박스 자리 비움 (들여쓰기 효과)
         rx.box(width="20px", flex_shrink="0"),
@@ -316,7 +316,7 @@ def _kb_shared_file_row(doc: KbSharedFile) -> rx.Component:
 
 
 def _kb_folder_row(folder: KbSharedFolder) -> rx.Component:
-    """회사 KB 의 문서종류(폴더) 행 + 펼침 시 하위 파일 목록."""
+    """회사 KB 의 문서종류(폴더) 행 + 펼침 시 하위 파일 목록"""
     is_expanded = ChatState.expanded_kb_folders.contains(folder.folder_type)
     return rx.vstack(
         # 폴더 헤더
@@ -381,7 +381,7 @@ def _kb_folder_row(folder: KbSharedFolder) -> rx.Component:
 
 
 def kb_docs_panel() -> rx.Component:
-    """KB 문서 목록 조회 패널 (입력창 위)."""
+    """KB 문서 목록 조회 패널 (입력창 위)"""
     return rx.cond(
         ChatState.active_panel == "kb_docs",
         rx.box(
@@ -581,7 +581,7 @@ def kb_docs_panel() -> rx.Component:
 
 
 def kb_upload_panel() -> rx.Component:
-    """KB 문서 업로드 패널 (입력창 위)."""
+    """KB 문서 업로드 패널 (입력창 위)"""
     return rx.cond(
         ChatState.active_panel == "upload",
         rx.box(
@@ -608,7 +608,7 @@ def kb_upload_panel() -> rx.Component:
                     width="100%",
                 ),
                 rx.separator(size="4", color=COLORS["border"]),
-                # 파일 선택 영역 (JS file picker — rx.upload의 10MB 제한 우회)
+                # 파일 선택 영역 (JS file picker — rx.upload 의 10MB 제한 우회)
                 rx.box(
                     rx.hstack(
                         rx.icon("folder-open", size=16, color=COLORS["text_secondary"]),
@@ -757,7 +757,7 @@ def kb_upload_panel() -> rx.Component:
 
 
 def ingestion_banner() -> rx.Component:
-    """Ingestion 진행 중 배너 (업로드 패널 닫혔을 때)."""
+    """Ingestion 진행 중 배너 (업로드 패널 닫혔을 때)"""
     return rx.cond(
         (ChatState.ingestion_status == "processing") & (ChatState.active_panel != "upload"),
         rx.hstack(

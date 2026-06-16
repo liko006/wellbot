@@ -162,15 +162,15 @@ def object_exists(s3_key: str) -> bool:
 
 
 def list_objects_with_meta(prefix: str, bucket: str | None = None) -> list[dict]:
-    """prefix 하위의 모든 오브젝트를 메타데이터와 함께 반환한다 (KB 문서 목록용).
+    """prefix 하위의 모든 오브젝트를 메타데이터와 함께 반환 (KB 문서 목록용).
 
     Args:
         prefix: S3 key prefix
-        bucket: S3 버킷명. 미지정 시 기본 버킷(S3_BUCKET_NAME) 사용.
-                shared KB 처럼 다른 버킷을 조회해야 할 때 명시.
+        bucket: S3 버킷명. 미지정 시 기본 버킷(S3_BUCKET_NAME) 사용,
+                shared KB 처럼 다른 버킷을 조회해야 할 때 명시
 
     반환 항목: key, file_name, last_modified (datetime), size (bytes)
-    _pptx.json 변환 파일은 제외한다.
+    _pptx.json 변환 파일은 제외
     """
     client = _get_client()
     if bucket is None:

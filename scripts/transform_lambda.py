@@ -1,8 +1,8 @@
 """
 Bedrock KB Custom Transformation Lambda
 
-Bedrock Ingestion Job이 실행될 때 자동 호출됨.
-- 입력: S3 raw/ 의 파일 경로 (Bedrock이 event로 전달)
+Bedrock Ingestion Job 이 실행될 때 자동 호출.
+- 입력: S3 raw/ 의 파일 경로 (Bedrock 이 event 로 전달)
 - 처리: 파일 형식별 파싱 + 청킹
 - 출력: S3 processed/ 에 Bedrock KB 포맷 JSON 저장 후 경로 반환
 
@@ -50,7 +50,7 @@ CHUNKER_TYPE    = os.environ.get("CHUNKER_TYPE", "recursive")       # "fixed" | 
 INTERMEDIATE_BUCKET = os.environ["INTERMEDIATE_BUCKET"]
 CHUNK_SIZE      = int(os.environ.get("CHUNK_SIZE", "1500"))
 CHUNK_OVERLAP   = int(os.environ.get("CHUNK_OVERLAP", "200"))
-ROWS_PER_CHUNK  = int(os.environ.get("ROWS_PER_CHUNK", "15"))             # 기본 (csv/xlsx/docx 표/pptx 표)
+ROWS_PER_CHUNK  = int(os.environ.get("ROWS_PER_CHUNK", "15"))             # 기본값 (csv/xlsx/docx 표/pptx 표)
 PDF_TABLE_ROWS_PER_CHUNK = int(os.environ.get("PDF_TABLE_ROWS_PER_CHUNK", "5"))  # PDF 표 전용 (정밀 검색용)
 MD_CHUNK_SIZE   = int(os.environ.get("MD_CHUNK_SIZE", "2000"))
 JSON_CHUNK_SIZE = int(os.environ.get("JSON_CHUNK_SIZE", "1200"))
@@ -93,7 +93,7 @@ MAX_METADATA_BYTES = 2048  # S3 Vectors filterable metadata 크기 제한
 
 def _trim_metadata(meta: Dict[str, Any], limit: int = MAX_METADATA_BYTES) -> Dict[str, Any]:
     """
-    메타데이터를 JSON 직렬화 기준 limit 바이트 이하로 축소.
+    메타데이터를 JSON 직렬화 기준 limit 바이트 이하로 축소
     1차: columns 필드를 컬럼 수 요약으로 대체
     2차: source 경로를 파일명만으로 축약
     3차: 그래도 초과하면 가장 큰 값부터 제거
@@ -138,8 +138,8 @@ def _trim_metadata(meta: Dict[str, Any], limit: int = MAX_METADATA_BYTES) -> Dic
 
 def _write_chunks_to_s3(bucket: str, key: str, chunks: List[Chunk]) -> str:
     """
-    청크 리스트를 Bedrock KB contentBody 포맷 JSON으로 S3에 저장.
-    저장 경로: processed/ prefix로 변환하여 intermediate bucket에 저장.
+    청크 리스트를 Bedrock KB contentBody 포맷 JSON 으로 S3 에 저장
+    저장 경로: processed/ prefix 로 변환하여 intermediate bucket 에 저장
     반환: 저장된 S3 URI
     """
     file_contents = [
@@ -153,7 +153,7 @@ def _write_chunks_to_s3(bucket: str, key: str, chunks: List[Chunk]) -> str:
     ]
     payload = json.dumps({"fileContents": file_contents}, ensure_ascii=False)
 
-    # raw/ → processed/ 경로 변환, 확장자를 .json으로 변경
+    # raw/ → processed/ 경로 변환, 확장자를 .json 으로 변경
     processed_key = re.sub(r"^(.*/)raw/", r"\1processed/", key)
     processed_key = re.sub(r"\.[^.]+$", ".json", processed_key)
 
@@ -174,7 +174,7 @@ _RECURSIVE_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 
 
 def _recursive_split(text: str, separators: List[str], chunk_size: int) -> List[str]:
-    """구분자 우선순위에 따라 재귀적으로 분할."""
+    """구분자 우선순위에 따라 재귀적으로 분할"""
     if not separators:
         return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
@@ -193,7 +193,7 @@ def _recursive_split(text: str, separators: List[str], chunk_size: int) -> List[
 
 
 def _recursive_merge(parts: List[str], chunk_size: int, overlap: int) -> List[str]:
-    """분할된 조각을 chunk_size 이하로 합치되 overlap 적용."""
+    """분할된 조각을 chunk_size 이하로 합치되 overlap 적용"""
     merged, current = [], ""
     for part in parts:
         candidate = (current + " " + part).strip() if current else part
@@ -218,8 +218,8 @@ def _chunk_text(
     extra_meta: Optional[Dict] = None,
 ) -> List[Chunk]:
     """
-    환경변수 CHUNKER_TYPE에 따라 fixed 또는 recursive 청킹 수행.
-    chunk_size/overlap 미지정 시 환경변수 기본값 사용.
+    환경변수 CHUNKER_TYPE 에 따라 fixed 또는 recursive 청킹 수행
+    chunk_size/overlap 미지정 시 환경변수 기본값 사용
     """
     cs = chunk_size or CHUNK_SIZE
     ov = overlap or CHUNK_OVERLAP
@@ -273,11 +273,11 @@ def _chunk_table_rows(
     extra_meta: Optional[Dict] = None,
 ) -> List[Chunk]:
     """
-    헤더 + 행 조합으로 텍스트 변환 후 청킹.
-    rows_per_chunk 미지정 시 환경변수 기본값 사용.
+    헤더 + 행 조합으로 텍스트 변환 후 청킹
+    rows_per_chunk 미지정 시 환경변수 기본값 사용
 
     docx/pptx 의 병합 셀, 불규칙 테이블 등으로 헤더 < 데이터 행 길이가 되는
-    경우를 방어: 부족한 헤더는 'col{N}' 으로 자동 보강한다.
+    경우를 방어: 부족한 헤더는 'col{N}' 으로 자동 보강
     """
     rpc = rows_per_chunk or ROWS_PER_CHUNK
 
@@ -315,7 +315,7 @@ def _chunk_table_rows(
 # ──────────────────────────────────────────────
 def parse_html(data: bytes, source: str) -> List[Chunk]:
     """
-    BeautifulSoup으로 HTML 태그 제거 후 텍스트 추출.
+    BeautifulSoup 으로 HTML 태그 제거 후 텍스트 추출
     - <script>, <style> 태그는 제거
     - 제목(<title>)을 첫 줄에 포함
     """
@@ -536,7 +536,7 @@ PARSERS = {
     "txt":  parse_txt,
     "md":   parse_md,
     "html": parse_html,
-    "htm":  parse_html,   # .htm도 동일하게 처리
+    "htm":  parse_html,   # .htm 도 동일하게 처리
     "json": parse_json,
     "csv":  parse_csv,
     "xlsx": parse_xlsx,
@@ -563,7 +563,7 @@ def _route_and_parse(data: bytes, key: str) -> List[Chunk]:
 # ──────────────────────────────────────────────
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
-    Bedrock이 전달하는 event 구조:
+    Bedrock 이 전달하는 event 구조:
     {
         "version": "1.0",
         "knowledgeBaseId": "...",
@@ -590,7 +590,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         bucket, key = _parse_s3_uri(s3_uri)
 
         try:
-            # 1. S3 raw/에서 파일 읽기
+            # 1. S3 raw/ 에서 파일 읽기
             data = _read_s3_bytes(bucket, key)
             logger.info(f"[Lambda] S3 읽기 완료: {s3_uri} ({len(data):,} bytes)")
 
@@ -598,7 +598,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             chunks = _route_and_parse(data, key)
             logger.info(f"[Lambda] 청킹 완료: {len(chunks)}개 청크")
 
-            # 3. processed/에 저장
+            # 3. processed/ 에 저장
             output_uri = _write_chunks_to_s3(INTERMEDIATE_BUCKET, key, chunks)
 
             output_files.append({
@@ -608,11 +608,11 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             })
 
         except ValueError as e:
-            # 지원하지 않는 파일 형식 → 해당 파일만 스킵, Job은 계속
+            # 지원하지 않는 파일 형식 → 해당 파일만 스킵, Job 은 계속
             logger.warning(f"[Lambda] 스킵: {s3_uri} — {e}")
         except Exception as e:
             logger.error(f"[Lambda] 처리 실패: {s3_uri} — {e}", exc_info=True)
-            raise  # Bedrock이 Ingestion Job을 FAILED로 마킹
+            raise  # Bedrock 이 Ingestion Job 을 FAILED 로 마킹
 
     logger.info(f"[Lambda] 완료: {len(output_files)}개 파일 처리")
     return {"outputFiles": output_files}

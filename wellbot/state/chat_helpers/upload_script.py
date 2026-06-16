@@ -109,7 +109,7 @@ def build_upload_script(
 #
 # build_upload_script 와 달리 파라미터 없는 정적 스크립트로, 컴포넌트 mount/unmount
 # 타이밍에 따른 ReferenceError 를 피하려고 pages/index.py 에서 rx.script 로
-# 페이지 레벨에 1회만 등록한다 (window 전역 함수로 항상 사용 가능).
+# 페이지 레벨에 1회만 등록 (window 전역 함수로 항상 사용 가능).
 KB_UPLOAD_SCRIPT = """
 window._kbFileInput = null;
 window._kbSelectedFiles = [];
