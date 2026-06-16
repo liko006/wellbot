@@ -147,7 +147,9 @@ def upload_and_ingest(
     job_id           = start_ingestion(kb_id, data_source_id)
     ingestion_status = poll_ingestion_status(kb_id, data_source_id, job_id)
 
-    if is_first and ingestion_status == "COMPLETE":
+    # 부분 실패(COMPLETE_WITH_ERRORS)도 KB 는 생성되어 일부 문서가 색인되므로
+    # 최초 1회 DB 에 등록한다 (등록 누락 시 get_user_kb 가 계속 None 을 반환).
+    if is_first and ingestion_status.startswith("COMPLETE"):
         _insert_user_kb(emp_no, kb_id, data_source_id)
 
     return {

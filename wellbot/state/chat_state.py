@@ -1126,7 +1126,11 @@ class ChatState(rx.State):
                 status = await loop.run_in_executor(
                     None, lambda: _poll(kb_info["kb_id"], kb_info["data_source_id"], job_id)
                 )
-                if is_first and status == "COMPLETE":
+                # 부분 실패(COMPLETE_WITH_ERRORS)도 KB 는 Bedrock 에 생성되고 일부
+                # 문서가 색인되므로 DB 에 등록한다. 그래야 아래에서 personal_kb_exists
+                # 를 True 로 켠 것과 DB 가 일치하고, 다음 on_load 에서 그 값이 False 로
+                # 뒤집혀 retrieve 가 개인 KB 를 조용히 건너뛰는 desync 를 막는다.
+                if is_first and status.startswith("COMPLETE"):
                     await loop.run_in_executor(
                         None, lambda: _insert_user_kb(emp_no, kb_info["kb_id"], kb_info["data_source_id"])
                     )
