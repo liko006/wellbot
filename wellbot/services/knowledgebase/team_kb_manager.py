@@ -45,9 +45,9 @@ SEQ_TEAM  = 2                       # AGNT_SEQ: 1=personal, 2=team
 # ──────────────────────────────────────────────
 # 부서 단위 직렬화 락
 #   같은 팀의 두 팀원이 동시에 업로드하면 둘 다 "팀 KB 없음"으로 판단해
-#   중복 Bedrock KB 를 만들 수 있다. 부서코드별 락으로 조회→생성→등록을
-#   원자화해 이를 막는다. (단일 백엔드 프로세스 기준이며, 다중 프로세스
-#   환경에서는 create_team_kb 의 find_existing_kb 가 백스톱 역할을 한다.)
+#   중복 Bedrock KB 를 생성할 위험. 부서코드별 락으로 조회→생성→등록을
+#   원자화해 방지. (단일 백엔드 프로세스 기준이며, 다중 프로세스 환경에서는
+#   create_team_kb 의 find_existing_kb 가 백스톱)
 # ──────────────────────────────────────────────
 _dept_locks: dict[str, threading.Lock] = {}
 _dept_locks_guard = threading.Lock()

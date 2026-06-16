@@ -94,9 +94,9 @@ KB_SEARCH_TOOL: dict = {
                         "type": "string",
                         "description": "검색할 내용을 설명하는 자연어 쿼리.",
                     },
-                    # kb_scope 는 LLM 입력으로 노출하지 않는다. 검색 범위는 사용자의
-                    # UI 선택(kb_modes)으로 결정되며 _tool_exec 에서 주입하므로,
-                    # LLM 이 추측해 넘겨도 항상 덮어써져 무의미하다.
+                    # kb_scope 는 LLM 입력 스키마에서 제외. 검색 범위는 사용자의 UI
+                    # 선택(kb_modes)으로 결정되며 _tool_exec 에서 주입하므로, LLM 이
+                    # 추측해 넘겨도 항상 덮어써져 무의미.
                     "top_k": {
                         "type": "integer",
                         "description": "반환할 상위 결과 개수. 기본 5.",

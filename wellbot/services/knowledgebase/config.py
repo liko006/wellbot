@@ -37,9 +37,9 @@ def get_kb_config() -> dict:
         with open(KNOWBASE_YAML, encoding="utf-8") as f:
             _kb_config = yaml.safe_load(f) or {}
 
-        # env 값이 실제로 설정된 경우에만 override 한다. 미설정/빈 문자열이면
-        # yaml 값을 보존한다 (예전에는 빈 문자열로 무조건 덮어써 ARN/버킷이
-        # 공란이 되는 footgun 이 있었음).
+        # env 값이 실제로 설정된 경우에만 override 적용. 미설정/빈 문자열이면
+        # yaml 값을 보존 (예전에는 빈 문자열로 무조건 덮어써 ARN/버킷이 공란이
+        # 되는 footgun 존재).
         env_overrides = {}
         for cfg_key, env_key in _KB_INFRA_ENV_KEYS.items():
             value = os.getenv(env_key)
@@ -48,7 +48,7 @@ def get_kb_config() -> dict:
         for section in ("personal_kb", "shared_kb"):
             _kb_config.setdefault(section, {}).update(env_overrides)
 
-        # 공용 KB id 는 shared_kb 에만 적용. KB_ID 가 설정된 경우에만 yaml 값 대체.
+        # 공용 KB id 는 shared_kb 에만 적용. KB_ID 가 설정된 경우에만 yaml 값 대체
         shared_kb_id = os.getenv("KB_ID")
         if shared_kb_id:
             _kb_config.setdefault("shared_kb", {})["kb_id"] = shared_kb_id

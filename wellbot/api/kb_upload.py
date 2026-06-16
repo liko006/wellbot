@@ -17,7 +17,7 @@ confirm_upload 시 ingestion만 트리거.
     - files: 파일 목록 (최대 5개)
     - upload_target: "personal" | "team"
     사번(emp_no)과 팀 부서코드(dept_cd)는 클라이언트 입력이 아니라
-    wellbot_auth 세션 쿠키에서 서버가 도출한다.
+    wellbot_auth 세션 쿠키에서 서버가 도출.
 
 응답:
     {
@@ -59,7 +59,7 @@ async def upload_kb_files(
     - team:     s3://{bucket}/teams/{dept_cd}/raw/{filename}
 
     emp_no / dept_cd 는 클라이언트 입력을 신뢰하지 않고 wellbot_auth 세션
-    쿠키에서 서버가 도출한다 (타인 KB 에 임의 파일 주입 방지).
+    쿠키에서 서버가 도출 (타인 KB 에 임의 파일 주입 방지).
     """
     # 1. 인증 — 세션 쿠키에서 emp_no 도출
     if not wellbot_auth:
@@ -95,10 +95,9 @@ async def upload_kb_files(
     if not bucket:
         return {"uploaded": [], "error": "S3 버킷 설정이 없습니다."}
 
-    # 파일 바이트를 읽어 kb_utils.upload_files_to_kb 로 위임한다.
-    # 변환(pptx→json)/분할(xlsx·csv)/형식·크기 검증/롤백 로직의 단일 출처로,
-    # API 에서 중복 구현하지 않는다. (검증은 업로드 전 전체에 대해 선수행되고,
-    # 실패 시 originals/ 원본까지 포함해 롤백된다.)
+    # 파일 바이트를 읽어 kb_utils.upload_files_to_kb 로 위임 — 변환(pptx→json)·
+    # 분할(xlsx·csv)·형식/크기 검증·롤백 로직의 단일 출처. 검증은 업로드 전
+    # 전체에 선수행되고, 실패 시 originals/ 원본까지 포함해 롤백.
     file_tuples: list[tuple[bytes, str]] = []
     for file in files:
         file_tuples.append((await file.read(), file.filename))
@@ -112,7 +111,7 @@ async def upload_kb_files(
         log.exception("KB API 업로드 실패")
         return {"uploaded": [], "error": str(e)}
 
-    # originals/ 원본(pptx)은 내부 자원이라 응답 목록에서 제외한다.
+    # originals/ 원본(pptx)은 내부 자원이라 응답 목록에서 제외
     uploaded = [
         {"name": uri.rsplit("/", 1)[-1], "s3_uri": uri}
         for uri in uris

@@ -1127,9 +1127,9 @@ class ChatState(rx.State):
                     None, lambda: _poll(kb_info["kb_id"], kb_info["data_source_id"], job_id)
                 )
                 # 부분 실패(COMPLETE_WITH_ERRORS)도 KB 는 Bedrock 에 생성되고 일부
-                # 문서가 색인되므로 DB 에 등록한다. 그래야 아래에서 personal_kb_exists
-                # 를 True 로 켠 것과 DB 가 일치하고, 다음 on_load 에서 그 값이 False 로
-                # 뒤집혀 retrieve 가 개인 KB 를 조용히 건너뛰는 desync 를 막는다.
+                # 문서가 색인되므로 DB 에 등록. 그래야 아래에서 personal_kb_exists 를
+                # True 로 켠 것과 DB 가 일치하고, 다음 on_load 에서 그 값이 False 로
+                # 뒤집혀 retrieve 가 개인 KB 를 조용히 건너뛰는 desync 를 방지.
                 if is_first and status.startswith("COMPLETE"):
                     await loop.run_in_executor(
                         None, lambda: _insert_user_kb(emp_no, kb_info["kb_id"], kb_info["data_source_id"])
@@ -1531,8 +1531,8 @@ class ChatState(rx.State):
                 tool_config = tool_executor.build_tool_config()
 
                 def _tool_exec(name: str, tool_input: dict) -> dict:
-                    # 검색 범위는 사용자의 UI 선택(kb_modes)으로 결정한다. kb_scope 는
-                    # LLM 에 노출하지 않고 여기서 주입한다(툴 스키마에도 없음).
+                    # 검색 범위는 사용자의 UI 선택(kb_modes)으로 결정. kb_scope 는 LLM 에
+                    # 노출하지 않고 여기서 주입(툴 스키마에도 없음).
                     if name == "kb_search":
                         tool_input = {**tool_input, "kb_scope": kb_modes}
                     return tool_executor.execute_tool(name, tool_input, conv_id, emp_no)
