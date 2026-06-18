@@ -186,6 +186,15 @@ def execute_tool(
         return {"text": f"도구 실행 중 오류가 발생했습니다: {exc}", "status": "error"}
 
 
+def _parse_top_k(raw: Any, default: int, max_k: int) -> int:
+    """tool_input 의 top_k 를 정수로 변환 후 1..max_k 로 클램프. 변환 실패 시 default"""
+    try:
+        value = int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, max_k))
+
+
 def _run_search_attachment(tool_input: dict[str, Any], smry_id: str) -> dict:
     """search_attachment 실제 실행"""
     query = (tool_input.get("query") or "").strip()
@@ -208,12 +217,7 @@ def _run_search_attachment(tool_input: dict[str, Any], smry_id: str) -> dict:
         n for n in raw_file_names if isinstance(n, str) and n.strip()
     ] or None
 
-    raw_top_k = tool_input.get("top_k")
-    try:
-        top_k = int(raw_top_k) if raw_top_k is not None else SEARCH_TOP_K
-    except (TypeError, ValueError):
-        top_k = SEARCH_TOP_K
-    top_k = max(1, min(top_k, 10))
+    top_k = _parse_top_k(tool_input.get("top_k"), SEARCH_TOP_K, 10)
 
     search_result = embedding_service.search_conversation(
         smry_id=smry_id,
@@ -255,12 +259,7 @@ def _run_kb_search(tool_input: dict[str, Any], emp_no: str) -> dict:
 
     kb_scope: list[str] = tool_input.get("kb_scope") or []
 
-    raw_top_k = tool_input.get("top_k")
-    try:
-        top_k = int(raw_top_k) if raw_top_k is not None else KB_SEARCH_TOP_K
-    except (TypeError, ValueError):
-        top_k = KB_SEARCH_TOP_K
-    top_k = max(1, min(top_k, KB_SEARCH_TOP_K))
+    top_k = _parse_top_k(tool_input.get("top_k"), KB_SEARCH_TOP_K, KB_SEARCH_TOP_K)
 
     retrieve_result = kb_retrieve(query=query, emp_no=emp_no, kb_modes=kb_scope, top_k=top_k)
     results: list[dict] = retrieve_result.get("results", [])
