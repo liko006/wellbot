@@ -35,6 +35,7 @@ import logging
 
 from fastapi import APIRouter, Cookie, File, Form, HTTPException, UploadFile, status
 
+from wellbot.logger import log_context
 from wellbot.services.auth import auth_service
 from wellbot.services.knowledgebase.config import get_kb_config
 from wellbot.services.knowledgebase.kb_utils import upload_files_to_kb
@@ -74,6 +75,7 @@ async def upload_kb_files(
             detail="세션이 만료되었습니다. 다시 로그인해주세요.",
         )
     emp_no = user["emp_no"]
+    log_context.bind(emp_no=emp_no, upload_target=upload_target)
 
     if len(files) > 5:
         return {"uploaded": [], "error": "한 번에 최대 5개 파일만 업로드 가능합니다."}
