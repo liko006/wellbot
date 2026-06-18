@@ -25,6 +25,7 @@ from typing import Optional
 import boto3
 import pandas as pd
 
+from wellbot.services.files import storage_service
 from wellbot.services.knowledgebase.config import get_kb_config
 
 log = logging.getLogger(__name__)
@@ -62,9 +63,9 @@ def get_s3_bucket() -> str:
 # ──────────────────────────────────────────────
 # AWS 클라이언트 (lazy — 최초 호출 시 1회 생성 후 캐싱)
 # ──────────────────────────────────────────────
-@lru_cache(maxsize=1)
 def _get_s3():
-    return boto3.client("s3")
+    """S3 클라이언트 — storage_service 의 region 설정 클라이언트 재사용"""
+    return storage_service.get_client()
 
 
 @lru_cache(maxsize=1)
@@ -240,19 +241,16 @@ def split_and_upload_tabular(
 # ──────────────────────────────────────────────
 # pptx → json 변환
 # ──────────────────────────────────────────────
-def convert_pptx_to_json(file_bytes: bytes, filename: str) -> tuple[bytes, str]:
-    """
-    pptx 파일을 슬라이드별 구조화된 JSON 으로 변환.
-    Bedrock KB 가 pptx 를 지원하지 않으므로, 업로드 전에 json 으로 변환하여
-    Lambda 의 parse_json 이 처리 가능하도록 전처리.
+def pptx_to_dict(file_bytes: bytes) -> dict:
+    """pptx 바이트를 슬라이드별 구조화 dict 로 추출 (제목/본문/표/노트).
 
-    반환: (json_bytes, 변환된_파일명)
-        예: ("report.pptx" → b'{...}', "report_pptx.json")
+    convert_pptx_to_json(개인·팀 업로드) 과 scripts/shared_kb_manager(공용 KB)
+    가 공유하는 코어 추출 로직. 키는 'slide_{번호}_{제목}', 값은 슬라이드 텍스트.
     """
     from pptx import Presentation
 
     prs = Presentation(io.BytesIO(file_bytes))
-    result = {}
+    result: dict = {}
 
     for slide_num, slide in enumerate(prs.slides, 1):
         slide_title = "No Title"
@@ -286,9 +284,20 @@ def convert_pptx_to_json(file_bytes: bytes, filename: str) -> tuple[bytes, str]:
                 parts.append(f"[노트] {notes}")
 
         if parts:
-            key = f"slide_{slide_num}_{slide_title}"
-            result[key] = "\n".join(parts)
+            result[f"slide_{slide_num}_{slide_title}"] = "\n".join(parts)
 
+    return result
+
+
+def convert_pptx_to_json(file_bytes: bytes, filename: str) -> tuple[bytes, str]:
+    """pptx 바이트를 슬라이드별 JSON 으로 변환 (Bedrock KB 미지원 형식 전처리).
+
+    Lambda 의 parse_json 이 처리 가능하도록 업로드 전 변환.
+
+    반환: (json_bytes, 변환된_파일명)
+        예: ("report.pptx" → b'{...}', "report_pptx.json")
+    """
+    result = pptx_to_dict(file_bytes)
     stem = Path(filename).stem
     json_filename = f"{stem}_pptx.json"
     json_bytes = json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")

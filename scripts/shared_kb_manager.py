@@ -76,6 +76,15 @@ from wellbot.env import init_env  # noqa: E402
 init_env()  # KB 모듈의 모듈레벨 os.getenv 보장 (다른 wellbot import 전에 호출)
 
 from wellbot.services.knowledgebase.config import get_kb_config  # noqa: E402  (sys.path 설정 이후 import)
+from wellbot.services.knowledgebase.kb_utils import (  # noqa: E402
+    CONVERTIBLE_EXTS,
+    MAX_FILE_SIZE_DEFAULT,
+    MAX_FILE_SIZES,
+    ROWS_PER_SPLIT,
+    SUPPORTED_EXTENSIONS,
+    TABULAR_EXTS,
+    pptx_to_dict,
+)
 
 _config = get_kb_config()
 _kb_cfg = _config["shared_kb"]
@@ -89,20 +98,8 @@ EMBEDDING_MODEL        = _kb_cfg["embedding_model"]
 POLL_INTERVAL          = _kb_cfg.get("poll_interval", 5)
 POLL_TIMEOUT           = _kb_cfg.get("poll_timeout", 300)
 
-# ──────────────────────────────────────────────
-# 업로드 제한 설정
-# ──────────────────────────────────────────────
-ROWS_PER_SPLIT   = 50_000
-TABULAR_EXTS     = {".xlsx", ".csv"}
-CONVERTIBLE_EXTS = {".pptx"}     # Bedrock KB 미지원 → 업로드 전 json 변환
-MAX_FILE_SIZES   = {
-    ".txt":  30 * 1024 * 1024,
-    ".md":   30 * 1024 * 1024,
-    ".json": 30 * 1024 * 1024,
-    ".csv":  None,
-    ".xlsx": None,
-}
-MAX_FILE_SIZE_DEFAULT = 100 * 1024 * 1024  # 100MB
+# 업로드 제한 상수(ROWS_PER_SPLIT/TABULAR_EXTS/CONVERTIBLE_EXTS/MAX_FILE_SIZES/
+# MAX_FILE_SIZE_DEFAULT)와 SUPPORTED_EXTENSIONS 는 kb_utils 단일 출처에서 import.
 
 # ──────────────────────────────────────────────
 # AWS 클라이언트
@@ -342,51 +339,13 @@ def _split_and_upload_tabular(folder: str, file_path: str) -> list[str]:
 # pptx → json 변환
 # ──────────────────────────────────────────────
 def convert_pptx_to_json(file_path: str) -> str:
-    """
-    pptx 파일을 슬라이드별 구조화된 JSON 으로 변환.
-    Bedrock KB 가 pptx 를 직접 지원하지 않으므로 업로드 전에 변환.
+    """pptx 파일을 슬라이드별 JSON 으로 변환 (Bedrock KB 미지원 형식 전처리).
+
+    슬라이드 추출 코어는 kb_utils.pptx_to_dict 재사용. 파일 I/O 만 담당.
     반환: 변환된 json 파일 경로 (예: report.pptx → report_pptx.json)
     """
-    from pptx import Presentation
-
     path = Path(file_path)
-    prs  = Presentation(str(path))
-    result = {}
-
-    for slide_num, slide in enumerate(prs.slides, 1):
-        slide_title = "No Title"
-        if slide.shapes.title and slide.shapes.title.has_text_frame:
-            slide_title = slide.shapes.title.text.strip() or "No Title"
-
-        parts = []
-
-        for shape in slide.shapes:
-            if shape.has_table:
-                table = shape.table
-                rows  = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-                if rows:
-                    headers = rows[0]
-                    for row in rows[1:]:
-                        row_text = " | ".join(
-                            f"{headers[i]}: {cell}" for i, cell in enumerate(row)
-                            if i < len(headers)
-                        )
-                        if row_text.strip():
-                            parts.append(row_text)
-            elif shape.has_text_frame:
-                for para in shape.text_frame.paragraphs:
-                    text = para.text.strip()
-                    if text:
-                        parts.append(text)
-
-        if slide.has_notes_slide:
-            notes = slide.notes_slide.notes_text_frame.text.strip()
-            if notes:
-                parts.append(f"[노트] {notes}")
-
-        if parts:
-            key = f"slide_{slide_num}_{slide_title}"
-            result[key] = "\n".join(parts)
+    result = pptx_to_dict(path.read_bytes())
 
     json_path = path.parent / f"{path.stem}_pptx.json"
     json_path.write_text(
@@ -401,10 +360,9 @@ def convert_pptx_to_json(file_path: str) -> str:
 # 파일 수집 유틸
 # ──────────────────────────────────────────────
 def collect_files_from_dir(dir_path: str) -> list[str]:
-    supported = {".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".md", ".txt", ".json", ".html", ".htm"}
     paths = [
         str(p) for p in Path(dir_path).iterdir()
-        if p.is_file() and p.suffix.lower() in supported
+        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
     ]
     print(f"[Dir] {len(paths)}개 파일 수집: {dir_path}")
     return paths

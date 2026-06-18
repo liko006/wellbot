@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from urllib.parse import quote
 
 from fastapi import APIRouter, Cookie, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -80,9 +79,8 @@ async def download_file(
             detail="S3 에서 파일을 찾을 수 없습니다.",
         )
 
-    # 5. 파일명 인코딩 (한글 등 비ASCII 대응)
+    # 5. 파일명 결정
     filename = att.file_name or f"file_{file_no}{ext}"
-    encoded = quote(filename)
 
     # 6. S3 스트리밍 응답
     # cross-origin 환경에서 JS 가 Content-Disposition 헤더를 읽으려면
@@ -91,11 +89,7 @@ async def download_file(
         content=storage_service.iter_download_stream(s3_key),
         media_type=content_type,
         headers={
-            "Content-Disposition": (
-                f"attachment; "
-                f'filename="{encoded}"; '
-                f"filename*=UTF-8''{encoded}"
-            ),
+            "Content-Disposition": storage_service.build_content_disposition_header(filename),
             "Access-Control-Expose-Headers": "Content-Disposition",
         },
     )
