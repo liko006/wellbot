@@ -180,7 +180,8 @@ def list_objects_with_meta(prefix: str, bucket: str | None = None) -> list[dict]
                 shared KB 처럼 다른 버킷을 조회해야 할 때 명시
 
     반환 항목: key, file_name, last_modified (datetime), size (bytes)
-    _pptx.json 변환 파일은 제외
+    변환본(원본은 originals/ 에 따로 보관됨)은 제외: pptx → _pptx.json,
+    xlsx(Upstage) → _xlsx.md, pdf(Upstage) → _pdf.md
     """
     client = _get_client()
     if bucket is None:
@@ -192,7 +193,7 @@ def list_objects_with_meta(prefix: str, bucket: str | None = None) -> list[dict]
         for obj in page.get("Contents", []) or []:
             key = obj["Key"]
             file_name = key.split("/")[-1]
-            if file_name.endswith("_pptx.json"):
+            if file_name.endswith(("_pptx.json", "_xlsx.md", "_pdf.md")):
                 continue
             results.append({
                 "key": key,

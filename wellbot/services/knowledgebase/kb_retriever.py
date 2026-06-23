@@ -47,6 +47,19 @@ def _get_client():
     return boto3.client("bedrock-agent-runtime", region_name=_region())
 
 
+def _coerce_page(raw: Any) -> int | None:
+    """메타데이터의 page 값을 int 로 정규화. 없거나 변환 불가 시 None.
+
+    Bedrock 이 숫자를 int/float/str 중 무엇으로 돌려줄지 보장되지 않아 방어적으로 처리.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        return int(float(raw))
+    except (ValueError, TypeError):
+        return None
+
+
 # ──────────────────────────────────────────────
 # 인덱싱된 URI → 원본 URI 매핑
 # ──────────────────────────────────────────────
@@ -54,13 +67,18 @@ def _map_to_original_uri(s3_uri: str) -> str:
     """Bedrock 이 반환하는 indexed 파일 URI 를 사용자에게 노출할 원본 URI 로 변환.
 
     pptx 의 경우: raw/{name}_pptx.json → originals/{name}.pptx
-    그 외 형식은 변경 없이 그대로 반환
+    xlsx(Upstage 변환) 의 경우: raw/{name}_xlsx.md → originals/{name}.xlsx
+    pdf(Upstage 변환) 의 경우: raw/{name}_pdf.md → originals/{name}.pdf
+    그 외 형식은 변경 없이 그대로 반환.
     """
-    if s3_uri.endswith("_pptx.json") and "/raw/" in s3_uri:
-        base, _, filename = s3_uri.rpartition("/")
-        original_filename = filename.replace("_pptx.json", ".pptx", 1)
-        original_base = base.replace("/raw", "/originals", 1)
-        return f"{original_base}/{original_filename}"
+    _CONVERTED_SUFFIXES = (("_pptx.json", ".pptx"), ("_xlsx.md", ".xlsx"), ("_pdf.md", ".pdf"))
+    if "/raw/" in s3_uri:
+        for conv_suffix, orig_ext in _CONVERTED_SUFFIXES:
+            if s3_uri.endswith(conv_suffix):
+                base, _, filename = s3_uri.rpartition("/")
+                original_filename = filename.replace(conv_suffix, orig_ext, 1)
+                original_base = base.replace("/raw", "/originals", 1)
+                return f"{original_base}/{original_filename}"
     return s3_uri
 
 
@@ -88,9 +106,10 @@ def _retrieve_single(
             raw_uri = item.get("location", {}).get("s3Location", {}).get("uri", "")
             s3_uri = _map_to_original_uri(raw_uri)
 
-            # Bedrock 메타데이터 title 이 _pptx.json 을 가리키면 부자연스러우므로 무시
+            # Bedrock 메타데이터 title 이 변환본(_pptx.json/_xlsx.md/_pdf.md)을 가리키면
+            # 부자연스러우므로 무시 → 매핑된 원본 URI 파일명으로 폴백.
             metadata_title = metadata.get("x-amz-bedrock-kb-document-title", "")
-            if "_pptx.json" in metadata_title:
+            if any(s in metadata_title for s in ("_pptx.json", "_xlsx.md", "_pdf.md")):
                 metadata_title = ""
 
             title = (
@@ -104,6 +123,9 @@ def _retrieve_single(
                 "title":      title,
                 "source_uri": s3_uri,
                 "source":     source,
+                # page 는 로컬 파싱(Lambda parse_pdf, pdfplumber) PDF 에만 존재.
+                # Upstage 변환 PDF(_pdf.md→parse_md)·그 외 형식엔 없음(None) → 출처에 페이지 미표시.
+                "page":       _coerce_page(metadata.get("page")),
             })
         return results
     except Exception:

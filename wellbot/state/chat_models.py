@@ -93,11 +93,21 @@ class KbSharedFile(BaseModel):
     expires_at: str
 
 
+class KbSharedSubfolder(BaseModel):
+    """회사 KB 대분류 아래 소분류 단위 그룹.
+
+    sub_name 이 빈 문자열이면 대분류 raw/ 바로 밑(소분류 없는) 파일 묶음.
+    """
+
+    sub_name: str = ""
+    files: list[KbSharedFile] = []
+
+
 class KbSharedFolder(BaseModel):
-    """회사 KB 문서종류(폴더) 단위 그룹. 안에 파일 목록 포함."""
+    """회사 KB 대분류 단위 그룹. 소분류(subfolders)로 2단계 트리 구성."""
 
     folder_type: str
-    files: list[KbSharedFile] = []
+    subfolders: list[KbSharedSubfolder] = []
 
 
 _MIME_LABELS: dict[str, str] = {

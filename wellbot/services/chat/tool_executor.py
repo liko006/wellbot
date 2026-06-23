@@ -99,7 +99,7 @@ KB_SEARCH_TOOL: dict = {
                     # 추측해 넘겨도 항상 덮어써져 무의미.
                     "top_k": {
                         "type": "integer",
-                        "description": "반환할 상위 결과 개수. 기본 5.",
+                        "description": f"반환할 상위 결과 개수. 보통 생략하세요(기본 {KB_SEARCH_TOP_K}).",
                     },
                 },
                 "required": ["query"],
@@ -299,9 +299,15 @@ def _run_kb_search(tool_input: dict[str, Any], emp_no: str) -> dict:
                 "score": r["score"],  # 정렬 후 첫 값이 최고점
                 "ext": r["title"].rsplit(".", 1)[-1].lower() if "." in r["title"] else "",
                 "ranks": [],
+                "pages": [],  # PDF 청크의 페이지 번호 (중복 제거·정렬). 그 외 형식은 빈 리스트
             }
         by_uri[uri]["ranks"].append(r.get("rank", 0))
+        page = r.get("page")
+        if page is not None and page not in by_uri[uri]["pages"]:
+            by_uri[uri]["pages"].append(page)
     source_docs = list(by_uri.values())
+    for d in source_docs:
+        d["pages"].sort()
     return {
         "text": context,
         "_meta": {

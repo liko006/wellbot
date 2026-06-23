@@ -164,7 +164,7 @@ async def astream_chat_with_tools(
             # 마지막 tool_use 응답을 history 에 추가하지 않고 폴백 진입 (한도 초과 상태이므로)
             async for ev in _emit_no_tool_fallback(
                 bedrock_messages, model, system_prompt, thinking_enabled,
-                reason=end_reason,
+                reason=end_reason, tool_config=tool_config,
             ):
                 yield ev
             return
@@ -245,7 +245,7 @@ async def astream_chat_with_tools(
             )
             async for ev in _emit_no_tool_fallback(
                 bedrock_messages, model, system_prompt, thinking_enabled,
-                reason=end_reason,
+                reason=end_reason, tool_config=tool_config,
             ):
                 yield ev
             return
@@ -258,11 +258,17 @@ async def _emit_no_tool_fallback(
     thinking_enabled: bool,
     *,
     reason: str,
+    tool_config: dict,
 ):
     """tool 비활성 상태로 한 턴 추가 호출해 폴백 답변 전달.
 
     reason 에 따라 시스템 프롬프트에 가이던스를 추가해 LLM 이
     지금까지의 toolResult 로 최선의 답변을 생성하도록 유도.
+
+    주의: 누적된 history 에 toolUse/toolResult 블록이 있으면 Bedrock 은
+    toolConfig 가 반드시 정의돼 있기를 요구한다. 따라서 도구를 더하더라도
+    tool_config 를 그대로 전달하고, '도구를 호출하지 말라'는 가이던스로
+    호출을 통제한다 (tool_config=None 으로 보내면 ValidationException 발생).
     """
     if reason == "max_iter":
         guidance = (
@@ -288,7 +294,7 @@ async def _emit_no_tool_fallback(
         model,
         augmented_system,
         thinking_enabled,
-        tool_config=None,
+        tool_config=tool_config,
     )
 
     yielded_any_text = False
