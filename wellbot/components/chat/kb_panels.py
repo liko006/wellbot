@@ -1,7 +1,7 @@
 """지식베이스(KB) UI 컴포넌트.
 
 입력 바의 + 메뉴에서 진입하는 KB 관련 패널/플라이아웃 모음.
-input_bar.py 가 길어져 KB 전용 컴포넌트를 이 모듈로 분리.
+input_bar.py 가 길어져 KB 전용 컴포넌트를 이 모듈로 분리했다.
 
 공개 진입점 (input_bar 에서 import):
     kb_flyout         - + 메뉴의 '지식베이스' hover flyout (검색 범위/문서목록/업로드)
@@ -14,7 +14,12 @@ input_bar.py 가 길어져 KB 전용 컴포넌트를 이 모듈로 분리.
 import reflex as rx
 
 from wellbot.components.chat.file_icon import file_icon_by_name
-from wellbot.state.chat_models import KbSharedFile, KbSharedFolder, PendingFile
+from wellbot.state.chat_models import (
+    KbSharedFile,
+    KbSharedFolder,
+    KbSharedSubfolder,
+    PendingFile,
+)
 from wellbot.state.chat_state import ChatState
 from wellbot.styles import COLORS, SPACING
 
@@ -22,8 +27,8 @@ from wellbot.styles import COLORS, SPACING
 def kb_flyout() -> rx.Component:
     """지식베이스 서브 항목 — hover 시 오른쪽 flyout (hover_card).
 
-    'KB 검색 범위' 는 클릭 시 inline 으로 확장되어 체크박스가 펼쳐짐.
-    '문서 목록', '업로드' 는 클릭 시 입력창 위 패널을 엶.
+    'KB 검색 범위' 는 클릭 시 inline 으로 확장되어 체크박스가 펼쳐진다.
+    '문서 목록', '업로드' 는 클릭 시 입력창 위 패널을 연다.
     """
     def _item(icon: str, label: str, on_click) -> rx.Component:
         return rx.hstack(
@@ -137,7 +142,7 @@ def kb_flyout() -> rx.Component:
 
 
 def _scope_checkbox(label: str, mode: str) -> rx.Component:
-    """KB 검색 범위 체크박스 항목"""
+    """KB 검색 범위 체크박스 항목."""
     return rx.hstack(
         rx.checkbox(
             checked=ChatState.kb_modes.contains(mode),
@@ -152,7 +157,7 @@ def _scope_checkbox(label: str, mode: str) -> rx.Component:
 
 
 def _pending_file_row(f: PendingFile) -> rx.Component:
-    """대기 중인 KB 업로드 파일 행"""
+    """대기 중인 KB 업로드 파일 행."""
     return rx.hstack(
         file_icon_by_name(f.name),
         rx.text(
@@ -179,7 +184,7 @@ def _pending_file_row(f: PendingFile) -> rx.Component:
 
 
 def _kb_docs_tab_btn(label: str, tab: str) -> rx.Component:
-    """문서 목록 탭 버튼"""
+    """문서 목록 탭 버튼."""
     is_active = ChatState.kb_doc_list_tab == tab
     is_team = tab == "team"
     is_disabled = is_team & (~ChatState.team_kb_exists | (ChatState.dept_cd == ""))
@@ -205,7 +210,7 @@ def _kb_docs_tab_btn(label: str, tab: str) -> rx.Component:
 
 
 def _kb_doc_row(doc: rx.Var) -> rx.Component:
-    """문서 목록 행"""
+    """문서 목록 행."""
     return rx.hstack(
         # 체크박스 (개인/팀 탭에서 표시, 회사 탭에서는 공간만 차지하여 정렬 유지)
         rx.box(
@@ -268,8 +273,11 @@ def _kb_doc_row(doc: rx.Var) -> rx.Component:
     )
 
 
-def _kb_shared_file_row(doc: KbSharedFile) -> rx.Component:
-    """회사 KB 의 파일 행 (폴더 안에 들여쓰기로 표시)"""
+def _kb_shared_file_row(doc: KbSharedFile, padding_left: str = "1em") -> rx.Component:
+    """회사 KB 의 파일 행 (폴더 안에 들여쓰기로 표시).
+
+    padding_left 로 들여쓰기 깊이 조절: 대분류 직속=1em, 소분류 하위=2.5em.
+    """
     return rx.hstack(
         # 토글 박스 자리 비움 (들여쓰기 효과)
         rx.box(width="20px", flex_shrink="0"),
@@ -310,37 +318,95 @@ def _kb_shared_file_row(doc: KbSharedFile) -> rx.Component:
         align="center",
         gap="0.5em",
         padding_y="0.3em",
-        padding_left="1em",
+        padding_left=padding_left,
         border_bottom=f"1px solid {COLORS['border']}",
     )
 
 
+def _kb_toggle_box(key) -> rx.Component:
+    """+/- 펼침 토글 박스. key 는 대분류(folder_type) 또는 '대분류/소분류' 복합키."""
+    is_expanded = ChatState.expanded_kb_folders.contains(key)
+    return rx.box(
+        rx.icon(
+            rx.cond(is_expanded, "minus", "plus"),
+            size=10,
+            color=COLORS["text_secondary"],
+        ),
+        width="20px",
+        height="20px",
+        flex_shrink="0",
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        cursor="pointer",
+        border=f"1px solid {COLORS['border']}",
+        border_radius="3px",
+        on_click=ChatState.toggle_kb_folder(key),
+        _hover={"bg": COLORS["sidebar_hover"]},
+    )
+
+
+def _kb_subfolder_row(folder_type, sub: KbSharedSubfolder) -> rx.Component:
+    """회사 KB 소분류 행 + 펼침 시 하위 파일 목록 (대분류 안에 한 단계 들여씀)."""
+    composite_key = folder_type + "/" + sub.sub_name
+    is_expanded = ChatState.expanded_kb_folders.contains(composite_key)
+    return rx.vstack(
+        rx.hstack(
+            _kb_toggle_box(composite_key),
+            rx.hstack(
+                rx.icon("folder", size=13, color=COLORS["text_secondary"]),
+                rx.text(
+                    sub.sub_name,
+                    size="1",
+                    color=COLORS["text_primary"],
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
+                ),
+                align="center",
+                gap="0.4em",
+                flex="1",
+                min_width="0",
+                cursor="default",
+                user_select="none",
+                on_double_click=ChatState.toggle_kb_folder(composite_key),
+            ),
+            rx.box(width="80px", flex_shrink="0"),
+            rx.box(width="80px", flex_shrink="0"),
+            width="100%",
+            align="center",
+            gap="0.5em",
+            padding_y="0.3em",
+            padding_left="1em",
+            border_bottom=f"1px solid {COLORS['border']}",
+        ),
+        rx.cond(
+            is_expanded,
+            rx.foreach(sub.files, lambda d: _kb_shared_file_row(d, padding_left="2.5em")),
+        ),
+        width="100%",
+        spacing="0",
+        align_items="start",
+    )
+
+
+def _kb_subgroup(folder_type, sub: KbSharedSubfolder) -> rx.Component:
+    """소분류 그룹 렌더. sub_name 이 빈 문자열이면 대분류 직속 파일로 바로 표시."""
+    return rx.cond(
+        sub.sub_name == "",
+        rx.foreach(sub.files, _kb_shared_file_row),  # 대분류 raw/ 바로 밑 파일 (1em)
+        _kb_subfolder_row(folder_type, sub),
+    )
+
+
 def _kb_folder_row(folder: KbSharedFolder) -> rx.Component:
-    """회사 KB 의 문서종류(폴더) 행 + 펼침 시 하위 파일 목록"""
+    """회사 KB 대분류 행 + 펼침 시 소분류/파일 트리."""
     is_expanded = ChatState.expanded_kb_folders.contains(folder.folder_type)
     return rx.vstack(
-        # 폴더 헤더
+        # 대분류 헤더
         rx.hstack(
-            # +/- 토글 박스 (체크박스 자리 대체)
-            rx.box(
-                rx.icon(
-                    rx.cond(is_expanded, "minus", "plus"),
-                    size=10,
-                    color=COLORS["text_secondary"],
-                ),
-                width="20px",
-                height="20px",
-                flex_shrink="0",
-                display="flex",
-                align_items="center",
-                justify_content="center",
-                cursor="pointer",
-                border=f"1px solid {COLORS['border']}",
-                border_radius="3px",
-                on_click=ChatState.toggle_kb_folder(folder.folder_type),
-                _hover={"bg": COLORS["sidebar_hover"]},
-            ),
-            # 폴더 아이콘 + 문서종류 (더블클릭으로도 토글)
+            _kb_toggle_box(folder.folder_type),
+            # 폴더 아이콘 + 대분류명 (더블클릭으로도 토글)
             rx.hstack(
                 rx.icon("folder", size=14, color=COLORS["text_secondary"]),
                 rx.text(
@@ -369,10 +435,13 @@ def _kb_folder_row(folder: KbSharedFolder) -> rx.Component:
             padding_y="0.3em",
             border_bottom=f"1px solid {COLORS['border']}",
         ),
-        # 펼침 시 파일 목록
+        # 펼침 시 소분류/파일 트리
         rx.cond(
             is_expanded,
-            rx.foreach(folder.files, _kb_shared_file_row),
+            rx.foreach(
+                folder.subfolders,
+                lambda sf: _kb_subgroup(folder.folder_type, sf),
+            ),
         ),
         width="100%",
         spacing="0",
@@ -381,7 +450,7 @@ def _kb_folder_row(folder: KbSharedFolder) -> rx.Component:
 
 
 def kb_docs_panel() -> rx.Component:
-    """KB 문서 목록 조회 패널 (입력창 위)"""
+    """KB 문서 목록 조회 패널 (입력창 위)."""
     return rx.cond(
         ChatState.active_panel == "kb_docs",
         rx.box(
@@ -580,8 +649,53 @@ def kb_docs_panel() -> rx.Component:
     )
 
 
+def _xlsx_format_callout() -> rx.Component:
+    """엑셀(.xlsx)·CSV 검색 정확도 안내 강조박스.
+
+    개인/팀 KB 업로드는 Lambda 의 '머리글: 값' 행 단위 청킹을 사용하므로, 첫 행이
+    머리글이고 셀 병합·빈 행이 없어야 머리글과 데이터가 올바르게 매칭된다.
+    업로드 대기 목록에 .xlsx/.csv 가 있을 때만 노출 (has_tabular_pending).
+    """
+    return rx.box(
+        rx.hstack(
+            rx.icon(
+                "info",
+                size=14,
+                color=rx.color("amber", 11),
+                flex_shrink="0",
+                margin_top="0.15em",
+            ),
+            rx.vstack(
+                rx.text(
+                    "엑셀(.xlsx) · CSV 검색 정확도 안내",
+                    size="1",
+                    weight="bold",
+                    color=COLORS["text_primary"],
+                ),
+                rx.text(
+                    "시트의 첫 행을 머리글(컬럼명)로 두고 셀 병합·빈 행 없이 정리해주세요. "
+                    "머리글과 데이터가 어긋나면 검색이 잘 되지 않습니다.",
+                    size="1",
+                    color=COLORS["text_secondary"],
+                ),
+                spacing="1",
+                align="start",
+                width="100%",
+            ),
+            spacing="2",
+            align="start",
+            width="100%",
+        ),
+        bg=rx.color("amber", 2),
+        border=f"1px solid {rx.color('amber', 6)}",
+        border_radius=SPACING["border_radius_sm"],
+        padding="0.5em 0.75em",
+        width="100%",
+    )
+
+
 def kb_upload_panel() -> rx.Component:
-    """KB 문서 업로드 패널 (입력창 위)"""
+    """KB 문서 업로드 패널 (입력창 위)."""
     return rx.cond(
         ChatState.active_panel == "upload",
         rx.box(
@@ -608,7 +722,7 @@ def kb_upload_panel() -> rx.Component:
                     width="100%",
                 ),
                 rx.separator(size="4", color=COLORS["border"]),
-                # 파일 선택 영역 (JS file picker — rx.upload 의 10MB 제한 우회)
+                # 파일 선택 영역 (JS file picker — rx.upload의 10MB 제한 우회)
                 rx.box(
                     rx.hstack(
                         rx.icon("folder-open", size=16, color=COLORS["text_secondary"]),
@@ -646,6 +760,11 @@ def kb_upload_panel() -> rx.Component:
                         max_height="120px",
                         overflow_y="auto",
                     ),
+                ),
+                # 엑셀/CSV 형식 안내 (대기 목록에 .xlsx/.csv 가 있을 때만)
+                rx.cond(
+                    ChatState.has_tabular_pending,
+                    _xlsx_format_callout(),
                 ),
                 # 업로드 대상 선택 + 확정 버튼
                 rx.cond(
@@ -757,7 +876,7 @@ def kb_upload_panel() -> rx.Component:
 
 
 def ingestion_banner() -> rx.Component:
-    """Ingestion 진행 중 배너 (업로드 패널 닫혔을 때)"""
+    """Ingestion 진행 중 배너 (업로드 패널 닫혔을 때)."""
     return rx.cond(
         (ChatState.ingestion_status == "processing") & (ChatState.active_panel != "upload"),
         rx.hstack(

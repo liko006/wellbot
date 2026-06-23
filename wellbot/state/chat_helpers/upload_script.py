@@ -126,8 +126,15 @@ window.openKbFilePicker = function() {
         input.addEventListener('change', function() {
             window._kbPickerCanceled = false;
             if (input.files.length > 0) {
-                window._kbSelectedFiles = Array.from(input.files);
-                window._kbPendingMeta = window._kbSelectedFiles.map(function(f) {
+                // 기존 선택분에 누적 (이름 기준 중복 제거) — 두 번 이상 선택해도 유지
+                var existing = window._kbSelectedFiles || [];
+                var existingNames = existing.map(function(f) { return f.name; });
+                var added = Array.from(input.files).filter(function(f) {
+                    return existingNames.indexOf(f.name) === -1;
+                });
+                window._kbSelectedFiles = existing.concat(added);
+                // 이번에 새로 추가된 파일들의 메타만 콜백으로 (패널에 추가)
+                window._kbPendingMeta = added.map(function(f) {
                     return { name: f.name, size: f.size };
                 });
             }
@@ -144,8 +151,12 @@ window.openKbFilePicker = function() {
     window._kbFileInput.click();
 };
 
-window.uploadKbFilesToApi = async function(empNo, uploadTarget, deptCd) {
+window.uploadKbFilesToApi = async function(empNo, uploadTarget, deptCd, allowedNames) {
     var files = window._kbSelectedFiles || [];
+    // 패널에 남아있는 파일명만 업로드 (패널에서 제거한 파일은 제외)
+    if (allowedNames && allowedNames.length >= 0) {
+        files = files.filter(function(f) { return allowedNames.indexOf(f.name) !== -1; });
+    }
     if (files.length === 0) return {uploaded: [], error: 'No files selected'};
 
     var formData = new FormData();

@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -25,6 +26,7 @@ from typing import Optional
 import boto3
 import pandas as pd
 
+from wellbot.constants import FILE_PARSER_MODE, KB_MAX_DOCS, PDF_VIA_UPSTAGE
 from wellbot.services.files import storage_service
 from wellbot.services.knowledgebase.config import get_kb_config
 
@@ -305,6 +307,64 @@ def convert_pptx_to_json(file_bytes: bytes, filename: str) -> tuple[bytes, str]:
 
 
 # ──────────────────────────────────────────────
+# Upstage Document Parse → markdown 변환 (xlsx / pdf)
+# ──────────────────────────────────────────────
+def xlsx_via_upstage_enabled() -> bool:
+    """xlsx 를 Upstage 로 변환할지 여부 (FILE_PARSER_MODE 가 upstage/hybrid 일 때).
+
+    첨부파일 파서와 동일한 노브(FILE_PARSER_MODE)를 공유한다.
+    local 모드면 기존 pandas 행 분할(split_and_upload_tabular)을 그대로 사용.
+    """
+    return (FILE_PARSER_MODE or "local").lower() in ("upstage", "hybrid")
+
+
+def pdf_via_upstage_enabled() -> bool:
+    """PDF 를 Upstage 로 변환할지 여부 (xlsx 와 독립된 PDF 전용 노브 PDF_VIA_UPSTAGE).
+
+    개인/팀/공용 KB 업로드 전부에 적용. 끄면 원본 PDF 가 그대로 색인되어
+    Lambda 의 pdfplumber 커스텀 파싱(parse_pdf)으로 폴백한다.
+    """
+    return bool(PDF_VIA_UPSTAGE)
+
+
+def _convert_via_upstage(file_bytes: bytes, filename: str, out_suffix: str) -> tuple[bytes, str]:
+    """파일을 Upstage Document Parse 로 markdown 변환 (xlsx/pdf 공용).
+
+    변환된 markdown 은 Lambda 의 parse_md 가 청킹한다.
+    반환: (markdown_bytes, f"{stem}{out_suffix}")
+    Upstage 호출 실패/빈 결과 시 예외 전파 (호출자가 폴백 처리).
+    """
+    # 모듈 레벨 import 사이드이펙트 방지를 위해 지연 import
+    from wellbot.services.files.file_parser import UpstageParser
+
+    # 임시 파일을 원본 파일명으로 생성 (Upstage 로그/제목에 임의 임시명이 노출되지 않도록).
+    # filename 은 업로드 basename 이라 경로 구분자가 없지만 방어적으로 .name 사용.
+    safe_name = Path(filename).name or "upload"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir) / safe_name
+        tmp_path.write_bytes(file_bytes)
+        parsed = UpstageParser().parse(tmp_path)
+
+    md = parsed.text or ""
+    if not md.strip():
+        raise ValueError("Upstage 변환 결과가 비어 있습니다")
+    stem = Path(filename).stem
+    return md.encode("utf-8"), f"{stem}{out_suffix}"
+
+
+def convert_xlsx_to_markdown(file_bytes: bytes, filename: str) -> tuple[bytes, str]:
+    """xlsx 를 Upstage 로 markdown 변환 (병합·공백 많은 표를 견고하게 처리).
+    예: report.xlsx → report_xlsx.md. 실패 시 예외 전파(호출자가 pandas 분할 폴백)."""
+    return _convert_via_upstage(file_bytes, filename, "_xlsx.md")
+
+
+def convert_pdf_to_markdown(file_bytes: bytes, filename: str) -> tuple[bytes, str]:
+    """PDF 를 Upstage 로 markdown 변환 (이미지/스캔 내용까지 OCR+레이아웃 해석).
+    예: report.pdf → report_pdf.md. 실패 시 예외 전파(호출자가 원본 PDF 색인 폴백)."""
+    return _convert_via_upstage(file_bytes, filename, "_pdf.md")
+
+
+# ──────────────────────────────────────────────
 # KB 정보 인코딩 / 디코딩 (DB path_addr 컬럼용)
 # ──────────────────────────────────────────────
 def encode_kb_info(kb_id: str, data_source_id: str) -> str:
@@ -474,6 +534,65 @@ def is_ingestion_in_progress(kb_id: str, data_source_id: str) -> bool:
 
 
 # ──────────────────────────────────────────────
+# 누적 문서 수 카운트 / 상한 검증
+# ──────────────────────────────────────────────
+# xlsx/csv 분할본 _partN 을 base 로 합치기 위한 패턴
+_PART_RE = re.compile(r"^(.*)_part\d+(\.(?:xlsx|csv))$", re.IGNORECASE)
+# 변환본(원본은 originals/ 에 별도 보관) — 논리 문서 카운트에서 제외
+_CONVERTED_SUFFIXES_COUNT = ("_pptx.json", "_xlsx.md", "_pdf.md")
+
+
+def count_kb_docs(bucket: str, raw_prefix: str) -> int:
+    """KB 의 논리적 문서 수(사용자가 올린 '파일' 수)를 센다.
+
+    raw_prefix 예: 'users/{emp}/raw/' → root 'users/{emp}/' 아래 raw/ + originals/ 를
+    스캔. 변환본(_pptx.json/_xlsx.md/_pdf.md)은 제외(원본을 originals/ 에서 셈),
+    xlsx/csv 분할본(_partN)은 base 로 합침, raw/+originals/ 를 파일명으로 dedup.
+    """
+    root = raw_prefix.rsplit("raw/", 1)[0]  # users/{emp}/ 또는 teams/{dept}/
+    logical: set[str] = set()
+    paginator = _get_s3().get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=root):
+        for obj in page.get("Contents", []) or []:
+            rel = obj["Key"][len(root):]          # raw/... 또는 originals/...
+            sub, _, filename = rel.partition("/")
+            if sub not in ("raw", "originals") or not filename:
+                continue
+            if filename.endswith(_CONVERTED_SUFFIXES_COUNT):
+                continue                          # 변환본은 originals 원본으로 카운트
+            m = _PART_RE.match(filename)
+            logical.add(m.group(1) + m.group(2) if m else filename)
+    return len(logical)
+
+
+def _scope_from_prefix(prefix: str) -> Optional[str]:
+    """업로드 prefix 로 KB scope 판별. 'users/'→personal, 'teams/'→team, 그 외 None."""
+    if prefix.startswith("users/"):
+        return "personal"
+    if prefix.startswith("teams/"):
+        return "team"
+    return None  # shared 등은 상한 미적용
+
+
+def enforce_kb_doc_limit(bucket: str, prefix: str, new_count: int) -> None:
+    """누적 문서 수 상한 검증. 초과 시 ValueError (배치당 개수 제한과 별개).
+
+    상한이 정의되지 않은 scope(shared 등)는 검증을 건너뛴다.
+    """
+    scope = _scope_from_prefix(prefix)
+    cap = KB_MAX_DOCS.get(scope) if scope else None
+    if not cap:
+        return
+    existing = count_kb_docs(bucket, prefix)
+    if existing + new_count > cap:
+        label = {"personal": "개인", "team": "팀"}.get(scope, scope)
+        raise ValueError(
+            f"{label} 지식베이스에는 최대 {cap}개까지 업로드할 수 있습니다. "
+            f"(현재 {existing}개, 요청 {new_count}개)"
+        )
+
+
+# ──────────────────────────────────────────────
 # 파일 업로드 / 삭제 (S3)
 # ──────────────────────────────────────────────
 def upload_files_to_kb(
@@ -495,6 +614,8 @@ def upload_files_to_kb(
         raise ValueError(
             f"한 번에 최대 5개 파일만 업로드 가능합니다. (요청: {len(files)}개)"
         )
+    # 누적 문서 수 상한 (개인/팀). 초과 시 ValueError.
+    enforce_kb_doc_limit(bucket, prefix, len(files))
     for file_bytes, filename in files:
         ext = Path(filename).suffix.lower()
         if ext not in SUPPORTED_EXTENSIONS:
@@ -515,6 +636,24 @@ def upload_files_to_kb(
                 uploaded_uris.append(f"s3://{bucket}/{originals_key}")
                 file_bytes, filename = convert_pptx_to_json(file_bytes, filename)
                 ext = ".json"
+            elif ext == ".pdf" and pdf_via_upstage_enabled():
+                # PDF 를 Upstage markdown 으로 변환 (이미지/스캔 내용까지 읽음).
+                # 원본 PDF 는 originals/ 에 보관, 변환본 _pdf.md 만 raw/ 에 색인.
+                # 변환 실패 시 원본 PDF 를 그대로 색인 → Lambda parse_pdf 폴백.
+                try:
+                    md_bytes, md_name = convert_pdf_to_markdown(file_bytes, filename)
+                except Exception:
+                    log.warning(
+                        "Upstage PDF 변환 실패, 원본 PDF 색인으로 폴백: %s", filename,
+                        exc_info=True,
+                    )
+                else:
+                    originals = get_originals_prefix(prefix)
+                    originals_key = f"{originals}{filename}"
+                    _get_s3().put_object(Bucket=bucket, Key=originals_key, Body=file_bytes)
+                    uploaded_uris.append(f"s3://{bucket}/{originals_key}")
+                    file_bytes, filename = md_bytes, md_name
+                    ext = ".md"
 
             if ext in TABULAR_EXTS:
                 uris = split_and_upload_tabular(bucket, prefix, file_bytes, filename)
@@ -551,10 +690,23 @@ def delete_files_from_kb(bucket: str, prefix: str, filenames: list[str]) -> None
     keys_to_delete: list[str] = []
     for filename in filenames:
         ext = Path(filename).suffix.lower()
+        stem = Path(filename).stem
         if ext == ".pptx":
             keys_to_delete.append(f"{originals}{filename}")
-            stem = Path(filename).stem
             keys_to_delete.append(f"{prefix}{stem}_pptx.json")
+        elif ext == ".xlsx":
+            # Upstage 변환본: 원본(originals/) + 변환 md(raw/_xlsx.md)
+            # local 분할본: raw/{name} (또는 _partN). 어느 경우인지 알 수 없으니
+            # 멱등 삭제로 가능한 키를 모두 시도 (없는 키는 no-op).
+            keys_to_delete.append(f"{originals}{filename}")
+            keys_to_delete.append(f"{prefix}{stem}_xlsx.md")
+            keys_to_delete.append(f"{prefix}{filename}")
+        elif ext == ".pdf":
+            # Upstage 변환본: 원본(originals/) + 변환 md(raw/_pdf.md)
+            # 폴백(미변환): raw/{name}. 멱등 삭제로 가능한 키 모두 시도.
+            keys_to_delete.append(f"{originals}{filename}")
+            keys_to_delete.append(f"{prefix}{stem}_pdf.md")
+            keys_to_delete.append(f"{prefix}{filename}")
         else:
             keys_to_delete.append(f"{prefix}{filename}")
 

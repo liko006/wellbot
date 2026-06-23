@@ -18,8 +18,8 @@ from wellbot.styles import (
 
 
 def _source_chip(doc: rx.Var) -> rx.Component:
-    """출처 문서 칩 — 클릭 시 presigned URL 다운로드."""
-    return rx.el.button(
+    """출처 문서 칩 — 클릭 시 presigned URL 다운로드. 긴 제목은 hover 시 툴팁으로 전체 표시."""
+    chip = rx.el.button(
         file_icon_by_name(doc["title"]),
         rx.text(
             doc["title"],
@@ -29,6 +29,18 @@ def _source_chip(doc: rx.Var) -> rx.Component:
             overflow="hidden",
             text_overflow="ellipsis",
             white_space="nowrap",
+        ),
+        # PDF 출처일 때만 페이지 표시 (pages_display 가 비어있지 않으면 truthy)
+        rx.cond(
+            doc["pages_display"],
+            rx.text(
+                doc["pages_display"],
+                size="1",
+                color=COLORS["text_secondary"],
+                opacity="0.75",
+                white_space="nowrap",
+                flex_shrink="0",
+            ),
         ),
         on_click=ChatState.download_kb_source(doc["source_uri"], doc["title"]),
         display="flex",
@@ -44,6 +56,9 @@ def _source_chip(doc: rx.Var) -> rx.Component:
             "border_color": str(rx.color("gray", 7)),
         },
     )
+    # 긴 파일명은 칩에서 ...으로 잘리므로, hover 시 전체 제목을 툴팁으로 노출
+    # (메시지 액션 아이콘과 동일한 rx.tooltip 패턴 재사용).
+    return rx.tooltip(chip, content=doc["title"])
 
 
 def _source_docs_section(message: Message) -> rx.Component:

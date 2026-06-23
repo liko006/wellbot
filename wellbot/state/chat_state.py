@@ -53,6 +53,7 @@ from wellbot.state.chat_models import (
     Conversation,
     KbSharedFile,
     KbSharedFolder,
+    KbSharedSubfolder,
     Message,
     ModelInfo,
     PendingFile,
@@ -263,6 +264,16 @@ class ChatState(rx.State):
     def has_processing_attachments(self) -> bool:
         """pending 목록 중 아직 처리 중인 첨부파일이 있는지 여부"""
         return any(a.status == "processing" for a in self.pending_attachments)
+
+    @rx.var
+    def has_tabular_pending(self) -> bool:
+        """KB 업로드 대기 목록에 표 형식(.xlsx/.csv) 파일이 있는지 여부.
+
+        있을 때만 업로드 패널에 엑셀 형식 안내(강조박스)를 노출한다.
+        """
+        return any(
+            f.name.lower().endswith((".xlsx", ".csv")) for f in self.pending_files
+        )
 
     @rx.var
     def can_send(self) -> bool:
@@ -803,37 +814,65 @@ class ChatState(rx.State):
                     None,
                     lambda: storage_service.list_objects_with_meta("shared/", shared_bucket),
                 )
-                # folder_type 별로 파일들을 그룹핑
-                folder_map: dict[str, list[dict]] = {}
+                # 대분류 → 소분류 → 파일목록 으로 그룹핑.
+                # raw/ = 인덱싱 대상(원본 + 변환본). originals/ = 인덱싱 제외 원본
+                # (xlsx→Upstage 변환 시 원본 xlsx 보관 위치). 변환본(_xlsx.md 등)은
+                # list_objects_with_meta 가 이미 제외하므로 raw/+originals/ 를 합치면
+                # 원본이 정확히 1번 노출된다. 같은 (대분류,소분류,파일)은 중복 제거.
+                folder_map: dict[str, dict[str, list[dict]]] = {}
+                seen_shared: set[tuple[str, str, str]] = set()
                 for obj in items:
                     key = obj["key"]
                     parts = key.split("/")
-                    # shared/{folder_type}/raw/{file...} 형태만 채택
-                    if len(parts) < 4 or parts[0] != "shared" or parts[2] != "raw":
+                    # shared/{대분류}/{raw|originals}/{...} 형태만 채택
+                    if (
+                        len(parts) < 4
+                        or parts[0] != "shared"
+                        or parts[2] not in ("raw", "originals")
+                    ):
                         continue
-                    folder_type = parts[1]
-                    filename = "/".join(parts[3:])
+                    top = parts[1]
+                    rest = parts[3:]
+                    # rest 가 1개면 소분류 없음, 2개 이상이면 첫 segment 가 소분류
+                    if len(rest) >= 2:
+                        sub = rest[0]
+                        filename = "/".join(rest[1:])
+                    else:
+                        sub = ""
+                        filename = rest[0]
+                    if (top, sub, filename) in seen_shared:
+                        continue
+                    seen_shared.add((top, sub, filename))
                     lm = obj["last_modified"]
                     if lm.tzinfo is None:
                         lm = lm.replace(tzinfo=_tz.utc)
-                    folder_map.setdefault(folder_type, []).append({
+                    folder_map.setdefault(top, {}).setdefault(sub, []).append({
                         "file_name": filename,
                         "uploaded_at": lm.strftime("%Y-%m-%d"),
                         "expires_at": "-",
                     })
-                # 폴더 내 파일 정렬: 업로드일 내림차순 + 파일명 오름차순 (한글 가나다 순)
-                # Python sort 는 stable 이므로 secondary key 를 먼저 정렬한 뒤 primary key 로 재정렬
-                for files in folder_map.values():
-                    files.sort(key=lambda d: d["file_name"])
-                    files.sort(key=lambda d: d["uploaded_at"], reverse=True)
 
-                # 폴더 정렬: 폴더명 알파벳/가나다 순 (업로드일 무관)
+                # 대분류 가나다순, 소분류 가나다순("" 은 맨 앞 = 대분류 직속 파일).
+                # 파일은 업로드일 내림차순 + 파일명 오름차순 (stable sort 2단계).
                 self.kb_folder_list = [
                     KbSharedFolder(
-                        folder_type=ft,
-                        files=[KbSharedFile(**f) for f in fs],
+                        folder_type=top,
+                        subfolders=[
+                            KbSharedSubfolder(
+                                sub_name=sub,
+                                files=[
+                                    KbSharedFile(**f)
+                                    for f in sorted(
+                                        sorted(files, key=lambda d: d["file_name"]),
+                                        key=lambda d: d["uploaded_at"],
+                                        reverse=True,
+                                    )
+                                ],
+                            )
+                            for sub, files in sorted(subs.items())
+                        ],
                     )
-                    for ft, fs in sorted(folder_map.items())
+                    for top, subs in sorted(folder_map.items())
                 ]
                 return
 
@@ -1056,8 +1095,17 @@ class ChatState(rx.State):
         self.ingestion_status = "uploading"
         self.ingestion_error = ""
         yield
+        # 패널에 남아있는 파일명을 allowedNames 로 함께 전달 → JS 가 그 파일들만 업로드
+        # (여러 번 선택해 누적된 _kbSelectedFiles 중, 패널에서 제거하지 않은 것만).
+        import json as _json
+        args = _json.dumps([
+            self._emp_no,
+            self.upload_target,
+            self.dept_cd,
+            [f.name for f in self.pending_files],
+        ])
         yield rx.call_script(
-            f"uploadKbFilesToApi('{self._emp_no}', '{self.upload_target}', '{self.dept_cd}')",
+            f"uploadKbFilesToApi.apply(null, {args})",
             callback=ChatState.on_upload_complete,
         )
 
@@ -1593,6 +1641,13 @@ class ChatState(rx.State):
                                             if r not in existing_ranks:
                                                 existing_ranks.append(r)
                                         by_uri[uri]["ranks"] = existing_ranks
+                                        # PDF 페이지도 합집합 병합 (ranks 와 동일 패턴)
+                                        existing_pages = by_uri[uri].get("pages") or []
+                                        for p in (doc.get("pages") or []):
+                                            if p not in existing_pages:
+                                                existing_pages.append(p)
+                                        existing_pages.sort()
+                                        by_uri[uri]["pages"] = existing_pages
                                     else:
                                         merged.append(doc)
                                         by_uri[uri] = doc
@@ -1639,6 +1694,18 @@ class ChatState(rx.State):
                 final_sources = []
             else:
                 final_sources = all_sources
+
+            # 출처 칩에 표시할 PDF 페이지 문자열을 확정 (PDF + 페이지 있을 때만 비어있지 않음).
+            # UI 는 truthiness 로만 분기하므로 과거 메시지(키 없음)도 안전하게 미표시된다.
+            # 주의: final_sources 원소는 state 변수(_streaming_kb_sources)의 dict 라
+            # background task 의 컨텍스트 밖에서 직접 변형하면 ImmutableStateError 가 난다.
+            # 읽기는 허용되므로, 변형 대신 새 plain dict 로 복사하며 키를 추가한다.
+            def _with_pages_display(s: dict) -> dict:
+                pages = s.get("pages") or []
+                display = "p." + ", ".join(str(p) for p in pages) if (s.get("ext") == "pdf" and pages) else ""
+                return {**s, "pages_display": display}
+
+            final_sources = [_with_pages_display(s) for s in final_sources]
 
             # KB 근거(grounding) 관측: 검색·누적된 출처 대비 답변에 실제 인용된 출처 수.
             # cited=0 인데 retrieved>0 이면 미근거(환각 가능) 신호.

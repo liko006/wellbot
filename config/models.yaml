@@ -13,6 +13,18 @@ models:
     supports_vision: true
     supports_document: true
 
+  - name: "Claude Opus 4.8"
+    description: "고도화된 작업에 적합함"
+    provider: "bedrock"
+    model_id: "global.anthropic.claude-opus-4-8"
+    context_window: 1000000
+    max_tokens: 16384
+    temperature: 0.4
+    thinking: true
+    thinking_budget: 8192
+    supports_vision: true
+    supports_document: true
+
   - name: "Claude Opus 4.6"
     description: "고난도 작업에 가장 강력함"
     provider: "bedrock"
