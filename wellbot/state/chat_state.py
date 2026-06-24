@@ -1641,14 +1641,7 @@ class ChatState(rx.State):
                                             if r not in existing_ranks:
                                                 existing_ranks.append(r)
                                         by_uri[uri]["ranks"] = existing_ranks
-                                        # PDF 페이지도 합집합 병합 (ranks 와 동일 패턴)
-                                        existing_pages = by_uri[uri].get("pages") or []
-                                        for p in (doc.get("pages") or []):
-                                            if p not in existing_pages:
-                                                existing_pages.append(p)
-                                        existing_pages.sort()
-                                        by_uri[uri]["pages"] = existing_pages
-                                        # rank → page 매핑도 병합 (인용된 페이지만 추려 표시하기 위함)
+                                        # rank → page 매핑 병합 (인용된 페이지만 추려 표시).
                                         existing_rank_pages = by_uri[uri].get("rank_pages") or {}
                                         existing_rank_pages.update(doc.get("rank_pages") or {})
                                         by_uri[uri]["rank_pages"] = existing_rank_pages
@@ -1706,15 +1699,10 @@ class ChatState(rx.State):
             # 읽기는 허용되므로, 변형 대신 새 plain dict 로 복사하며 키를 추가한다.
             def _with_pages_display(s: dict) -> dict:
                 # 인용 마커가 있으면 그 문서에서 '실제 인용된 청크'의 페이지만,
-                # 없으면(fallback) 검색된 전체 페이지를 표시.
+                # 없으면(fallback) 검색된 전체 페이지. (페이지 집합은 rank_pages 에서 파생)
                 rank_pages = s.get("rank_pages") or {}
-                if cited_ranks and rank_pages:
-                    pages = sorted({
-                        rank_pages[r] for r in cited_ranks
-                        if r in rank_pages and rank_pages[r] is not None
-                    })
-                else:
-                    pages = s.get("pages") or []
+                ranks = (cited_ranks & rank_pages.keys()) if cited_ranks else rank_pages.keys()
+                pages = sorted({rank_pages[r] for r in ranks if rank_pages[r] is not None})
                 display = "p." + ", ".join(str(p) for p in pages) if (s.get("ext") == "pdf" and pages) else ""
                 return {**s, "pages_display": display}
 

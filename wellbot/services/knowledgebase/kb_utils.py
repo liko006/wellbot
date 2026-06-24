@@ -536,7 +536,8 @@ def is_ingestion_in_progress(kb_id: str, data_source_id: str) -> bool:
 # ──────────────────────────────────────────────
 # 누적 문서 수 카운트 / 상한 검증
 # ──────────────────────────────────────────────
-# xlsx/csv 분할본 _partN 을 base 로 합치기 위한 패턴
+# xlsx/csv 분할본 _partN 을 base 로 합치기 위한 패턴.
+# (분할본 명명 규칙은 cleanup_existing_parts 의 정규식과 한 쌍 — 형식 변경 시 양쪽 동기화)
 _PART_RE = re.compile(r"^(.*)_part\d+(\.(?:xlsx|csv))$", re.IGNORECASE)
 # 변환본(원본은 originals/ 에 별도 보관) — 논리 문서 카운트에서 제외
 _CONVERTED_SUFFIXES_COUNT = ("_pptx.json", "_xlsx.md", "_pdf.md")
@@ -595,6 +596,16 @@ def enforce_kb_doc_limit(bucket: str, prefix: str, new_count: int) -> None:
 # ──────────────────────────────────────────────
 # 파일 업로드 / 삭제 (S3)
 # ──────────────────────────────────────────────
+def _stash_original(
+    bucket: str, prefix: str, file_bytes: bytes, filename: str, uploaded_uris: list[str],
+) -> None:
+    """변환 대상(pptx/pdf 등)의 원본을 raw/ 밖 originals/ 에 보관(Bedrock 인덱싱 제외).
+    롤백 시 orphan 으로 남지 않도록 업로드 URI 목록에 기록."""
+    originals_key = f"{get_originals_prefix(prefix)}{filename}"
+    _get_s3().put_object(Bucket=bucket, Key=originals_key, Body=file_bytes)
+    uploaded_uris.append(f"s3://{bucket}/{originals_key}")
+
+
 def upload_files_to_kb(
     bucket: str,
     prefix: str,
@@ -628,12 +639,8 @@ def upload_files_to_kb(
             ext = Path(filename).suffix.lower()
 
             if ext in CONVERTIBLE_EXTS:
-                # 원본은 raw/ 밖의 originals/ 에 저장 (Bedrock 인덱싱 대상 제외)
-                originals = get_originals_prefix(prefix)
-                originals_key = f"{originals}{filename}"
-                _get_s3().put_object(Bucket=bucket, Key=originals_key, Body=file_bytes)
-                # 롤백 시 orphan 으로 남지 않도록 삭제 대상에 포함
-                uploaded_uris.append(f"s3://{bucket}/{originals_key}")
+                # 원본은 originals/ 에 보관(인덱싱 제외), 변환본(json)만 raw/ 에 색인.
+                _stash_original(bucket, prefix, file_bytes, filename, uploaded_uris)
                 file_bytes, filename = convert_pptx_to_json(file_bytes, filename)
                 ext = ".json"
             elif ext == ".pdf" and pdf_via_upstage_enabled():
@@ -648,13 +655,12 @@ def upload_files_to_kb(
                         exc_info=True,
                     )
                 else:
-                    originals = get_originals_prefix(prefix)
-                    originals_key = f"{originals}{filename}"
-                    _get_s3().put_object(Bucket=bucket, Key=originals_key, Body=file_bytes)
-                    uploaded_uris.append(f"s3://{bucket}/{originals_key}")
+                    _stash_original(bucket, prefix, file_bytes, filename, uploaded_uris)
                     file_bytes, filename = md_bytes, md_name
                     ext = ".md"
 
+            # xlsx 는 여기(개인/팀)서 Upstage 변환하지 않고 pandas 분할(TABULAR_EXTS)로 처리.
+            # xlsx→Upstage 는 공용 KB CLI(shared_kb_manager)에서만 적용하는 정책 — 의도된 비대칭.
             if ext in TABULAR_EXTS:
                 uris = split_and_upload_tabular(bucket, prefix, file_bytes, filename)
             else:
