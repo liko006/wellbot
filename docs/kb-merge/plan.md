@@ -144,3 +144,13 @@ config.py, personal/team_kb_manager, kb_upload(세션인증+위임), kb_download
   - `scripts/shared_kb_manager.py` ✅ — **legacy 통째 가져옴**(hierarchy `_split_folder`/`rename_folder`/PDF upstage/folder None-fix 전부) + wellbot의 pptx_to_dict 위임 리팩터 재적용(import+convert_pptx_to_json). py_compile OK.
   - `scripts/transform_lambda.py`, `scripts/cleanup_personal_kb.py` — 차이가 전부 docstring/주석 표현뿐(코드 동일) → **wellbot 유지.**
   - **P3 완료**: 실제 변경 = storage_service(1줄), shared_kb_manager(legacy+pptx재적용). 나머지는 wellbot 유지(대부분 wellbot이 리팩터로 동급↑, 기능은 P2 kb_utils 위임으로 커버).
+
+## 사후 정리 (post-merge cleanup — 코드 효율성 점검)
+병합·인용페이지 커밋(cdc6eff + d8b78a3) 대상으로 3개 리뷰 에이전트(KB코어 / chat·state·tool / UI·CLI)를 돌려 중복·죽은코드·구조 미반영·비효율만 점검. 큰 오류 없음(서버 기능 점검 통과). 아래 수정은 **전부 동작 무변경**. commit/push는 사용자.
+
+- `scripts/shared_kb_manager.py` — **wellbot DRY 구조 복원**(병합 시 legacy 통째 복사로 되돌아갔던 부분). `ROWS_PER_SPLIT·TABULAR_EXTS·CONVERTIBLE_EXTS·MAX_FILE_SIZES·MAX_FILE_SIZE_DEFAULT·SUPPORTED_EXTENSIONS`를 kb_utils에서 import(로컬 재정의 삭제), `collect_files_from_dir` 인라인 set→`SUPPORTED_EXTENSIONS`(값 동일). `_originals_prefix`엔 "kb_utils.get_originals_prefix와 통합 금지(그쪽은 raw/ 이후를 잘라 소분류 유실; 1단계 개인/팀용)" 주석.
+- `services/knowledgebase/kb_utils.py` — `_stash_original()` 헬퍼 추출로 pptx/pdf 분기의 originals 저장+URI기록 중복 제거. xlsx 비대칭(개인/팀 pandas vs 공용 CLI Upstage)이 **의도된 정책**임을 주석화. `_PART_RE`↔`cleanup_existing_parts` 정규식 결합 주석.
+- `services/chat/tool_executor.py` + `state/chat_state.py` — 인용페이지(d8b78a3)에서 추가됐던 `pages`(list)가 `rank_pages`(dict)와 완전 중복(`pages == sorted(set(rank_pages.values()))` 항상 성립)이라 **`pages` 제거, rank_pages에서 파생**. 그룹핑/병합/표시 3곳에서 pages 빌드·머지·in-loop sort 삭제(~15줄). `_with_pages_display`는 `cited_ranks & rank_pages.keys()`로 일원화. 표시 페이지 집합 이전과 동일.
+- 점검 결과 깨끗: kb_panels(스크롤바 잔재 0), kb_retriever, storage_service, tool_loop, message_bubble, chat_models, constants(추가 상수 4개 전부 사용), upload_script, chat_state의 load_kb_docs·kb_scope 주입·_parse_top_k 재사용.
+- (범위 밖) shared_kb_manager의 `_validate_file_size`/`_cleanup_existing_parts`/`_split_and_upload_tabular`는 kb_utils와 병렬 중복이나 병합 이전부터 존재 — 미수정.
+- 검증: 4개 파일 py_compile OK, 제거한 `pages` 키를 읽는 곳 없음(grep 확인).

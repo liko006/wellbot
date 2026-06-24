@@ -92,6 +92,12 @@ init_env()  # KB 모듈의 모듈레벨 os.getenv 보장 (다른 wellbot import 
 
 from wellbot.services.knowledgebase.config import get_kb_config  # noqa: E402  (sys.path 설정 이후 import)
 from wellbot.services.knowledgebase.kb_utils import (  # noqa: E402
+    CONVERTIBLE_EXTS,
+    MAX_FILE_SIZE_DEFAULT,
+    MAX_FILE_SIZES,
+    ROWS_PER_SPLIT,
+    SUPPORTED_EXTENSIONS,
+    TABULAR_EXTS,
     convert_pdf_to_markdown,
     convert_xlsx_to_markdown,
     pdf_via_upstage_enabled,
@@ -111,20 +117,8 @@ EMBEDDING_MODEL        = _kb_cfg["embedding_model"]
 POLL_INTERVAL          = _kb_cfg.get("poll_interval", 5)
 POLL_TIMEOUT           = _kb_cfg.get("poll_timeout", 300)
 
-# ──────────────────────────────────────────────
-# 업로드 제한 설정
-# ──────────────────────────────────────────────
-ROWS_PER_SPLIT   = 50_000
-TABULAR_EXTS     = {".xlsx", ".csv"}
-CONVERTIBLE_EXTS = {".pptx"}     # Bedrock KB 미지원 → 업로드 전 json 변환
-MAX_FILE_SIZES   = {
-    ".txt":  30 * 1024 * 1024,
-    ".md":   30 * 1024 * 1024,
-    ".json": 30 * 1024 * 1024,
-    ".csv":  None,
-    ".xlsx": None,
-}
-MAX_FILE_SIZE_DEFAULT = 100 * 1024 * 1024  # 100MB
+# 업로드 제한 상수(ROWS_PER_SPLIT/TABULAR_EXTS/CONVERTIBLE_EXTS/MAX_FILE_SIZES/
+# MAX_FILE_SIZE_DEFAULT)·SUPPORTED_EXTENSIONS 는 kb_utils 단일 출처에서 import (위 import 블록).
 
 # ──────────────────────────────────────────────
 # AWS 클라이언트
@@ -156,8 +150,12 @@ def _raw_prefix(folder: str) -> str:
 
 
 def _originals_prefix(folder: str) -> str:
-    """xlsx 원본 보관 prefix. raw/ 의 계층을 originals/ 에 그대로 미러링한다
-    (kb_retriever._map_to_original_uri 의 /raw/→/originals/ 치환과 일치)."""
+    """xlsx 원본 보관 prefix. raw/ 의 계층(소분류 포함)을 originals/ 에 그대로 미러링한다
+    (kb_retriever._map_to_original_uri 의 /raw/→/originals/ 치환과 일치).
+
+    주의: kb_utils.get_originals_prefix 와 통합 금지 — 그쪽은 'raw/' 이후를 잘라내
+    소분류를 잃는다(1단계 개인/팀 경로용). 여기선 소분류를 보존해야 하므로 replace 사용.
+    """
     return _raw_prefix(folder).replace("/raw/", "/originals/", 1)
 
 
@@ -549,10 +547,9 @@ def convert_pptx_to_json(file_path: str) -> str:
 # 파일 수집 유틸
 # ──────────────────────────────────────────────
 def collect_files_from_dir(dir_path: str) -> list[str]:
-    supported = {".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".md", ".txt", ".json", ".html", ".htm"}
     paths = [
         str(p) for p in Path(dir_path).iterdir()
-        if p.is_file() and p.suffix.lower() in supported
+        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
     ]
     print(f"[Dir] {len(paths)}개 파일 수집: {dir_path}")
     return paths

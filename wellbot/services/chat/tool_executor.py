@@ -299,19 +299,16 @@ def _run_kb_search(tool_input: dict[str, Any], emp_no: str) -> dict:
                 "score": r["score"],  # 정렬 후 첫 값이 최고점
                 "ext": r["title"].rsplit(".", 1)[-1].lower() if "." in r["title"] else "",
                 "ranks": [],
-                "pages": [],  # PDF 청크의 페이지 번호 (중복 제거·정렬). 그 외 형식은 빈 리스트
-                "rank_pages": {},  # rank → page. 인용 마커([N])가 있을 때 인용된 청크의 페이지만 추리기 위함
+                # rank → page (PDF 청크). 인용 마커([N]) 매칭으로 '인용된 청크의 페이지'만 추려 표시.
+                # 표시용 페이지 집합은 rank_pages.values() 에서 파생하므로 별도 pages 리스트는 두지 않음.
+                "rank_pages": {},
             }
         rank = r.get("rank", 0)
         by_uri[uri]["ranks"].append(rank)
         page = r.get("page")
         if page is not None:
-            if page not in by_uri[uri]["pages"]:
-                by_uri[uri]["pages"].append(page)
             by_uri[uri]["rank_pages"][rank] = page
     source_docs = list(by_uri.values())
-    for d in source_docs:
-        d["pages"].sort()
     return {
         "text": context,
         "_meta": {
