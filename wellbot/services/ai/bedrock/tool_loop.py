@@ -289,28 +289,68 @@ async def _emit_no_tool_fallback(
         (system_prompt + "\n\n" if system_prompt else "") + guidance
     )
 
-    gen = stream_one_turn_iter(
-        bedrock_messages,
-        model,
-        augmented_system,
-        thinking_enabled,
-        tool_config=tool_config,
-    )
-
+    # Bedrock toolChoice 에는 'none' 이 없어 가이던스로만 도구 호출을 억제하므로,
+    # 모델이 텍스트 없이 tool_use 로만 응답할 수 있다. 그 경우 합성 toolResult 로
+    # 추가 검색을 차단하고 다시 답변을 유도(소수 재시도) — 그래도 텍스트가 없을 때만
+    # 최종 안내 메시지로 폴백. (무한 루프 방지 위해 시도 횟수 제한)
+    _MAX_FALLBACK_TURNS = 2
     yielded_any_text = False
-    while True:
-        has_value, value = await asyncio.to_thread(safe_next, gen)
-        if not has_value:
-            break
-        event_type, payload = value  # type: ignore[misc]
-        if event_type == "text":
-            yielded_any_text = True
-            yield ("text", payload)
-        elif event_type == "thinking":
-            yield ("thinking", payload)
-        elif event_type == "usage":
-            yield ("usage", payload)
-        # tool 비활성 폴백 턴에서 tool_use·assistant_content·stop_reason 는 불필요
+    for _ in range(_MAX_FALLBACK_TURNS):
+        gen = stream_one_turn_iter(
+            bedrock_messages,
+            model,
+            augmented_system,
+            thinking_enabled,
+            tool_config=tool_config,
+        )
+        pending_tool_uses: list[dict] = []
+        assistant_blocks: list[dict] = []
+        stop_reason: str | None = None
+        while True:
+            has_value, value = await asyncio.to_thread(safe_next, gen)
+            if not has_value:
+                break
+            event_type, payload = value  # type: ignore[misc]
+            if event_type == "text":
+                yielded_any_text = True
+                yield ("text", payload)
+            elif event_type == "thinking":
+                yield ("thinking", payload)
+            elif event_type == "usage":
+                yield ("usage", payload)
+            elif event_type == "tool_use":
+                pending_tool_uses.append(payload)
+            elif event_type == "assistant_content":
+                assistant_blocks = payload
+            elif event_type == "stop_reason":
+                stop_reason = payload
+
+        if yielded_any_text:
+            return
+
+        # 텍스트 없이 tool_use 로만 끝난 경우: 도구 호출을 합성 결과로 막고 한 번 더 유도.
+        if stop_reason == "tool_use" and pending_tool_uses:
+            if assistant_blocks:
+                bedrock_messages.append(
+                    {"role": "assistant", "content": assistant_blocks}
+                )
+            synthetic = {
+                "text": (
+                    "추가 도구 호출은 차단되었습니다. 더 이상 검색하지 말고, "
+                    "지금까지의 결과로 바로 답변하거나 관련 내용을 찾지 못했음을 안내하세요."
+                ),
+            }
+            bedrock_messages.append({
+                "role": "user",
+                "content": [
+                    {"toolResult": {"toolUseId": tu.get("toolUseId", ""), "content": [synthetic]}}
+                    for tu in pending_tool_uses
+                ],
+            })
+            continue  # 다음 폴백 시도
+
+        # tool_use 도 텍스트도 없으면(end_turn 등) 더 시도하지 않음
+        break
 
     if not yielded_any_text:
         # 폴백 턴에서도 텍스트가 없으면 최소 안내 메시지 송출

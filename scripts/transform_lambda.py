@@ -221,8 +221,11 @@ def _chunk_text(
     환경변수 CHUNKER_TYPE 에 따라 fixed 또는 recursive 청킹 수행
     chunk_size/overlap 미지정 시 환경변수 기본값 사용
     """
-    cs = chunk_size or CHUNK_SIZE
+    cs = max(chunk_size or CHUNK_SIZE, 1)
     ov = overlap or CHUNK_OVERLAP
+    # overlap 이 chunk_size 이상이면 fixed 모드의 step(cs-ov)이 0/음수가 되어
+    # while 루프가 진행되지 않음(무한 루프 → Lambda 타임아웃). 0~cs-1 로 클램프.
+    ov = max(0, min(ov, cs - 1))
 
     if CHUNKER_TYPE == "recursive":
         raw_parts = _recursive_split(text, _RECURSIVE_SEPARATORS, cs)

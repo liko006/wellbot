@@ -461,16 +461,27 @@ def _validate_file_size(file_path: str) -> None:
 # ──────────────────────────────────────────────
 # 분할 업로드 (xlsx / csv)
 # ──────────────────────────────────────────────
+def _safe_sheet_slug(sheet_name: object) -> str:
+    """시트명을 S3 키/파일명에 안전한 슬러그로 변환 (한글 보존, 특수문자 → _)."""
+    slug = re.sub(r"[^\w가-힣]+", "_", str(sheet_name)).strip("_")
+    return slug or "sheet"
+
+
 def _cleanup_existing_parts(folder: str, stem: str, ext: str) -> None:
-    """재업로드 시 파트 수가 달라져서 오래된 파트가 남는 것을 방지."""
+    """재업로드 시 파트 수/시트 구성이 달라져 오래된 파트가 남는 것을 방지.
+
+    단일시트 '{stem}_part{N}' 과 멀티시트 '{stem}_{sheet}_part{N}' 을 모두 정리.
+    (관리자 CLI 로 파일명이 통제되므로 prefix 가 겹치는 다른 파일은 가정하지 않음.)
+    """
     prefix    = _raw_prefix(folder)
+    part_re   = re.compile(rf"^{re.escape(stem)}(?:_.+)?_part\d+{re.escape(ext)}$")
     paginator = _s3.get_paginator("list_objects_v2")
     deleted   = 0
     for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
         for obj in page.get("Contents", []):
             key      = obj["Key"]
             filename = key.split("/")[-1]
-            if filename.startswith(f"{stem}_part") and filename.endswith(ext):
+            if part_re.match(filename):
                 _s3.delete_object(Bucket=S3_BUCKET, Key=key)
                 deleted += 1
                 print(f"[S3] 기존 파트 삭제: {key}")
@@ -478,8 +489,49 @@ def _cleanup_existing_parts(folder: str, stem: str, ext: str) -> None:
         print(f"[S3] 기존 파트 {deleted}개 정리 완료: stem={stem}, ext={ext}")
 
 
+def _upload_df_parts(
+    folder: str, df: "pd.DataFrame", part_stem: str, ext: str, sheet_name: object = None,
+) -> list[str]:
+    """단일 DataFrame 을 ROWS_PER_SPLIT 행 단위로 분할해 S3 raw/ 에 업로드.
+
+    행이 0개인 (헤더만 있는) 시트는 색인할 내용이 없으므로 스킵.
+    xlsx 는 원본 시트명을 파트 내부 시트명으로 보존 → Lambda 가 sheet 메타 태깅.
+    """
+    uris: list[str] = []
+    total_rows = len(df)
+    if total_rows == 0:
+        return uris
+    for i, start in enumerate(range(0, total_rows, ROWS_PER_SPLIT)):
+        chunk_df       = df.iloc[start:start + ROWS_PER_SPLIT]
+        split_filename = f"{part_stem}_part{i + 1}{ext}"
+        buf            = io.BytesIO()
+
+        if ext == ".csv":
+            chunk_df.to_csv(buf, index=False)
+        else:
+            xl_sheet = (str(sheet_name)[:31] if sheet_name else "") or "Sheet1"
+            with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                chunk_df.to_excel(writer, index=False, sheet_name=xl_sheet)
+
+        buf.seek(0)
+        key = f"{_raw_prefix(folder)}{split_filename}"
+        _s3.put_object(Bucket=S3_BUCKET, Key=key, Body=buf.read())
+        uri = f"s3://{S3_BUCKET}/{key}"
+        print(
+            f"[S3] 분할 업로드: {uri} "
+            f"(rows {start}~{min(start + ROWS_PER_SPLIT, total_rows) - 1})"
+        )
+        uris.append(uri)
+    return uris
+
+
 def _split_and_upload_tabular(folder: str, file_path: str) -> list[str]:
-    """xlsx/csv를 ROWS_PER_SPLIT 행 단위로 분할해서 S3 raw/ 에 저장."""
+    """xlsx/csv를 ROWS_PER_SPLIT 행 단위로 분할해서 S3 raw/ 에 저장.
+
+    xlsx 는 **모든 시트**를 각각 분할 (개인/팀 kb_utils 와 동일 정책 — 첫 시트만
+    읽어 나머지를 누락하던 문제 해결). 멀티시트면 파일명에 시트 슬러그를 포함
+    ('{stem}_{sheet}_part{N}.xlsx'), 단일시트면 기존 명명 유지.
+    """
     path = Path(file_path)
     ext  = path.suffix.lower()
     stem = path.stem
@@ -491,33 +543,19 @@ def _split_and_upload_tabular(folder: str, file_path: str) -> list[str]:
             df = pd.read_csv(file_path)
         except UnicodeDecodeError:
             df = pd.read_csv(file_path, encoding="cp949")
-    else:
-        df = pd.read_excel(file_path)
+        print(f"[Upload] 분할 업로드 시작: {path.name}, 총 {len(df)}행, {ROWS_PER_SPLIT}행씩 분할")
+        uris = _upload_df_parts(folder, df, stem, ext)
+        print(f"[Upload] 분할 업로드 완료: {path.name} → {len(uris)}개 파트")
+        return uris
 
-    total_rows = len(df)
-    print(f"[Upload] 분할 업로드 시작: {path.name}, 총 {total_rows}행, {ROWS_PER_SPLIT}행씩 분할")
-
-    uris = []
-    for i, start in enumerate(range(0, total_rows, ROWS_PER_SPLIT)):
-        chunk_df       = df.iloc[start:start + ROWS_PER_SPLIT]
-        split_filename = f"{stem}_part{i + 1}{ext}"
-        buf            = io.BytesIO()
-
-        if ext == ".csv":
-            chunk_df.to_csv(buf, index=False)
-        else:
-            chunk_df.to_excel(buf, index=False)
-
-        buf.seek(0)
-        key = f"{_raw_prefix(folder)}{split_filename}"
-        _s3.put_object(Bucket=S3_BUCKET, Key=key, Body=buf.read())
-        uri = f"s3://{S3_BUCKET}/{key}"
-        print(
-            f"[S3] 분할 업로드: {uri} "
-            f"(rows {start}~{min(start + ROWS_PER_SPLIT, total_rows) - 1})"
-        )
-        uris.append(uri)
-
+    # xlsx: 전체 시트를 dict 로 읽어 시트별 분할 (sheet_name=None → {시트명: df})
+    sheets = pd.read_excel(file_path, sheet_name=None)
+    multi  = len(sheets) > 1
+    print(f"[Upload] 분할 업로드 시작: {path.name}, {len(sheets)}개 시트, {ROWS_PER_SPLIT}행씩 분할")
+    uris: list[str] = []
+    for sheet_name, df in sheets.items():
+        part_stem = f"{stem}_{_safe_sheet_slug(sheet_name)}" if multi else stem
+        uris.extend(_upload_df_parts(folder, df, part_stem, ext, sheet_name=sheet_name))
     print(f"[Upload] 분할 업로드 완료: {path.name} → {len(uris)}개 파트")
     return uris
 

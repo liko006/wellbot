@@ -685,11 +685,6 @@ class ChatState(rx.State):
             return
 
         tab = self.kb_doc_list_tab
-        dept_cd = self.dept_cd
-        if tab == "team" and not dept_cd:
-            self.kb_delete_status = "error"
-            self.kb_delete_error = "소속 팀 정보가 없습니다."
-            return
 
         self.kb_delete_status = "processing"
         self.kb_delete_error = ""
@@ -707,9 +702,17 @@ class ChatState(rx.State):
                 )
                 from wellbot.services.knowledgebase.team_kb_manager import (
                     delete_files_from_team_kb,
+                    get_dept_cd as _get_dept_cd,
                     get_user_team_kb as _get_team_kb,
                     start_ingestion as _team_start_ingestion,
                 )
+
+                # 0. 부서코드는 클라이언트 상태(self.dept_cd)가 아니라 emp_no 로
+                #    서버에서 도출 — 위·변조/stale dept_cd 로 다른 팀 prefix 의
+                #    파일을 삭제하거나, ingest 대상 KB 와 어긋난 prefix 를 지우는 것을 방지.
+                dept_cd = await loop.run_in_executor(None, lambda: _get_dept_cd(emp_no))
+                if not dept_cd:
+                    raise RuntimeError("소속 팀 정보가 없습니다.")
 
                 # 1. KB 정보 조회
                 kb_info = await loop.run_in_executor(None, lambda: _get_team_kb(emp_no))
@@ -726,7 +729,7 @@ class ChatState(rx.State):
                         "현재 다른 팀원이 문서를 처리 중입니다. 잠시 후 다시 시도해주세요."
                     )
 
-                # 3. S3 파일 삭제
+                # 3. S3 파일 삭제 (서버 도출 dept_cd 기준)
                 await loop.run_in_executor(
                     None, lambda: delete_files_from_team_kb(dept_cd, filenames)
                 )
@@ -745,15 +748,17 @@ class ChatState(rx.State):
                     start_ingestion as _personal_start_ingestion,
                 )
 
-                # 1. S3 파일 삭제
-                await loop.run_in_executor(
-                    None, lambda: delete_files_from_personal_kb(emp_no, filenames)
-                )
-
-                # 2. KB 정보 조회
+                # 1. KB 정보 조회 — S3 삭제 전에 먼저 확인. KB 레코드가 없는데
+                #    원본만 지우면 벡터 인덱스는 그대로 남아(검색 가능) desync 가
+                #    발생하므로, 없으면 아무것도 삭제하지 않고 즉시 실패.
                 kb_info = await loop.run_in_executor(None, lambda: _get_user_kb(emp_no))
                 if not kb_info:
                     raise RuntimeError("개인 KB 정보를 찾을 수 없습니다.")
+
+                # 2. S3 파일 삭제
+                await loop.run_in_executor(
+                    None, lambda: delete_files_from_personal_kb(emp_no, filenames)
+                )
 
                 # 3. Ingestion job 실행 → 벡터 인덱스에서 삭제분 정리
                 job_id = await loop.run_in_executor(
@@ -789,6 +794,7 @@ class ChatState(rx.State):
         import asyncio as _asyncio
         from datetime import timezone as _tz, timedelta as _td
         from wellbot.services.files import storage_service
+        from wellbot.services.knowledgebase.kb_utils import is_tabular_part
 
         self.kb_doc_list_loading = True
         self.kb_doc_list = []
@@ -890,10 +896,14 @@ class ChatState(rx.State):
             originals_items = await loop.run_in_executor(
                 None, storage_service.list_objects_with_meta, originals_prefix
             )
-            # 동일 파일명이 양쪽에 있을 경우 originals/ 의 원본을 우선
+            # 동일 파일명이 양쪽에 있을 경우 originals/ 의 원본을 우선.
+            # 분할본(_partN)은 원본(originals/)으로 대표되므로 목록에서 제외 →
+            # 사용자에게 '파일 1개'로 표시되고, 선택 삭제도 논리 파일 단위로 동작.
             seen: set[str] = set()
             combined: list[dict] = []
             for obj in originals_items + raw_items:
+                if is_tabular_part(obj["file_name"]):
+                    continue
                 if obj["file_name"] in seen:
                     continue
                 seen.add(obj["file_name"])
@@ -1052,15 +1062,22 @@ class ChatState(rx.State):
                 )
             ]
 
-    def remove_pending_file(self, filename: str) -> None:
-        """선택 목록에서 파일 제거"""
+    def remove_pending_file(self, filename: str) -> rx.event.EventSpec:
+        """선택 목록에서 파일 제거.
+
+        JS 측 누적 선택 배열(_kbSelectedFiles)에서도 함께 제거해야 같은 파일을
+        다시 고를 수 있다(안 그러면 change 핸들러 dedup 에 걸려 재선택이 유실됨).
+        """
         self.pending_files = [f for f in self.pending_files if f.name != filename]
         self._pending_file_data.pop(filename, None)
+        import json as _json
+        return rx.call_script(f"removeKbSelectedFile({_json.dumps(filename)})")
 
-    def clear_pending_files(self) -> None:
-        """선택 목록 전체 초기화"""
+    def clear_pending_files(self) -> rx.event.EventSpec:
+        """선택 목록 전체 초기화 (JS 누적 선택 배열도 함께 비움)"""
         self.pending_files = []
         self._pending_file_data = {}
+        return rx.call_script("clearKbSelectedFiles()")
 
     def _format_size(self, size: int) -> str:
         if size < 1024:
@@ -1131,7 +1148,6 @@ class ChatState(rx.State):
 
         emp_no = self._emp_no
         upload_target = self.upload_target
-        dept_cd = self.dept_cd
 
         try:
             import asyncio as _asyncio
@@ -1150,11 +1166,31 @@ class ChatState(rx.State):
             loop = _asyncio.get_running_loop()
 
             if upload_target == "team":
+                from wellbot.services.knowledgebase.team_kb_manager import (
+                    get_dept_cd as _get_dept_cd,
+                )
+                from wellbot.services.knowledgebase.kb_utils import (
+                    is_ingestion_in_progress as _in_progress,
+                )
+
+                # 업로드(kb_upload.py)와 동일하게 dept_cd 는 클라이언트 상태가 아니라
+                # emp_no 로 서버에서 도출 — 업로드 prefix(서버 도출)와 ingest 대상 KB 가
+                # 어긋나 방금 올린 파일이 색인되지 않는 desync 를 방지.
+                dept_cd = await loop.run_in_executor(None, lambda: _get_dept_cd(emp_no))
                 if not dept_cd:
                     raise ValueError("소속 팀 정보가 없습니다.")
                 kb_info = await loop.run_in_executor(
                     None, lambda: _get_or_create_team_kb(emp_no, dept_cd)
                 )
+                # 같은 데이터소스에 동시 ingestion 은 Bedrock 이 거부(ConflictException)
+                # 하므로, 다른 팀원이 처리 중이면 명확한 안내로 분기 (삭제 경로와 동일 정책).
+                if await loop.run_in_executor(
+                    None,
+                    lambda: _in_progress(kb_info["kb_id"], kb_info["data_source_id"]),
+                ):
+                    raise RuntimeError(
+                        "현재 다른 팀원이 문서를 처리 중입니다. 잠시 후 다시 시도해주세요."
+                    )
                 job_id = await loop.run_in_executor(
                     None, lambda: team_start_ingestion(kb_info["kb_id"], kb_info["data_source_id"])
                 )

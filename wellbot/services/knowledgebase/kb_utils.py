@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -138,26 +139,81 @@ def validate_file_size(file_bytes: bytes, filename: str) -> None:
 
 
 # ──────────────────────────────────────────────
+# 분할본(_partN) ↔ 논리 문서 매핑 (단일 출처)
+#   xlsx/csv 는 ROWS_PER_SPLIT 단위로 '{stem}_part{N}.ext'(csv·단일시트) 또는
+#   '{stem}_{sheet}_part{N}.ext'(멀티시트) 로 분할 저장된다. 카운트/목록/삭제가
+#   이 분할본을 하나의 논리 문서로 일관되게 다루도록 매핑 로직을 여기로 통일.
+# ──────────────────────────────────────────────
+# 분할본 파일명 매처. base = '_part{N}.ext' 를 떼어낸 부분(멀티시트면 시트 슬러그 포함).
+_TABULAR_PART_RE = re.compile(r"^(?P<base>.+?)_part\d+(?P<ext>\.(?:xlsx|csv))$", re.IGNORECASE)
+
+
+def is_tabular_part(filename: str) -> bool:
+    """파일명이 xlsx/csv 분할본('..._part{N}.xlsx|csv')인지 여부."""
+    return _TABULAR_PART_RE.match(filename) is not None
+
+
+def _part_owner(base: str, original_stems: set[str]) -> Optional[str]:
+    """분할본 base 의 소유 원본 stem 을 판정.
+
+    base 예: 'data'(csv·단일시트) 또는 'budget_매출'(멀티시트, 시트 슬러그 포함).
+    소유 stem = base 와 정확히 같거나 base 의 prefix('{stem}_...')인 원본 stem 중
+    **가장 긴 것**. originals/ 의 실제 원본 집합으로 판정하므로 prefix 충돌
+    (예: 'report' vs 'report_summary')에서도 올바른 소유자를 고른다.
+    """
+    candidates = [s for s in original_stems if base == s or base.startswith(s + "_")]
+    return max(candidates, key=len) if candidates else None
+
+
+def _list_original_stems(bucket: str, originals_prefix: str) -> set[str]:
+    """originals/ 에 보관된 원본 파일들의 stem 집합 (분할본 소유 판정용)."""
+    stems: set[str] = set()
+    paginator = _get_s3().get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=originals_prefix):
+        for obj in page.get("Contents", []) or []:
+            stems.add(Path(obj["Key"].split("/")[-1]).stem)
+    return stems
+
+
+def _owned_part_keys(
+    bucket: str, prefix: str, target_stem: str, ext: str, original_stems: set[str],
+) -> list[str]:
+    """prefix(raw/) 아래에서 target_stem(논리 파일) 소유의 분할본 key 목록.
+
+    소유 판정에 target_stem 자신도 후보에 포함 — 최초 업로드(원본 아직 미보관)나
+    재업로드 어느 경우든 자기 분할본을 정확히 집어낸다.
+    """
+    pool = set(original_stems) | {target_stem}
+    keys: list[str] = []
+    paginator = _get_s3().get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []) or []:
+            key = obj["Key"]
+            filename = key.split("/")[-1]
+            m = _TABULAR_PART_RE.match(filename)
+            if not m or m.group("ext").lower() != ext.lower():
+                continue
+            if _part_owner(m.group("base"), pool) == target_stem:
+                keys.append(key)
+    return keys
+
+
+# ──────────────────────────────────────────────
 # 분할 업로드 (xlsx / csv)
 # ──────────────────────────────────────────────
 def cleanup_existing_parts(
     bucket: str, prefix: str, stem: str, ext: str,
 ) -> None:
     """
-    동일 파일명의 기존 분할 파트를 S3 에서 삭제.
-    재업로드 시 파트 수/시트 구성이 달라져서 오래된 파트가 남는 것을 방지.
+    동일 논리 파일의 기존 분할본을 S3 에서 삭제.
+    재업로드 시 파트 수/시트 구성이 달라져 오래된 파트가 남는 것을 방지.
 
-    파트 명명: '{stem}_part{N}.ext' (csv·단일시트 xlsx) 또는
-    '{stem}_{sheet}_part{N}.ext' (멀티시트 xlsx) 둘 다 매칭.
+    소유 판정을 originals/ 원본 집합 기준으로 하여, 이름이 prefix 로 겹치는
+    다른 파일(예: 'report' 재업로드가 'report_summary' 의 분할본을 지우는 것)을 보존.
     """
-    part_re = re.compile(rf"^{re.escape(stem)}(?:_.+)?_part\d+$")
-    paginator = _get_s3().get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            key = obj["Key"]
-            filename = key.split("/")[-1]
-            if filename.endswith(ext) and part_re.match(Path(filename).stem):
-                _get_s3().delete_object(Bucket=bucket, Key=key)
+    original_stems = _list_original_stems(bucket, get_originals_prefix(prefix))
+    for key in _owned_part_keys(bucket, prefix, stem, ext, original_stems):
+        _get_s3().delete_object(Bucket=bucket, Key=key)
 
 
 def _safe_sheet_slug(sheet_name: object) -> str:
@@ -536,19 +592,34 @@ def is_ingestion_in_progress(kb_id: str, data_source_id: str) -> bool:
 # ──────────────────────────────────────────────
 # 누적 문서 수 카운트 / 상한 검증
 # ──────────────────────────────────────────────
-# xlsx/csv 분할본 _partN 을 base 로 합치기 위한 패턴.
-# (분할본 명명 규칙은 cleanup_existing_parts 의 정규식과 한 쌍 — 형식 변경 시 양쪽 동기화)
-_PART_RE = re.compile(r"^(.*)_part\d+(\.(?:xlsx|csv))$", re.IGNORECASE)
 # 변환본(원본은 originals/ 에 별도 보관) — 논리 문서 카운트에서 제외
 _CONVERTED_SUFFIXES_COUNT = ("_pptx.json", "_xlsx.md", "_pdf.md")
 
+# 같은 prefix(개인/팀 KB)의 업로드를 직렬화해 문서 수 상한 검증(read-modify-write)의
+# TOCTOU 를 차단. 단일 백엔드 프로세스 기준 — 다중 프로세스 환경은 미보장.
+_prefix_locks: dict[str, threading.Lock] = {}
+_prefix_locks_guard = threading.Lock()
 
-def count_kb_docs(bucket: str, raw_prefix: str) -> int:
-    """KB 의 논리적 문서 수(사용자가 올린 '파일' 수)를 센다.
 
-    raw_prefix 예: 'users/{emp}/raw/' → root 'users/{emp}/' 아래 raw/ + originals/ 를
-    스캔. 변환본(_pptx.json/_xlsx.md/_pdf.md)은 제외(원본을 originals/ 에서 셈),
-    xlsx/csv 분할본(_partN)은 base 로 합침, raw/+originals/ 를 파일명으로 dedup.
+def _prefix_lock(prefix: str) -> threading.Lock:
+    """prefix 별 락 인스턴스를 반환(없으면 생성)."""
+    with _prefix_locks_guard:
+        lock = _prefix_locks.get(prefix)
+        if lock is None:
+            lock = threading.Lock()
+            _prefix_locks[prefix] = lock
+        return lock
+
+
+def _existing_logical_docs(bucket: str, raw_prefix: str) -> set[str]:
+    """KB 의 논리 문서 파일명 집합.
+
+    - originals/ 의 모든 파일 = 논리 문서 (pptx·Upstage pdf/xlsx·분할 csv/xlsx 의 원본)
+    - raw/ 의 평문 파일 = 논리 문서 (pdf-local·docx·txt·md·json·html)
+      변환본(_pptx.json/_xlsx.md/_pdf.md)·분할본(_partN)은 제외 — 원본을 originals 로 셈.
+
+    분할본·멀티시트가 몇 개의 객체로 흩어지든 원본 1개로만 집계되므로, 시트 수만큼
+    중복 카운트되거나(=과다 집계) 재업로드가 신규로 잡히는 문제를 함께 차단한다.
     """
     root = raw_prefix.rsplit("raw/", 1)[0]  # users/{emp}/ 또는 teams/{dept}/
     logical: set[str] = set()
@@ -557,13 +628,20 @@ def count_kb_docs(bucket: str, raw_prefix: str) -> int:
         for obj in page.get("Contents", []) or []:
             rel = obj["Key"][len(root):]          # raw/... 또는 originals/...
             sub, _, filename = rel.partition("/")
-            if sub not in ("raw", "originals") or not filename:
+            if not filename:
                 continue
-            if filename.endswith(_CONVERTED_SUFFIXES_COUNT):
-                continue                          # 변환본은 originals 원본으로 카운트
-            m = _PART_RE.match(filename)
-            logical.add(m.group(1) + m.group(2) if m else filename)
-    return len(logical)
+            if sub == "originals":
+                logical.add(filename)
+            elif sub == "raw":
+                if filename.endswith(_CONVERTED_SUFFIXES_COUNT) or is_tabular_part(filename):
+                    continue
+                logical.add(filename)
+    return logical
+
+
+def count_kb_docs(bucket: str, raw_prefix: str) -> int:
+    """KB 의 논리적 문서 수(사용자가 올린 '파일' 수)."""
+    return len(_existing_logical_docs(bucket, raw_prefix))
 
 
 def _scope_from_prefix(prefix: str) -> Optional[str]:
@@ -575,21 +653,24 @@ def _scope_from_prefix(prefix: str) -> Optional[str]:
     return None  # shared 등은 상한 미적용
 
 
-def enforce_kb_doc_limit(bucket: str, prefix: str, new_count: int) -> None:
+def enforce_kb_doc_limit(bucket: str, prefix: str, new_filenames: list[str]) -> None:
     """누적 문서 수 상한 검증. 초과 시 ValueError (배치당 개수 제한과 별개).
 
-    상한이 정의되지 않은 scope(shared 등)는 검증을 건너뛴다.
+    이미 존재하는 동일 파일명(덮어쓰기)은 신규로 세지 않는다 — 한도가 찬 상태에서
+    기존 문서 갱신이 잘못 거부되는 것을 방지. 상한 미정의 scope(shared 등)는 스킵.
     """
     scope = _scope_from_prefix(prefix)
     cap = KB_MAX_DOCS.get(scope) if scope else None
     if not cap:
         return
-    existing = count_kb_docs(bucket, prefix)
-    if existing + new_count > cap:
+    existing = _existing_logical_docs(bucket, prefix)
+    incoming = {Path(f).name for f in new_filenames}
+    added = incoming - existing
+    if len(existing) + len(added) > cap:
         label = {"personal": "개인", "team": "팀"}.get(scope, scope)
         raise ValueError(
             f"{label} 지식베이스에는 최대 {cap}개까지 업로드할 수 있습니다. "
-            f"(현재 {existing}개, 요청 {new_count}개)"
+            f"(현재 {len(existing)}개, 신규 {len(added)}개)"
         )
 
 
@@ -625,60 +706,68 @@ def upload_files_to_kb(
         raise ValueError(
             f"한 번에 최대 5개 파일만 업로드 가능합니다. (요청: {len(files)}개)"
         )
-    # 누적 문서 수 상한 (개인/팀). 초과 시 ValueError.
-    enforce_kb_doc_limit(bucket, prefix, len(files))
+    # 형식/크기 검증은 S3 접근이 없어 락 밖에서 선수행.
     for file_bytes, filename in files:
         ext = Path(filename).suffix.lower()
         if ext not in SUPPORTED_EXTENSIONS:
             raise ValueError(f"지원하지 않는 파일 형식: {filename}")
         validate_file_size(file_bytes, filename)
 
-    uploaded_uris: list[str] = []
-    try:
-        for file_bytes, filename in files:
-            ext = Path(filename).suffix.lower()
+    # 상한 검증(count)→S3 쓰기를 prefix 락으로 직렬화해 TOCTOU(동시 업로드가 같은
+    # count 를 읽고 둘 다 통과)를 차단. 단일 백엔드 프로세스 기준.
+    with _prefix_lock(prefix):
+        # 누적 문서 수 상한 (개인/팀). 초과 시 ValueError.
+        enforce_kb_doc_limit(bucket, prefix, [fn for _, fn in files])
 
-            if ext in CONVERTIBLE_EXTS:
-                # 원본은 originals/ 에 보관(인덱싱 제외), 변환본(json)만 raw/ 에 색인.
-                _stash_original(bucket, prefix, file_bytes, filename, uploaded_uris)
-                file_bytes, filename = convert_pptx_to_json(file_bytes, filename)
-                ext = ".json"
-            elif ext == ".pdf" and pdf_via_upstage_enabled():
-                # PDF 를 Upstage markdown 으로 변환 (이미지/스캔 내용까지 읽음).
-                # 원본 PDF 는 originals/ 에 보관, 변환본 _pdf.md 만 raw/ 에 색인.
-                # 변환 실패 시 원본 PDF 를 그대로 색인 → Lambda parse_pdf 폴백.
-                try:
-                    md_bytes, md_name = convert_pdf_to_markdown(file_bytes, filename)
-                except Exception:
-                    log.warning(
-                        "Upstage PDF 변환 실패, 원본 PDF 색인으로 폴백: %s", filename,
-                        exc_info=True,
-                    )
-                else:
+        uploaded_uris: list[str] = []
+        try:
+            for file_bytes, filename in files:
+                ext = Path(filename).suffix.lower()
+
+                if ext in CONVERTIBLE_EXTS:
+                    # 원본은 originals/ 에 보관(인덱싱 제외), 변환본(json)만 raw/ 에 색인.
                     _stash_original(bucket, prefix, file_bytes, filename, uploaded_uris)
-                    file_bytes, filename = md_bytes, md_name
-                    ext = ".md"
+                    file_bytes, filename = convert_pptx_to_json(file_bytes, filename)
+                    ext = ".json"
+                elif ext == ".pdf" and pdf_via_upstage_enabled():
+                    # PDF 를 Upstage markdown 으로 변환 (이미지/스캔 내용까지 읽음).
+                    # 원본 PDF 는 originals/ 에 보관, 변환본 _pdf.md 만 raw/ 에 색인.
+                    # 변환 실패 시 원본 PDF 를 그대로 색인 → Lambda parse_pdf 폴백.
+                    try:
+                        md_bytes, md_name = convert_pdf_to_markdown(file_bytes, filename)
+                    except Exception:
+                        log.warning(
+                            "Upstage PDF 변환 실패, 원본 PDF 색인으로 폴백: %s", filename,
+                            exc_info=True,
+                        )
+                    else:
+                        _stash_original(bucket, prefix, file_bytes, filename, uploaded_uris)
+                        file_bytes, filename = md_bytes, md_name
+                        ext = ".md"
 
-            # xlsx 는 여기(개인/팀)서 Upstage 변환하지 않고 pandas 분할(TABULAR_EXTS)로 처리.
-            # xlsx→Upstage 는 공용 KB CLI(shared_kb_manager)에서만 적용하는 정책 — 의도된 비대칭.
-            if ext in TABULAR_EXTS:
-                uris = split_and_upload_tabular(bucket, prefix, file_bytes, filename)
-            else:
-                key = f"{prefix}{filename}"
-                _get_s3().put_object(Bucket=bucket, Key=key, Body=file_bytes)
-                uris = [f"s3://{bucket}/{key}"]
-            uploaded_uris.extend(uris)
+                # xlsx 는 여기(개인/팀)서 Upstage 변환하지 않고 pandas 분할(TABULAR_EXTS)로 처리.
+                # xlsx→Upstage 는 공용 KB CLI(shared_kb_manager)에서만 적용하는 정책 — 의도된 비대칭.
+                if ext in TABULAR_EXTS:
+                    # 분할본(_partN)과 별개로 원본을 originals/ 에 보관 → 논리 문서 카운트·
+                    # 목록·삭제가 멀티시트/분할 여부와 무관하게 '파일 1개'로 일관 처리.
+                    _stash_original(bucket, prefix, file_bytes, filename, uploaded_uris)
+                    uris = split_and_upload_tabular(bucket, prefix, file_bytes, filename)
+                else:
+                    key = f"{prefix}{filename}"
+                    _get_s3().put_object(Bucket=bucket, Key=key, Body=file_bytes)
+                    uris = [f"s3://{bucket}/{key}"]
+                uploaded_uris.extend(uris)
 
-    except Exception:
-        if with_rollback and uploaded_uris:
-            log.warning("S3 업로드 실패, 롤백 시작: %d개 삭제", len(uploaded_uris))
-            for uri in uploaded_uris:
-                key = uri.replace(f"s3://{bucket}/", "")
-                try:
-                    _get_s3().delete_object(Bucket=bucket, Key=key)
-                except Exception as del_err:
-                    log.warning("S3 롤백 실패: %s, %s", key, del_err)
-        raise
+        except Exception:
+            if with_rollback and uploaded_uris:
+                log.warning("S3 업로드 실패, 롤백 시작: %d개 삭제", len(uploaded_uris))
+                for uri in uploaded_uris:
+                    key = uri.replace(f"s3://{bucket}/", "")
+                    try:
+                        _get_s3().delete_object(Bucket=bucket, Key=key)
+                    except Exception as del_err:
+                        log.warning("S3 롤백 실패: %s, %s", key, del_err)
+            raise
 
     return uploaded_uris
 
@@ -690,33 +779,37 @@ def delete_files_from_kb(bucket: str, prefix: str, filenames: list[str]) -> None
     삭제 후 ingestion job 을 실행해야 Bedrock 이 변경을 감지하여
     S3 Vectors 의 해당 파일 벡터를 제거 (호출자가 직접 트리거).
 
+    xlsx/csv 분할본(_partN)은 개수·시트 구성을 미리 알 수 없으므로 raw/ 를 나열해
+    originals/ 기준 소유 판정으로 해당 파일 소유분만 삭제 (prefix 충돌 파일 보존).
+
     S3 delete_object 는 멱등이므로 키가 없어도 예외를 던지지 않음.
     """
     originals = get_originals_prefix(prefix)
+    original_stems = _list_original_stems(bucket, originals)
     keys_to_delete: list[str] = []
     for filename in filenames:
         ext = Path(filename).suffix.lower()
         stem = Path(filename).stem
+        # 원본 보관본(pptx/Upstage pdf·xlsx/분할 csv·xlsx). 평문 파일엔 없어도 멱등 no-op.
+        keys_to_delete.append(f"{originals}{filename}")
         if ext == ".pptx":
-            keys_to_delete.append(f"{originals}{filename}")
             keys_to_delete.append(f"{prefix}{stem}_pptx.json")
         elif ext == ".xlsx":
-            # Upstage 변환본: 원본(originals/) + 변환 md(raw/_xlsx.md)
-            # local 분할본: raw/{name} (또는 _partN). 어느 경우인지 알 수 없으니
-            # 멱등 삭제로 가능한 키를 모두 시도 (없는 키는 no-op).
-            keys_to_delete.append(f"{originals}{filename}")
-            keys_to_delete.append(f"{prefix}{stem}_xlsx.md")
-            keys_to_delete.append(f"{prefix}{filename}")
+            keys_to_delete.append(f"{prefix}{stem}_xlsx.md")          # Upstage 변환본
+            keys_to_delete.extend(                                    # local 분할본(_partN)
+                _owned_part_keys(bucket, prefix, stem, ".xlsx", original_stems)
+            )
+        elif ext == ".csv":
+            keys_to_delete.extend(                                    # csv 분할본(_partN)
+                _owned_part_keys(bucket, prefix, stem, ".csv", original_stems)
+            )
         elif ext == ".pdf":
-            # Upstage 변환본: 원본(originals/) + 변환 md(raw/_pdf.md)
-            # 폴백(미변환): raw/{name}. 멱등 삭제로 가능한 키 모두 시도.
-            keys_to_delete.append(f"{originals}{filename}")
-            keys_to_delete.append(f"{prefix}{stem}_pdf.md")
-            keys_to_delete.append(f"{prefix}{filename}")
+            keys_to_delete.append(f"{prefix}{stem}_pdf.md")           # Upstage 변환본
+            keys_to_delete.append(f"{prefix}{filename}")             # 미변환 원본 색인본
         else:
             keys_to_delete.append(f"{prefix}{filename}")
 
-    for key in keys_to_delete:
+    for key in dict.fromkeys(keys_to_delete):  # 중복 키 제거(순서 보존)
         _get_s3().delete_object(Bucket=bucket, Key=key)
 
 

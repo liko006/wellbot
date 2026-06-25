@@ -19,13 +19,13 @@ cleanup_personal_kb.py
 
 사용 예:
     # 미리보기
-    python scripts/cleanup_personal_kb.py --emp-no 20003387 --dry-run
+    python scripts/cleanup_personal_kb.py --emp-no 12345678 --dry-run
 
     # 실제 삭제 (y/N 프롬프트)
-    python scripts/cleanup_personal_kb.py --emp-no 20003387
+    python scripts/cleanup_personal_kb.py --emp-no 12345678
 
     # 프롬프트 건너뛰기
-    python scripts/cleanup_personal_kb.py --emp-no 20003387 --yes
+    python scripts/cleanup_personal_kb.py --emp-no 12345678 --yes
 """
 
 from __future__ import annotations

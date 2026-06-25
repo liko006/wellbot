@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from wellbot.services.auth import auth_service
 from wellbot.services.files import storage_service
+from wellbot.services.knowledgebase.config import get_kb_config
 from wellbot.services.knowledgebase.team_kb_manager import get_dept_cd
 
 log = logging.getLogger(__name__)
@@ -32,15 +33,30 @@ class KbDownloadRequest(BaseModel):
     filename: str = ""
 
 
-def _check_access(key: str, emp_no: str) -> None:
-    """S3 key 기반 접근 권한 확인, 거부 시 HTTPException"""
+def _kb_bucket(section: str) -> str:
+    """KB 섹션(personal_kb/shared_kb)의 S3 버킷명 조회. 미설정 시 빈 문자열."""
+    return get_kb_config().get(section, {}).get("s3_bucket", "")
+
+
+def _check_access(bucket: str, key: str, emp_no: str) -> None:
+    """S3 bucket+key 기반 접근 권한 확인, 거부 시 HTTPException.
+
+    버킷을 검증하지 않으면 사용자가 s3_uri 의 버킷을 임의로 지정해 IAM 역할이
+    읽을 수 있는 다른 버킷의 객체까지 받아갈 수 있으므로(교차 버킷 유출),
+    prefix 별로 허용 버킷을 고정. users/·teams/ 는 개인 KB 버킷, shared/ 는
+    공용 KB 버킷에만 존재.
+    """
+    personal_bucket = _kb_bucket("personal_kb")
+    shared_bucket = _kb_bucket("shared_kb")
     if key.startswith(f"users/{emp_no}/"):
-        return  # 본인 개인 KB
-    if key.startswith("shared/"):
-        return  # 공용 KB - 인증된 사용자라면 누구나
-    if key.startswith("teams/"):
+        if personal_bucket and bucket == personal_bucket:
+            return  # 본인 개인 KB
+    elif key.startswith("shared/"):
+        if shared_bucket and bucket == shared_bucket:
+            return  # 공용 KB - 인증된 사용자라면 누구나
+    elif key.startswith("teams/"):
         parts = key.split("/")
-        if len(parts) >= 2:
+        if len(parts) >= 2 and personal_bucket and bucket == personal_bucket:
             user_dept = get_dept_cd(emp_no)
             if user_dept and parts[1] == user_dept:
                 return
@@ -91,8 +107,8 @@ async def download_kb_file(
         )
     bucket, key = path.split("/", 1)
 
-    # 3. 경로 기반 접근 권한 확인
-    _check_access(key, emp_no)
+    # 3. 버킷+경로 기반 접근 권한 확인
+    _check_access(bucket, key, emp_no)
 
     # 4. S3 head_object 로 존재 + content_type 확인 (동적 버킷)
     head = storage_service.head_object(key, bucket=bucket)

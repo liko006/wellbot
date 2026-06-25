@@ -116,6 +116,42 @@ window._kbSelectedFiles = [];
 window._kbPendingMeta = [];
 window._kbPickerCanceled = false;
 
+// 백엔드 base URL 결정 (build_upload_script 와 동일 규칙).
+// 기본: 상대 경로(Nginx/ALB 프록시). 로컬 포트 분리 개발환경에서만 origin 부착.
+window._kbBackendBase = async function() {
+    try {
+        var envResp = await fetch('/env.json');
+        var env = await envResp.json();
+        var pingUrl = env.PING || '';
+        if (pingUrl) {
+            var u = new URL(pingUrl);
+            var loc = window.location;
+            var isLocalDev = (
+                (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1') &&
+                (u.hostname === 'localhost' || u.hostname === '127.0.0.1') &&
+                u.port !== loc.port
+            );
+            if (isLocalDev) {
+                return loc.protocol + '//' + loc.hostname + ':' + u.port;
+            }
+        }
+    } catch (e) {}
+    return '';
+};
+
+// 패널에서 파일을 제거하면 누적 선택 배열에서도 빼야 같은 파일을 다시 고를 수 있다
+// (안 빼면 change 핸들러의 이름 dedup 에 걸려 재선택분이 유실되고 picker 가 멈춘 듯 보임).
+window.removeKbSelectedFile = function(name) {
+    window._kbSelectedFiles = (window._kbSelectedFiles || []).filter(function(f) {
+        return f.name !== name;
+    });
+};
+
+window.clearKbSelectedFiles = function() {
+    window._kbSelectedFiles = [];
+    window._kbPendingMeta = [];
+};
+
 window.openKbFilePicker = function() {
     if (!window._kbFileInput) {
         var input = document.createElement('input');
@@ -166,7 +202,10 @@ window.uploadKbFilesToApi = async function(empNo, uploadTarget, deptCd, allowedN
     if (deptCd) formData.append('dept_cd', deptCd);
 
     try {
-        var resp = await fetch('/api/upload_kb_files', {
+        // 로컬 포트 분리 개발환경에서는 백엔드(:8000)로 직접 보내야 라우트가 존재
+        // (상대 경로면 프론트 :3000 으로 가서 404). 프록시 환경에선 상대 경로.
+        var backendBase = await window._kbBackendBase();
+        var resp = await fetch(backendBase + '/api/upload_kb_files', {
             method: 'POST',
             body: formData,
             credentials: 'include',
