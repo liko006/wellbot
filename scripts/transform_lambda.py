@@ -342,7 +342,9 @@ def parse_txt(data: bytes, source: str) -> List[Chunk]:
 def parse_md(data: bytes, source: str) -> List[Chunk]:
     """헤더 기준 섹션 분리 후 청킹 (chromadb_chunking.MarkdownChunker 동일 로직)"""
     content  = data.decode("utf-8", errors="replace")
-    sections = re.split(r"(?=\n#{1,3} )", content)
+    # h1·h2 에서만 섹션 분리(h3 는 섹션 안에 흡수) → 섹션이 커져 청크가 과도하게 짧아지는 것 완화.
+    # (recursive 청킹은 섹션 '안에서만' size 까지 채우므로 헤더를 잘게 끊으면 짧은 청크가 양산됨)
+    sections = re.split(r"(?=\n#{1,2} )", content)
     chunks   = []
     for idx, section in enumerate(sections):
         section = section.strip()
