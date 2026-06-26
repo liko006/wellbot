@@ -78,6 +78,19 @@ def _nav_item(
     )
 
 
+def _nav_section_label(label: str) -> rx.Component:
+    """펼친 상태 네비게이션 그룹 헤더 (대화 목록의 '최근 대화'와 동일 스타일)."""
+    return rx.text(
+        label,
+        size="1",
+        color=COLORS["category_text"],
+        weight="medium",
+        padding_x="0.75em",
+        padding_top="0.5em",
+        padding_bottom="0.25em",
+    )
+
+
 def _logo_expand_button() -> rx.Component:
     """접힌 상태 로고: hover 시 사이드바 열기 아이콘으로 전환."""
     return rx.tooltip(
@@ -179,7 +192,7 @@ def _collapsed_nav() -> rx.Component:
         rx.separator(color_scheme="gray", size="4", margin_y="0.25em"),
         _collapsed_icon(
             "library",
-            rx.redirect(REPORT_GENERATOR_URL, external=True),
+            rx.redirect(REPORT_GENERATOR_URL, is_external=True),
             "보고서 문구 지원",
         ),
         _collapsed_icon(
@@ -495,11 +508,11 @@ def sidebar() -> rx.Component:
                             "채팅 검색",
                             UIState.open_search,
                         ),
-                        rx.separator(color_scheme="gray", size="4", margin_y="0.25em"),
+                        _nav_section_label("AI 도구"),
                         _nav_item(
                             "library",
                             "보고서 문구 지원",
-                            rx.redirect(REPORT_GENERATOR_URL, external=True),
+                            rx.redirect(REPORT_GENERATOR_URL, is_external=True),
                         ),
                         _nav_item(
                             "layers-plus",
