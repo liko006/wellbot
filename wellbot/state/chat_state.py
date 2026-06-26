@@ -530,12 +530,16 @@ class ChatState(rx.State):
             self.kb_delete_status = "idle"
             self.kb_delete_error = ""
 
-    def create_new_conversation(self) -> None:
-        """새 대화 생성. 현재 대화가 비어있으면 무시"""
+    def create_new_conversation(self):
+        """새 대화 생성. 현재 대화가 비어있으면 무시.
+
+        채팅 페이지가 아닌 곳(예: /ai-services)에서 호출되면 홈으로 이동한다.
+        """
+        leaving_other_page = self.router.url.path != "/"
         idx = self._get_current_index()
         if idx is not None and not self.conversations[idx].messages:
             self._refresh_greeting()
-            return
+            return rx.redirect("/") if leaving_other_page else None
         conv = new_conversation()
         self.conversations = [conv, *self.conversations]
         self.current_conversation_id = conv.id
@@ -543,9 +547,14 @@ class ChatState(rx.State):
         self.conversation_attachments = []
         self._reset_kb_panels()
         self._refresh_greeting()
+        return rx.redirect("/") if leaving_other_page else None
 
-    def switch_conversation(self, conv_id: str) -> None:
-        """대화 전환. 메시지 미로드 시 DB 에서 로드"""
+    def switch_conversation(self, conv_id: str):
+        """대화 전환. 메시지 미로드 시 DB 에서 로드.
+
+        채팅 페이지가 아닌 곳(예: /ai-services)에서 호출되면 홈으로 이동한다.
+        """
+        leaving_other_page = self.router.url.path != "/"
         self.current_conversation_id = conv_id
         self.current_input = ""
         self.search_query = ""
@@ -553,7 +562,9 @@ class ChatState(rx.State):
         idx = self._get_current_index()
         if idx is not None:
             self._load_messages_for(idx)
-        return rx.call_script(  # type: ignore[return-value]
+        if leaving_other_page:
+            return rx.redirect("/")
+        return rx.call_script(
             "if (window.__resetAutoScroll) { window.__resetAutoScroll(); }"
         )
 
