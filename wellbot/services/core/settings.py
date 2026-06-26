@@ -12,7 +12,7 @@ from pathlib import Path
 import yaml
 
 from wellbot.paths import (
-    CHAT_MODES_YAML,
+    AI_SERVICES_YAML,
     GREETINGS_YAML,
     MODELS_YAML,
     PROMPTS_DIR,
@@ -68,6 +68,18 @@ class EmbeddingConfig:
 
 
 @dataclass(frozen=True)
+class AIServiceConfig:
+    """AI 서비스 카탈로그 항목 (/ai-services 카드)."""
+
+    id: str
+    name: str
+    description: str = ""
+    icon: str = "layers-plus"
+    route: str = ""          # 비우면 '준비 중'으로 표시
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """앱 전체 설정."""
 
@@ -76,7 +88,6 @@ class AppConfig:
     prompts: tuple[PromptTemplate, ...]
     title: TitleConfig
     embedding: EmbeddingConfig
-    chat_modes: tuple[ChatMode, ...] = ()
 
     def get_model(self, name: str) -> ModelConfig | None:
         """이름으로 모델 설정 조회. 없으면 None"""
@@ -106,28 +117,6 @@ class AppConfig:
     def prompt_names(self) -> list[str]:
         """프롬프트 템플릿 이름 목록"""
         return [p.name for p in self.prompts]
-
-    @property
-    def chat_mode_ids(self) -> list[str]:
-        """채팅 모드 ID 목록"""
-        return [a.id for a in self.chat_modes]
-
-    def get_chat_mode(self, mode_id: str) -> ChatMode | None:
-        """ID 로 채팅 모드 조회. 없으면 None"""
-        for a in self.chat_modes:
-            if a.id == mode_id:
-                return a
-        return None
-
-
-@dataclass(frozen=True)
-class ChatMode:
-    """채팅 모드 설정 (채팅 UI 의 모드 선택 드롭다운)"""
-
-    id: str
-    name: str
-    description: str = ""
-    icon: str = "message-circle"
 
 
 _config: AppConfig | None = None
@@ -208,21 +197,6 @@ def _load_prompt_config() -> tuple[str, tuple[PromptTemplate, ...]]:
     return system_prompt, prompts
 
 
-def _load_chat_modes() -> tuple[ChatMode, ...]:
-    """config/chat_modes.yaml 에서 채팅 모드 로드"""
-    if not CHAT_MODES_YAML.exists():
-        return (ChatMode(id="chat", name="기본 대화", icon="message-circle"),)
-    try:
-        with open(CHAT_MODES_YAML, encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-        items = raw.get("chat_modes", [])
-        return tuple(ChatMode(**item) for item in items) if items else (
-            ChatMode(id="chat", name="기본 대화", icon="message-circle"),
-        )
-    except Exception:
-        return (ChatMode(id="chat", name="기본 대화", icon="message-circle"),)
-
-
 def load_config(path: Path | None = None) -> AppConfig:
     """YAML 파일에서 설정 로드"""
     if path is None:
@@ -233,7 +207,6 @@ def load_config(path: Path | None = None) -> AppConfig:
 
     models = tuple(ModelConfig(**m) for m in raw.get("models", []))
     system_prompt, prompts = _load_prompt_config()
-    chat_modes = _load_chat_modes()
     title = _build_title_config(raw.get("title", {}))
     embedding = _build_embedding_config(raw.get("embedding", {}))
 
@@ -243,7 +216,6 @@ def load_config(path: Path | None = None) -> AppConfig:
         prompts=prompts,
         title=title,
         embedding=embedding,
-        chat_modes=chat_modes,
     )
 
 
@@ -271,6 +243,26 @@ def get_config() -> AppConfig:
     if _config is None:
         _config = load_config()
     return _config
+
+
+# ── AI 서비스 카탈로그 ──
+
+_ai_services: tuple[AIServiceConfig, ...] | None = None
+
+
+def get_ai_services() -> tuple[AIServiceConfig, ...]:
+    """캐싱된 AI 서비스 카탈로그 반환. config/ai_services.yaml 에서 로드."""
+    global _ai_services
+    if _ai_services is None:
+        try:
+            with open(AI_SERVICES_YAML, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+            items = raw.get("ai_services", [])
+            _ai_services = tuple(AIServiceConfig(**item) for item in items)
+        except Exception:
+            log.warning("AI 서비스 카탈로그 로드 실패", exc_info=True)
+            _ai_services = ()
+    return _ai_services
 
 
 # ── 환영 메시지 ──

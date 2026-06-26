@@ -48,7 +48,6 @@ from wellbot.state.chat_helpers.system_prompt import (
 )
 from wellbot.state.chat_helpers.upload_script import build_upload_script
 from wellbot.state.chat_models import (
-    ChatModeInfo,
     AttachmentInfo,
     Conversation,
     KbSharedFile,
@@ -78,9 +77,6 @@ class ChatState(rx.State):
     selected_prompt: str = "default"
     show_style_panel: bool = False
     greeting_text: str = ""
-
-    # ── 채팅 모드 ──
-    selected_chat_mode: str = "chat"
 
     # ── 대화 검색 ──
     search_query: str = ""
@@ -213,42 +209,6 @@ class ChatState(rx.State):
         if idx is None:
             return ""
         return self.conversations[idx].title
-
-    @rx.var
-    def chat_mode_list(self) -> list[ChatModeInfo]:
-        """설정에서 읽은 사용 가능한 채팅 모드 목록"""
-        try:
-            cfg = get_config()
-            return [
-                ChatModeInfo(
-                    id=a.id, name=a.name,
-                    description=a.description, icon=a.icon,
-                )
-                for a in cfg.chat_modes
-            ]
-        except Exception:
-            log.warning("채팅 모드 목록 로드 실패", exc_info=True)
-            return []
-
-    @rx.var
-    def current_chat_mode_name(self) -> str:
-        """현재 선택된 채팅 모드의 표시 이름"""
-        try:
-            cfg = get_config()
-            mode = cfg.get_chat_mode(self.selected_chat_mode)
-            return mode.name if mode else "기본 대화"
-        except Exception:
-            return "기본 대화"
-
-    @rx.var
-    def current_chat_mode_icon(self) -> str:
-        """현재 선택된 채팅 모드의 아이콘 식별자"""
-        try:
-            cfg = get_config()
-            mode = cfg.get_chat_mode(self.selected_chat_mode)
-            return mode.icon if mode else "message-circle"
-        except Exception:
-            return "message-circle"
 
     @rx.var
     def has_conversation_attachments(self) -> bool:
@@ -421,10 +381,6 @@ class ChatState(rx.State):
         return f"선택 삭제 ({len(self.selected_kb_docs)})"
 
     # ── Event handlers ──
-
-    def set_chat_mode(self, mode_id: str) -> None:
-        """채팅 모드 변경"""
-        self.selected_chat_mode = mode_id
 
     def stop_generation(self) -> None:
         """생성 중지 요청. 로딩 중이 아니면 무시"""

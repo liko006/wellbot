@@ -25,7 +25,7 @@ LOG_DIR: Path = PROJECT_ROOT / "logs"
 
 MODELS_YAML: Path = CONFIG_DIR / "models.yaml"
 PROMPTS_YAML: Path = CONFIG_DIR / "prompts.yaml"
-CHAT_MODES_YAML: Path = CONFIG_DIR / "chat_modes.yaml"
+AI_SERVICES_YAML: Path = CONFIG_DIR / "ai_services.yaml"
 GREETINGS_YAML: Path = CONFIG_DIR / "greetings.yaml"
 NOTICE_MD: Path = CONFIG_DIR / "notice.md"
 KNOWBASE_YAML: Path = CONFIG_DIR / "knowBase.yaml"

@@ -1,6 +1,6 @@
 """채팅 영역 상단 GNB (Global Navigation Bar).
 
-좌: 채팅 모드 드롭다운 | 중앙: 대화 제목 | 우: 첨부파일 + 다크/라이트 모드 토글
+중앙: 대화 제목 | 우: 첨부파일 + 다크/라이트 모드 토글
 """
 
 import reflex as rx
@@ -8,53 +8,6 @@ import reflex as rx
 from wellbot.state.chat_models import AttachmentInfo
 from wellbot.state.chat_state import ChatState
 from wellbot.styles import COLORS, SPACING
-
-
-def _chat_mode_item(mode: rx.Var) -> rx.Component:
-    """드롭다운 메뉴 아이템."""
-    return rx.menu.item(
-        rx.hstack(
-            rx.icon(mode.icon, size=14),  # type: ignore
-            rx.text(mode.name, size="2"),  # type: ignore
-            align="center",
-            gap="0.5em",
-        ),
-        on_click=ChatState.set_chat_mode(mode.id),  # type: ignore
-    )
-
-
-def _chat_mode_dropdown() -> rx.Component:
-    """채팅 모드 선택 드롭다운."""
-    return rx.menu.root(
-        rx.menu.trigger(
-            rx.button(
-                rx.icon(
-                    ChatState.current_chat_mode_icon,
-                    size=14,
-                ),
-                rx.text(
-                    ChatState.current_chat_mode_name,
-                    size="2",
-                    weight="medium",
-                ),
-                rx.icon("chevron-down", size=12),
-                variant="ghost",
-                size="1",
-                cursor="pointer",
-                color=COLORS["text_secondary"],
-                _hover={"color": COLORS["text_primary"]},
-                gap="0.35em",
-            ),
-        ),
-        rx.menu.content(
-            rx.foreach(
-                ChatState.chat_mode_list,
-                _chat_mode_item,
-            ),
-            side="bottom",
-            align="start",
-        ),
-    )
 
 
 def _conversation_title() -> rx.Component:
@@ -186,12 +139,7 @@ def _color_mode_toggle() -> rx.Component:
 def chat_gnb() -> rx.Component:
     """채팅 영역 GNB."""
     return rx.hstack(
-        rx.box(
-            _chat_mode_dropdown(),
-            flex="1",
-            display="flex",
-            align_items="center",
-        ),
+        rx.box(flex="1"),
         rx.box(
             _conversation_title(),
             flex="1",
