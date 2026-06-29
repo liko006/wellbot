@@ -1390,7 +1390,9 @@ class ChatState(rx.State):
         대용량 파일 처리를 고려해 최대 120초까지 폴링.
         """
         deadline = time.time() + 120.0
-        interval = 1.0
+        # 업로드 직후 칩이 빨리 뜨도록 처음엔 촘촘히 폴링하고 점차 백오프.
+        # (이미지는 파싱을 건너뛰어 거의 즉시 ready 가 되므로 초기 응답성이 중요)
+        interval = 0.3
         while time.time() < deadline:
             async with self:
                 self._sync_attachments_from_db()
@@ -1403,7 +1405,7 @@ class ChatState(rx.State):
                 if not self.pending_attachments and not self._pending_msg_id:
                     break
             await asyncio.sleep(interval)
-            interval = min(3.0, interval + 0.5)
+            interval = min(3.0, interval + 0.3)
 
     def _prepare_attachment_upload(self) -> tuple[str, str] | None:
         """첨부 업로드 공통 준비: 대화 영속화 + 한도 체크 + msg_id 발급.
