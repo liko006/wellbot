@@ -312,10 +312,20 @@ if (!window._wellbotPasteBound) {
             if (it.kind === 'file' && it.type && it.type.indexOf('image/') === 0) {
                 var f = it.getAsFile();
                 if (!f) continue;
-                // 클립보드 이미지는 이름/확장자가 없을 수 있어 부여 (서버는 확장자로 검증)
-                if (!f.name || f.name.indexOf('.') === -1) {
+                // 클립보드 이미지는 이름이 없거나 모두 'image.png' 로 와서 서로 구분이 안 된다.
+                // 의미있는 원본 이름이 아니면 시각 + 전역 시퀀스로 고유 이름을 부여한다
+                // (서버는 확장자로 검증하므로 확장자도 보장).
+                var nm = f.name || '';
+                var dot = nm.lastIndexOf('.');
+                var stem = dot > 0 ? nm.slice(0, dot) : nm;
+                if (dot <= 0 || !stem || stem.toLowerCase() === 'image') {
                     var ext = (it.type.split('/')[1] || 'png').split('+')[0];
-                    f = new File([f], 'pasted-' + Date.now() + '-' + (i + 1) + '.' + ext, {type: it.type});
+                    var d = new Date();
+                    var pad = function(n) { return ('0' + n).slice(-2); };
+                    var ts = '' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate())
+                        + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+                    window._pasteSeq = (window._pasteSeq || 0) + 1;
+                    f = new File([f], 'pasted_' + ts + '_' + window._pasteSeq + '.' + ext, {type: it.type});
                 }
                 files.push(f);
             }
