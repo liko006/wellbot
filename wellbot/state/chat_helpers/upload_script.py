@@ -189,11 +189,21 @@ window.openKbFilePicker = function() {
 
 window.uploadKbFilesToApi = async function(empNo, uploadTarget, deptCd, allowedNames) {
     var files = window._kbSelectedFiles || [];
-    // 패널에 남아있는 파일명만 업로드 (패널에서 제거한 파일은 제외)
+    // 패널에 남아있는 파일명만 업로드 (패널에서 제거한 파일은 제외).
+    // 파일명은 NFC 로 정규화해 비교 — 일부 OS(예: macOS 의 NFD)에서 같은 이름이
+    // 다른 코드포인트로 와 매칭 실패("No files selected")하는 것을 방지(방어적).
     if (allowedNames && allowedNames.length >= 0) {
-        files = files.filter(function(f) { return allowedNames.indexOf(f.name) !== -1; });
+        var _norm = function(s) { return (s && s.normalize) ? s.normalize('NFC') : s; };
+        var allowed = (allowedNames || []).map(_norm);
+        files = files.filter(function(f) { return allowed.indexOf(_norm(f.name)) !== -1; });
     }
-    if (files.length === 0) return {uploaded: [], error: 'No files selected'};
+    if (files.length === 0) {
+        // 패널엔 파일이 있는데 실제 선택(_kbSelectedFiles)이 비/어긋난 디싱크 상태.
+        // stale 선택을 비워 같은 파일을 다시 골라도 dedup 에 걸리지 않게 한다(깨끗한 재선택).
+        window._kbSelectedFiles = [];
+        window._kbPendingMeta = [];
+        return {uploaded: [], error: 'No files selected'};
+    }
 
     var formData = new FormData();
     for (var i = 0; i < files.length; i++) formData.append('files', files[i]);
