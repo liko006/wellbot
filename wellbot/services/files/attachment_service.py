@@ -10,7 +10,6 @@ atch_file_no 는 BigInteger PK 이며 DB AUTO_INCREMENT 로 자동 발급.
 from __future__ import annotations
 
 import logging
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,6 +25,7 @@ from wellbot.constants import (
     S3_DERIVATIVE_UPLOAD_RETRIES,
 )
 from wellbot.logger import log_timing
+from wellbot.paths import wellbot_temp_dir
 from wellbot.services.ai import embedding_service
 from wellbot.services.core.database import get_session
 from wellbot.services.files import chunker, file_parser, storage_service
@@ -200,8 +200,7 @@ def process_attachment(file_no: int, emp_no: str) -> bool:
         log.info("process_attachment: 이미지 파일 스킵 (file_no=%s)", file_no)
         return True
 
-    tmp_dir = Path(tempfile.gettempdir()) / "wellbot_attachment_process"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = wellbot_temp_dir("wellbot_attachment_process")
     tmp_path = tmp_dir / f"{file_no}_{Path(filename).name}"
     overall_start = time.time()
     try:

@@ -11,7 +11,10 @@ from wellbot.components.chat.input_bar import input_bar
 from wellbot.components.chat.message_area import message_area, navigation_rail
 from wellbot.components.layout import chat_layout
 from wellbot.constants import BTN_THRESHOLD, SCROLL_THRESHOLD
-from wellbot.state.chat_helpers.upload_script import KB_UPLOAD_SCRIPT
+from wellbot.state.chat_helpers.upload_script import (
+    KB_UPLOAD_SCRIPT,
+    PASTE_UPLOAD_SCRIPT,
+)
 
 
 # 자동 스크롤 JavaScript (MutationObserver + setInterval 폴링 방식)
@@ -187,5 +190,7 @@ def index_page() -> rx.Component:
         rx.script(AUTO_SCROLL_SCRIPT),
         # KB 업로드 관련 JS — 컴포넌트 mount 타이밍 이슈 회피를 위해 페이지 레벨에서 한 번만 정의
         rx.script(KB_UPLOAD_SCRIPT),
+        # 클립보드 이미지 붙여넣기 업로드 JS (paste 리스너 + window-global)
+        rx.script(PASTE_UPLOAD_SCRIPT),
         chat_layout(chat_main()),
     )

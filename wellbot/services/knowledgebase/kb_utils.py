@@ -37,12 +37,33 @@ log = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 # 식별자
 # ──────────────────────────────────────────────
-AGNT_ID_KB    = "Agnt_KnowBase"
+AGNT_ID_KB    = "AgntKnowBase"
 KB_INFO_SEP   = "||"
 
 # kind → S3 경로 / KB 이름에 사용되는 base 토큰
 _KB_KIND_PREFIX_BASE = {"personal": "users", "team": "teams"}
 _KB_KIND_LABEL       = {"personal": "개인",  "team": "팀"}
+
+
+@lru_cache(maxsize=1)
+def env_suffix() -> str:
+    """환경 구분 접미사. APP_ENV 값으로 결정.
+
+    dev/prd 가 같은 AWS 계정·버킷을 공유하므로 KB/DS/벡터인덱스 이름과 S3
+    prefix 에 이 값을 붙여 충돌을 방지.
+    - 미설정 → 'dev'(기본) → '-dev'   : 빠뜨려도 prod 네임스페이스를 오염하지 않음
+    - APP_ENV='' / 'prod' / 'prd'      : ''(빈 문자열) → 기존 이름·경로 유지(마이그레이션 불필요)
+    - APP_ENV='dev'/'staging'/...      : '-<env>'
+
+    lazy(lru_cache) — init_env() 이후 첫 호출 시 1회 평가.
+    """
+    env = os.getenv("APP_ENV", "dev").strip().lower()
+    return "" if env in ("", "prod", "prd") else f"-{env}"
+
+
+def kb_base(kind: str) -> str:
+    """S3 경로 첫 세그먼트: 'users'/'users-dev'/'teams'/'teams-dev'."""
+    return f"{_KB_KIND_PREFIX_BASE[kind]}{env_suffix()}"
 
 
 # ──────────────────────────────────────────────
@@ -438,13 +459,13 @@ def decode_kb_info(kb_info: str) -> tuple[str, str]:
 # S3 경로 헬퍼
 # ──────────────────────────────────────────────
 def raw_prefix(kind: str, owner: str) -> str:
-    """kind='personal'→'users/{owner}/raw/', kind='team'→'teams/{owner}/raw/'."""
-    return f"{_KB_KIND_PREFIX_BASE[kind]}/{owner}/raw/"
+    """kind='personal'→'users{env}/{owner}/raw/', kind='team'→'teams{env}/{owner}/raw/'."""
+    return f"{kb_base(kind)}/{owner}/raw/"
 
 
 def processed_prefix(kind: str, owner: str) -> str:
     """processed/ prefix. raw_prefix 와 동일 규칙."""
-    return f"{_KB_KIND_PREFIX_BASE[kind]}/{owner}/processed/"
+    return f"{kb_base(kind)}/{owner}/processed/"
 
 
 # ──────────────────────────────────────────────
@@ -454,7 +475,7 @@ def create_vector_index(kind: str, owner: str) -> str:
     """S3 Vectors 인덱스 생성. 반환: index ARN."""
     resp = _get_s3vectors().create_index(
         vectorBucketName=_cfg()["s3_vector_bucket"],
-        indexName=f"aiinno-bedrock-kb-{kind}-vector-index-{owner.lower()}",
+        indexName=f"aiinno-bedrock-kb-{kind}-vector-index-{owner.lower()}{env_suffix()}",
         dataType="float32",
         dimension=1024,
         distanceMetric="cosine",
@@ -469,7 +490,7 @@ def create_bedrock_kb(kind: str, owner: str, vector_index_arn: str) -> str:
     """Bedrock Knowledge Base 생성. 반환: knowledgeBaseId."""
     label = _KB_KIND_LABEL[kind]
     resp = _get_bedrock_agent().create_knowledge_base(
-        name=f"aiinno-bedrock-kb-{kind}-{owner}",
+        name=f"aiinno-bedrock-kb-{kind}-{owner}{env_suffix()}",
         description=f"{owner}의 {label} Knowledge Base",
         roleArn=_cfg()["kb_role_arn"],
         knowledgeBaseConfiguration={
@@ -508,7 +529,7 @@ def create_data_source(kind: str, owner: str, kb_id: str) -> str:
     """KB 의 Data Source 생성. 반환: dataSourceId."""
     resp = _get_bedrock_agent().create_data_source(
         knowledgeBaseId=kb_id,
-        name=f"aiinno-bedrock-kb-ds-{kind}-{owner}",
+        name=f"aiinno-bedrock-kb-ds-{kind}-{owner}{env_suffix()}",
         dataSourceConfiguration={
             "type": "S3",
             "s3Configuration": {
@@ -541,7 +562,7 @@ def find_existing_kb(kind: str, owner: str) -> Optional[dict]:
 
     반환: {"kb_id", "data_source_id"} 또는 None.
     """
-    kb_name = f"aiinno-bedrock-kb-{kind}-{owner}"
+    kb_name = f"aiinno-bedrock-kb-{kind}-{owner}{env_suffix()}"
     try:
         paginator = _get_bedrock_agent().get_paginator("list_knowledge_bases")
         for page in paginator.paginate():
@@ -645,10 +666,10 @@ def count_kb_docs(bucket: str, raw_prefix: str) -> int:
 
 
 def _scope_from_prefix(prefix: str) -> Optional[str]:
-    """업로드 prefix 로 KB scope 판별. 'users/'→personal, 'teams/'→team, 그 외 None."""
-    if prefix.startswith("users/"):
+    """업로드 prefix 로 KB scope 판별. 'users{env}/'→personal, 'teams{env}/'→team, 그 외 None."""
+    if prefix.startswith(f"{kb_base('personal')}/"):
         return "personal"
-    if prefix.startswith("teams/"):
+    if prefix.startswith(f"{kb_base('team')}/"):
         return "team"
     return None  # shared 등은 상한 미적용
 

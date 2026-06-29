@@ -15,15 +15,6 @@ from pydantic import BaseModel
 from wellbot.constants import DEFAULT_CONVERSATION_TITLE
 
 
-class ChatModeInfo(BaseModel):
-    """프론트엔드 표시용 채팅 모드 정보"""
-
-    id: str
-    name: str
-    description: str = ""
-    icon: str = "message-circle"
-
-
 class ModelInfo(BaseModel):
     """프론트엔드 표시용 모델 정보"""
 

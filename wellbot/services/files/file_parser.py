@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +31,7 @@ from wellbot.constants import (
     UPSTAGE_MAX_SIZE_MB,
     UPSTAGE_SUPPORTED_EXTS,
 )
+from wellbot.paths import wellbot_temp_dir
 
 
 log = logging.getLogger(__name__)
@@ -473,8 +473,7 @@ def _write_pdf_part(
     for i in range(start, end):
         writer.add_page(reader.pages[i])
 
-    tmp_dir = Path(tempfile.gettempdir()) / "wellbot_pdf_split"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = wellbot_temp_dir("wellbot_pdf_split")
     out_path = tmp_dir / f"{stem}_part{idx:03d}_p{start}-{end - 1}.pdf"
     with open(out_path, "wb") as f:
         writer.write(f)

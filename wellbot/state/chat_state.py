@@ -48,7 +48,6 @@ from wellbot.state.chat_helpers.system_prompt import (
 )
 from wellbot.state.chat_helpers.upload_script import build_upload_script
 from wellbot.state.chat_models import (
-    ChatModeInfo,
     AttachmentInfo,
     Conversation,
     KbSharedFile,
@@ -78,9 +77,6 @@ class ChatState(rx.State):
     selected_prompt: str = "default"
     show_style_panel: bool = False
     greeting_text: str = ""
-
-    # ── 채팅 모드 ──
-    selected_chat_mode: str = "chat"
 
     # ── 대화 검색 ──
     search_query: str = ""
@@ -215,42 +211,6 @@ class ChatState(rx.State):
         return self.conversations[idx].title
 
     @rx.var
-    def chat_mode_list(self) -> list[ChatModeInfo]:
-        """설정에서 읽은 사용 가능한 채팅 모드 목록"""
-        try:
-            cfg = get_config()
-            return [
-                ChatModeInfo(
-                    id=a.id, name=a.name,
-                    description=a.description, icon=a.icon,
-                )
-                for a in cfg.chat_modes
-            ]
-        except Exception:
-            log.warning("채팅 모드 목록 로드 실패", exc_info=True)
-            return []
-
-    @rx.var
-    def current_chat_mode_name(self) -> str:
-        """현재 선택된 채팅 모드의 표시 이름"""
-        try:
-            cfg = get_config()
-            mode = cfg.get_chat_mode(self.selected_chat_mode)
-            return mode.name if mode else "기본 대화"
-        except Exception:
-            return "기본 대화"
-
-    @rx.var
-    def current_chat_mode_icon(self) -> str:
-        """현재 선택된 채팅 모드의 아이콘 식별자"""
-        try:
-            cfg = get_config()
-            mode = cfg.get_chat_mode(self.selected_chat_mode)
-            return mode.icon if mode else "message-circle"
-        except Exception:
-            return "message-circle"
-
-    @rx.var
     def has_conversation_attachments(self) -> bool:
         """현재 대화에 전송 완료된 첨부파일이 하나 이상 존재하는지 여부"""
         return len(self.conversation_attachments) > 0
@@ -315,6 +275,15 @@ class ChatState(rx.State):
     def has_search_results(self) -> bool:
         """검색 결과가 하나 이상 존재하는지 여부"""
         return len(self.sorted_conversations) > 0
+
+    @rx.var
+    def on_chat_page(self) -> bool:
+        """현재 채팅 페이지(홈, '/')에 있는지 여부.
+
+        /ai-services 등 다른 페이지에서는 사이드바 대화 항목을
+        하이라이트하지 않기 위해 사용.
+        """
+        return self.router.url.path == "/"
 
     @rx.var
     def model_names(self) -> list[str]:
@@ -421,10 +390,6 @@ class ChatState(rx.State):
         return f"선택 삭제 ({len(self.selected_kb_docs)})"
 
     # ── Event handlers ──
-
-    def set_chat_mode(self, mode_id: str) -> None:
-        """채팅 모드 변경"""
-        self.selected_chat_mode = mode_id
 
     def stop_generation(self) -> None:
         """생성 중지 요청. 로딩 중이 아니면 무시"""
@@ -574,12 +539,16 @@ class ChatState(rx.State):
             self.kb_delete_status = "idle"
             self.kb_delete_error = ""
 
-    def create_new_conversation(self) -> None:
-        """새 대화 생성. 현재 대화가 비어있으면 무시"""
+    def create_new_conversation(self):
+        """새 대화 생성. 현재 대화가 비어있으면 무시.
+
+        채팅 페이지가 아닌 곳(예: /ai-services)에서 호출되면 홈으로 이동한다.
+        """
+        leaving_other_page = self.router.url.path != "/"
         idx = self._get_current_index()
         if idx is not None and not self.conversations[idx].messages:
             self._refresh_greeting()
-            return
+            return rx.redirect("/") if leaving_other_page else None
         conv = new_conversation()
         self.conversations = [conv, *self.conversations]
         self.current_conversation_id = conv.id
@@ -587,9 +556,14 @@ class ChatState(rx.State):
         self.conversation_attachments = []
         self._reset_kb_panels()
         self._refresh_greeting()
+        return rx.redirect("/") if leaving_other_page else None
 
-    def switch_conversation(self, conv_id: str) -> None:
-        """대화 전환. 메시지 미로드 시 DB 에서 로드"""
+    def switch_conversation(self, conv_id: str):
+        """대화 전환. 메시지 미로드 시 DB 에서 로드.
+
+        채팅 페이지가 아닌 곳(예: /ai-services)에서 호출되면 홈으로 이동한다.
+        """
+        leaving_other_page = self.router.url.path != "/"
         self.current_conversation_id = conv_id
         self.current_input = ""
         self.search_query = ""
@@ -597,7 +571,9 @@ class ChatState(rx.State):
         idx = self._get_current_index()
         if idx is not None:
             self._load_messages_for(idx)
-        return rx.call_script(  # type: ignore[return-value]
+        if leaving_other_page:
+            return rx.redirect("/")
+        return rx.call_script(
             "if (window.__resetAutoScroll) { window.__resetAutoScroll(); }"
         )
 
@@ -883,18 +859,21 @@ class ChatState(rx.State):
                 return
 
             # personal / team: 본인(또는 팀) prefix 의 raw/ + originals/ 병합
+            from wellbot.services.knowledgebase.kb_utils import (
+                get_originals_prefix,
+                raw_prefix,
+            )
             if tab == "personal":
-                raw_prefix = f"users/{emp_no}/raw/"
-                originals_prefix = f"users/{emp_no}/originals/"
+                raw_pfx = raw_prefix("personal", emp_no)
             else:  # team
-                raw_prefix = f"teams/{dept_cd}/raw/"
-                originals_prefix = f"teams/{dept_cd}/originals/"
+                raw_pfx = raw_prefix("team", dept_cd)
+            orig_pfx = get_originals_prefix(raw_pfx)
 
             raw_items = await loop.run_in_executor(
-                None, storage_service.list_objects_with_meta, raw_prefix
+                None, storage_service.list_objects_with_meta, raw_pfx
             )
             originals_items = await loop.run_in_executor(
-                None, storage_service.list_objects_with_meta, originals_prefix
+                None, storage_service.list_objects_with_meta, orig_pfx
             )
             # 동일 파일명이 양쪽에 있을 경우 originals/ 의 원본을 우선.
             # 분할본(_partN)은 원본(originals/)으로 대표되므로 목록에서 제외 →
@@ -1135,14 +1114,17 @@ class ChatState(rx.State):
             except Exception:
                 self.ingestion_status = "error"
                 self.ingestion_error = f"응답 파싱 실패: {result}"
+                self.pending_files = []
                 return
 
         if result is None or (isinstance(result, dict) and result.get("error")):
-            # 업로드 자체 실패는 엔드포인트(upload_files_to_kb, with_rollback=True)가
-            # 이미 S3 롤백을 수행하므로 여기선 별도 정리 불필요.
+            # 업로드 자체 실패: S3 는 엔드포인트(upload_files_to_kb, with_rollback=True)가
+            # 이미 롤백. 패널 대기 목록(pending_files)도 비워 stale 상태 방지
+            # (JS _kbSelectedFiles 는 이미 비워졌으므로, 재시도하려면 파일 재선택 필요).
             error_msg = result.get("error", "업로드 실패") if result else "업로드 응답 없음"
             self.ingestion_status = "error"
             self.ingestion_error = self._user_friendly_error(error_msg)
+            self.pending_files = []
             return
 
         import asyncio as _asyncio
@@ -1414,7 +1396,9 @@ class ChatState(rx.State):
         대용량 파일 처리를 고려해 최대 120초까지 폴링.
         """
         deadline = time.time() + 120.0
-        interval = 1.0
+        # 업로드 직후 칩이 빨리 뜨도록 처음엔 촘촘히 폴링하고 점차 백오프.
+        # (이미지는 파싱을 건너뛰어 거의 즉시 ready 가 되므로 초기 응답성이 중요)
+        interval = 0.3
         while time.time() < deadline:
             async with self:
                 self._sync_attachments_from_db()
@@ -1427,15 +1411,14 @@ class ChatState(rx.State):
                 if not self.pending_attachments and not self._pending_msg_id:
                     break
             await asyncio.sleep(interval)
-            interval = min(3.0, interval + 0.5)
+            interval = min(3.0, interval + 0.3)
 
-    def trigger_upload(self) -> rx.event.EventSpec | None:
-        """파일 선택 다이얼로그를 열고 업로드를 트리거.
+    def _prepare_attachment_upload(self) -> tuple[str, str] | None:
+        """첨부 업로드 공통 준비: 대화 영속화 + 한도 체크 + msg_id 발급.
 
-        흐름:
-            1. 대화가 미저장 상태라면 DB 에 먼저 저장
-            2. JS 가 파일 선택 + fetch POST /api/upload 실행
-            3. poll_attachments 백그라운드 이벤트가 DB 를 폴링해 UI 갱신
+        Returns:
+            (conv_id, msg_id): 준비 완료
+            None: 실패 (attachment_error 설정됨)
         """
         self.attachment_error = ""
         conv_id = self._ensure_conversation_persisted()
@@ -1452,7 +1435,20 @@ class ChatState(rx.State):
         # 첨부파일-메시지 매핑용 msg_id 를 미리 생성 후 send_message 에서 재사용
         if not self._pending_msg_id:
             self._pending_msg_id = uuid.uuid4().hex[:50]
-        msg_id = self._pending_msg_id
+        return conv_id, self._pending_msg_id
+
+    def trigger_upload(self) -> rx.event.EventSpec | None:
+        """파일 선택 다이얼로그를 열고 업로드를 트리거.
+
+        흐름:
+            1. 대화가 미저장 상태라면 DB 에 먼저 저장
+            2. JS 가 파일 선택 + fetch POST /api/upload 실행
+            3. poll_attachments 백그라운드 이벤트가 DB 를 폴링해 UI 갱신
+        """
+        prep = self._prepare_attachment_upload()
+        if prep is None:
+            return None
+        conv_id, msg_id = prep
 
         script = build_upload_script(
             accept=self.accepted_file_extensions,
@@ -1463,6 +1459,34 @@ class ChatState(rx.State):
             current_count=len(self.pending_attachments),
         )
         # JS 실행 + Python 폴링을 함께 반환
+        return [
+            rx.call_script(script),
+            ChatState.poll_attachments,
+        ]
+
+    def handle_paste_upload(self) -> rx.event.EventSpec | list | None:
+        """클립보드 이미지 붙여넣기 업로드 (JS paste 리스너가 트리거).
+
+        JS 가 붙여넣은 이미지를 window._pastedFiles 에 담고 숨김 버튼을 눌러
+        호출한다. 여기서 conv_id/msg_id 를 발급한 뒤, JS(wellbotUploadPasted)가
+        그 파일들을 /api/upload 로 전송하도록 call_script 를 돌려준다.
+        """
+        # vision 미지원 모델에서는 이미지 첨부 의미가 없으므로 차단 (파일 선택 picker 와 동일)
+        if not self.model_supports_vision:
+            self.attachment_error = "현재 모델은 이미지 입력을 지원하지 않습니다."
+            return rx.call_script("window._pastedFiles = [];")
+
+        prep = self._prepare_attachment_upload()
+        if prep is None:
+            # 한도 초과 등으로 중단 시 적재된 클립보드 파일을 비워 다음 붙여넣기와 섞이지 않게 함
+            return rx.call_script("window._pastedFiles = [];")
+        conv_id, msg_id = prep
+
+        script = (
+            f"window.wellbotUploadPasted("
+            f"'{conv_id}', '{msg_id}', {FILE_MAX_SIZE_MB}, "
+            f"{FILE_MAX_PER_MESSAGE}, {len(self.pending_attachments)})"
+        )
         return [
             rx.call_script(script),
             ChatState.poll_attachments,

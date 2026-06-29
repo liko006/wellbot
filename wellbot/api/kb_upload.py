@@ -38,7 +38,7 @@ from fastapi import APIRouter, Cookie, File, Form, HTTPException, UploadFile, st
 from wellbot.logger import log_context
 from wellbot.services.auth import auth_service
 from wellbot.services.knowledgebase.config import get_kb_config
-from wellbot.services.knowledgebase.kb_utils import upload_files_to_kb
+from wellbot.services.knowledgebase.kb_utils import raw_prefix, upload_files_to_kb
 from wellbot.services.knowledgebase.team_kb_manager import get_dept_cd
 
 log = logging.getLogger(__name__)
@@ -88,9 +88,9 @@ async def upload_kb_files(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="소속 팀 정보가 없어 팀 업로드를 할 수 없습니다.",
             )
-        prefix = f"teams/{dept_cd}/raw/"
+        prefix = raw_prefix("team", dept_cd)
     else:
-        prefix = f"users/{emp_no}/raw/"
+        prefix = raw_prefix("personal", emp_no)
 
     kb_cfg = get_kb_config().get("personal_kb", {})
     bucket = kb_cfg.get("s3_bucket", "")

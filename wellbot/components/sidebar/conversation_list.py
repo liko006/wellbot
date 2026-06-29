@@ -12,7 +12,9 @@ from wellbot.styles import COLORS, SPACING
 
 def conversation_item(conv: Conversation) -> rx.Component:
     """개별 대화 항목."""
-    is_active = ChatState.current_conversation_id == conv.id
+    is_active = ChatState.on_chat_page & (
+        ChatState.current_conversation_id == conv.id
+    )
 
     return rx.hstack(
         rx.text(

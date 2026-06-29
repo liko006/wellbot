@@ -1,0 +1,27 @@
+# AI 서비스 카탈로그 (/ai-services 페이지의 카드 목록)
+# 새 서비스 등록: 아래에 항목 한 개 추가 + 해당 서비스의 페이지/라우트 구현.
+#
+# - id          : 내부 식별자 (고유)
+# - name        : 카드 제목
+# - description : 카드 설명
+# - icon        : lucide 아이콘 이름 (https://lucide.dev/icons)
+# - route       : 클릭 시 이동할 라우트. 비우면 '준비 중'으로 표시.
+#                 ${REPORT_GENERATOR_URL} 같은 변수 치환 지원 (환경별 외부 URL 주입).
+# - external    : true 면 route 를 외부 URL 로 보고 새 창/사이트로 이동
+# - enabled     : false 면 비활성(준비 중)으로 표시
+
+ai_services:
+  - id: report-generator
+    name: 보고서 문구 지원
+    description: 보고서 작성에 필요한 문구를 AI가 추천하고 다듬어 주는 외부 시스템으로 이동합니다.
+    icon: library
+    route: "${REPORT_GENERATOR_URL}"
+    external: true
+    enabled: true
+
+  - id: report-checker
+    name: 보고서 오류 검출
+    description: PDF 보고서의 오탈자와 논리(일관성) 오류를 AI가 자동으로 검출합니다.
+    icon: file-search
+    route: ""          # TODO: 백엔드 구현 후 /ai-services/report-checker 로 설정
+    enabled: true

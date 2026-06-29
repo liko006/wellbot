@@ -339,6 +339,17 @@ def input_bar() -> rx.Component:
     참고: KB_UPLOAD_SCRIPT 의 rx.script 등록은 pages/index.py 에서 페이지 레벨로 수행.
     """
     return rx.box(
+        # 클립보드 이미지 붙여넣기용 숨김 트리거. PASTE_UPLOAD_SCRIPT 의 paste
+        # 리스너가 #wellbot-paste-trigger 를 클릭해 handle_paste_upload 를 호출.
+        # form 밖에 두어 의도치 않은 submit 을 피한다.
+        rx.box(
+            rx.button(
+                id="wellbot-paste-trigger",
+                type="button",
+                on_click=ChatState.handle_paste_upload,
+            ),
+            display="none",
+        ),
         rx.hstack(
             # 좌측 빈 공간 (클릭 시 패널 닫힘)
             rx.box(
