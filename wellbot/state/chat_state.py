@@ -859,18 +859,21 @@ class ChatState(rx.State):
                 return
 
             # personal / team: 본인(또는 팀) prefix 의 raw/ + originals/ 병합
+            from wellbot.services.knowledgebase.kb_utils import (
+                get_originals_prefix,
+                raw_prefix,
+            )
             if tab == "personal":
-                raw_prefix = f"users/{emp_no}/raw/"
-                originals_prefix = f"users/{emp_no}/originals/"
+                raw_pfx = raw_prefix("personal", emp_no)
             else:  # team
-                raw_prefix = f"teams/{dept_cd}/raw/"
-                originals_prefix = f"teams/{dept_cd}/originals/"
+                raw_pfx = raw_prefix("team", dept_cd)
+            orig_pfx = get_originals_prefix(raw_pfx)
 
             raw_items = await loop.run_in_executor(
-                None, storage_service.list_objects_with_meta, raw_prefix
+                None, storage_service.list_objects_with_meta, raw_pfx
             )
             originals_items = await loop.run_in_executor(
-                None, storage_service.list_objects_with_meta, originals_prefix
+                None, storage_service.list_objects_with_meta, orig_pfx
             )
             # 동일 파일명이 양쪽에 있을 경우 originals/ 의 원본을 우선.
             # 분할본(_partN)은 원본(originals/)으로 대표되므로 목록에서 제외 →
@@ -1111,14 +1114,17 @@ class ChatState(rx.State):
             except Exception:
                 self.ingestion_status = "error"
                 self.ingestion_error = f"응답 파싱 실패: {result}"
+                self.pending_files = []
                 return
 
         if result is None or (isinstance(result, dict) and result.get("error")):
-            # 업로드 자체 실패는 엔드포인트(upload_files_to_kb, with_rollback=True)가
-            # 이미 S3 롤백을 수행하므로 여기선 별도 정리 불필요.
+            # 업로드 자체 실패: S3 는 엔드포인트(upload_files_to_kb, with_rollback=True)가
+            # 이미 롤백. 패널 대기 목록(pending_files)도 비워 stale 상태 방지
+            # (JS _kbSelectedFiles 는 이미 비워졌으므로, 재시도하려면 파일 재선택 필요).
             error_msg = result.get("error", "업로드 실패") if result else "업로드 응답 없음"
             self.ingestion_status = "error"
             self.ingestion_error = self._user_friendly_error(error_msg)
+            self.pending_files = []
             return
 
         import asyncio as _asyncio
