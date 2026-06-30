@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from wellbot.services.auth import auth_service
 from wellbot.services.files import storage_service
 from wellbot.services.knowledgebase.config import get_kb_config
-from wellbot.services.knowledgebase.kb_utils import kb_base
+from wellbot.services.knowledgebase.kb_utils import kb_base, shared_base
 from wellbot.services.knowledgebase.team_kb_manager import get_dept_cd
 
 log = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ def _check_access(bucket: str, key: str, emp_no: str) -> None:
     if key.startswith(f"{kb_base('personal')}/{emp_no}/"):
         if personal_bucket and bucket == personal_bucket:
             return  # 본인 개인 KB
-    elif key.startswith("shared/"):
+    elif key.startswith(f"{shared_base()}/"):
         if shared_bucket and bucket == shared_bucket:
             return  # 공용 KB - 인증된 사용자라면 누구나
     elif key.startswith(f"{kb_base('team')}/"):

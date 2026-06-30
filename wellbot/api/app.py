@@ -14,6 +14,7 @@ from wellbot.api.upload import router as upload_router
 from wellbot.api.download import router as download_router
 from wellbot.api.kb_upload import router as kb_upload_router
 from wellbot.api.kb_download import router as kb_download_router
+from wellbot.api.client_log import router as client_log_router
 from wellbot.logger import install_asyncio_handler, log_context
 
 
@@ -45,3 +46,4 @@ api_app.include_router(upload_router)
 api_app.include_router(download_router)
 api_app.include_router(kb_upload_router)
 api_app.include_router(kb_download_router)
+api_app.include_router(client_log_router)

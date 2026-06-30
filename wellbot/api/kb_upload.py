@@ -38,7 +38,7 @@ from fastapi import APIRouter, Cookie, File, Form, HTTPException, UploadFile, st
 from wellbot.logger import log_context
 from wellbot.services.auth import auth_service
 from wellbot.services.knowledgebase.config import get_kb_config
-from wellbot.services.knowledgebase.kb_utils import raw_prefix, upload_files_to_kb
+from wellbot.services.knowledgebase.kb_utils import raw_prefix, stage_raw_files
 from wellbot.services.knowledgebase.team_kb_manager import get_dept_cd
 
 log = logging.getLogger(__name__)
@@ -53,11 +53,14 @@ async def upload_kb_files(
     wellbot_auth: str | None = Cookie(default=None),
 ):
     """
-    파일을 S3에 바로 업로드.
-    - pptx: json 으로 변환 후 업로드 (Bedrock KB 미지원 형식)
-    - xlsx/csv: 분할 업로드
-    - personal: s3://{bucket}/users/{emp_no}/raw/{filename}
-    - team:     s3://{bucket}/teams/{dept_cd}/raw/{filename}
+    원본 파일을 S3 staging/ 에만 빠르게 적재하고 반환.
+
+    변환(pptx→json, PDF/xlsx Upstage 등)·분할·색인은 이 요청 안에서 하지 않고
+    백그라운드(ChatState.on_upload_complete)에서 staging/ 원본을 읽어 수행한다.
+    다중 PDF 동시 업로드 시 동기 Upstage 변환이 프록시 타임아웃(504)을 넘기던
+    문제를 구조적으로 분리하기 위함.
+    - personal: s3://{bucket}/users{env}/{emp_no}/staging/{filename}
+    - team:     s3://{bucket}/teams{env}/{dept_cd}/staging/{filename}
 
     emp_no / dept_cd 는 클라이언트 입력을 신뢰하지 않고 wellbot_auth 세션
     쿠키에서 서버가 도출 (타인 KB 에 임의 파일 주입 방지).
@@ -77,9 +80,6 @@ async def upload_kb_files(
     emp_no = user["emp_no"]
     log_context.bind(emp_no=emp_no, upload_target=upload_target)
 
-    if len(files) > 5:
-        return {"uploaded": [], "error": "한 번에 최대 5개 파일만 업로드 가능합니다."}
-
     # 2. 업로드 경로 결정 — team 은 본인 소속 부서로만 (서버에서 도출)
     if upload_target == "team":
         dept_cd = get_dept_cd(emp_no)
@@ -97,26 +97,20 @@ async def upload_kb_files(
     if not bucket:
         return {"uploaded": [], "error": "S3 버킷 설정이 없습니다."}
 
-    # 파일 바이트를 읽어 kb_utils.upload_files_to_kb 로 위임 — 변환(pptx→json)·
-    # 분할(xlsx·csv)·형식/크기 검증·롤백 로직의 단일 출처. 검증은 업로드 전
-    # 전체에 선수행되고, 실패 시 originals/ 원본까지 포함해 롤백.
+    # 원본 바이트를 읽어 staging/ 에만 적재(stage_raw_files) — 변환·분할·색인은
+    # 백그라운드에서. 형식/크기·누적 상한은 stage_raw_files 가 적재 전에 선검증해
+    # 상한 초과 시 S3 적재 없이 즉시 거부(고아 방지), 부분 적재 실패 시 롤백.
     file_tuples: list[tuple[bytes, str]] = []
     for file in files:
         file_tuples.append((await file.read(), file.filename))
 
     try:
-        uris = upload_files_to_kb(bucket, prefix, file_tuples, with_rollback=True)
+        staged = stage_raw_files(bucket, prefix, file_tuples)
     except ValueError as e:
-        # 지원하지 않는 형식 / 크기 초과 / 개수 초과 등 입력 검증 오류
+        # 지원하지 않는 형식 / 크기 초과 / 개수 초과 / 누적 상한 초과 등 입력 검증 오류
         return {"uploaded": [], "error": str(e)}
     except Exception as e:
-        log.exception("KB API 업로드 실패")
+        log.exception("KB staging 적재 실패")
         return {"uploaded": [], "error": str(e)}
 
-    # originals/ 원본(pptx)은 내부 자원이라 응답 목록에서 제외
-    uploaded = [
-        {"name": uri.rsplit("/", 1)[-1], "s3_uri": uri}
-        for uri in uris
-        if "/originals/" not in uri
-    ]
-    return {"uploaded": uploaded, "error": None}
+    return {"uploaded": [{"name": n} for n in staged], "error": None}

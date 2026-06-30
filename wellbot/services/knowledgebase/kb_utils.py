@@ -20,6 +20,7 @@ import re
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -64,6 +65,15 @@ def env_suffix() -> str:
 def kb_base(kind: str) -> str:
     """S3 경로 첫 세그먼트: 'users'/'users-dev'/'teams'/'teams-dev'."""
     return f"{_KB_KIND_PREFIX_BASE[kind]}{env_suffix()}"
+
+
+def shared_base() -> str:
+    """공용 KB S3 경로 첫 세그먼트: 'shared'/'shared-dev'. (개인/팀의 kb_base 와 동일 규칙.)
+
+    공용 KB는 개인/팀과 달리 'shared/{대분류}/raw/{소분류}' 2단계 구조라 kb_base/
+    raw_prefix 를 재사용하지 않고 이 base 만 공유한다(목록 조회·업로드·DS 생성 단일 출처).
+    """
+    return f"shared{env_suffix()}"
 
 
 # ──────────────────────────────────────────────
@@ -122,6 +132,20 @@ def get_originals_prefix(raw_prefix: str) -> str:
         'teams/A1/raw/'   → 'teams/A1/originals/'
     """
     return raw_prefix.rsplit("raw/", 1)[0] + "originals/"
+
+
+def get_staging_prefix(raw_prefix: str) -> str:
+    """raw/ prefix 를 staging/ prefix 로 변환.
+
+    업로드 HTTP 요청은 원본을 staging/ 에만 빠르게 적재하고 즉시 반환하고,
+    변환(Upstage 등)·색인은 백그라운드(on_upload_complete)에서 staging/ 의 원본을
+    읽어 수행한다 → 다중 PDF 등에서 HTTP 프록시 타임아웃(504)과 분리.
+    raw/ 의 형제 위치라 Bedrock inclusionPrefix(raw/) 밖 → 색인 대상에서 제외.
+
+    예: 'users/123/raw/'  → 'users/123/staging/'
+        'teams/A1/raw/'   → 'teams/A1/staging/'
+    """
+    return raw_prefix.rsplit("raw/", 1)[0] + "staging/"
 
 SUPPORTED_EXTENSIONS = {
     ".pdf", ".docx", ".pptx", ".xlsx", ".csv",
@@ -708,6 +732,58 @@ def _stash_original(
     uploaded_uris.append(f"s3://{bucket}/{originals_key}")
 
 
+def _validate_upload_files(files: list[tuple[bytes, str]]) -> None:
+    """업로드 파일의 개수(≤5)·형식·크기 검증. S3 접근 없는 순수 검증이라
+    staging 적재(stage_raw_files)와 색인 적재(upload_files_to_kb) 양쪽에서 재사용."""
+    if len(files) > 5:
+        raise ValueError(
+            f"한 번에 최대 5개 파일만 업로드 가능합니다. (요청: {len(files)}개)"
+        )
+    for file_bytes, filename in files:
+        ext = Path(filename).suffix.lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            raise ValueError(f"지원하지 않는 파일 형식: {filename}")
+        validate_file_size(file_bytes, filename)
+
+
+# PDF Upstage 변환 동시 실행 수. Upstage rate limit 을 고려한 보수적 상한.
+_PDF_CONVERT_MAX_WORKERS = 3
+
+
+def _convert_pdfs_parallel(files: list[tuple[bytes, str]]) -> dict[int, tuple[bytes, str]]:
+    """업로드 목록 중 PDF(Upstage 모드)를 병렬 변환. 반환: {files 인덱스: (md_bytes, md_name)}.
+
+    네트워크 바운드 Upstage 호출을 최대 _PDF_CONVERT_MAX_WORKERS 개 동시 실행해
+    직렬 합산 지연을 줄인다(락·S3 쓰기 밖에서 수행). 변환 실패한 파일은 결과에서
+    제외 → 호출자(upload_files_to_kb)가 원본 PDF 색인으로 폴백. files 인덱스로
+    매핑해 동일 파일명 충돌을 피한다.
+    """
+    if not pdf_via_upstage_enabled():
+        return {}
+    targets = [
+        (i, fb, fn) for i, (fb, fn) in enumerate(files)
+        if Path(fn).suffix.lower() == ".pdf"
+    ]
+    if not targets:
+        return {}
+
+    result: dict[int, tuple[bytes, str]] = {}
+    with ThreadPoolExecutor(max_workers=min(_PDF_CONVERT_MAX_WORKERS, len(targets))) as ex:
+        fut_to_idx = {
+            ex.submit(convert_pdf_to_markdown, fb, fn): i for i, fb, fn in targets
+        }
+        for fut in as_completed(fut_to_idx):
+            i = fut_to_idx[fut]
+            try:
+                result[i] = fut.result()
+            except Exception:
+                log.warning(
+                    "Upstage PDF 변환 실패, 원본 PDF 색인으로 폴백: %s",
+                    files[i][1], exc_info=True,
+                )
+    return result
+
+
 def upload_files_to_kb(
     bucket: str,
     prefix: str,
@@ -723,16 +799,12 @@ def upload_files_to_kb(
 
     반환: 업로드된 S3 URI 목록 (pptx 의 originals/ 원본 URI 포함).
     """
-    if len(files) > 5:
-        raise ValueError(
-            f"한 번에 최대 5개 파일만 업로드 가능합니다. (요청: {len(files)}개)"
-        )
     # 형식/크기 검증은 S3 접근이 없어 락 밖에서 선수행.
-    for file_bytes, filename in files:
-        ext = Path(filename).suffix.lower()
-        if ext not in SUPPORTED_EXTENSIONS:
-            raise ValueError(f"지원하지 않는 파일 형식: {filename}")
-        validate_file_size(file_bytes, filename)
+    _validate_upload_files(files)
+
+    # PDF Upstage 변환을 락·S3 쓰기 밖에서 미리 병렬 수행(직렬 합산 지연 단축).
+    # 변환 실패분은 pdf_md 에 없어 아래 루프가 원본 PDF 색인으로 폴백.
+    pdf_md = _convert_pdfs_parallel(files)
 
     # 상한 검증(count)→S3 쓰기를 prefix 락으로 직렬화해 TOCTOU(동시 업로드가 같은
     # count 를 읽고 둘 다 통과)를 차단. 단일 백엔드 프로세스 기준.
@@ -742,7 +814,7 @@ def upload_files_to_kb(
 
         uploaded_uris: list[str] = []
         try:
-            for file_bytes, filename in files:
+            for idx, (file_bytes, filename) in enumerate(files):
                 ext = Path(filename).suffix.lower()
 
                 if ext in CONVERTIBLE_EXTS:
@@ -751,19 +823,13 @@ def upload_files_to_kb(
                     file_bytes, filename = convert_pptx_to_json(file_bytes, filename)
                     ext = ".json"
                 elif ext == ".pdf" and pdf_via_upstage_enabled():
-                    # PDF 를 Upstage markdown 으로 변환 (이미지/스캔 내용까지 읽음).
-                    # 원본 PDF 는 originals/ 에 보관, 변환본 _pdf.md 만 raw/ 에 색인.
-                    # 변환 실패 시 원본 PDF 를 그대로 색인 → Lambda parse_pdf 폴백.
-                    try:
-                        md_bytes, md_name = convert_pdf_to_markdown(file_bytes, filename)
-                    except Exception:
-                        log.warning(
-                            "Upstage PDF 변환 실패, 원본 PDF 색인으로 폴백: %s", filename,
-                            exc_info=True,
-                        )
-                    else:
+                    # PDF 는 위에서 병렬 변환됨(pdf_md). 원본 PDF 는 originals/ 에 보관,
+                    # 변환본 _pdf.md 만 raw/ 에 색인. 변환 실패분(pdf_md 에 없음)은 원본
+                    # PDF 를 그대로 색인 → Lambda parse_pdf 폴백.
+                    md = pdf_md.get(idx)
+                    if md is not None:
                         _stash_original(bucket, prefix, file_bytes, filename, uploaded_uris)
-                        file_bytes, filename = md_bytes, md_name
+                        file_bytes, filename = md
                         ext = ".md"
 
                 # xlsx 는 여기(개인/팀)서 Upstage 변환하지 않고 pandas 분할(TABULAR_EXTS)로 처리.
@@ -791,6 +857,76 @@ def upload_files_to_kb(
             raise
 
     return uploaded_uris
+
+
+def _delete_keys_quietly(bucket: str, keys: list[str]) -> None:
+    """주어진 S3 키들을 best-effort 삭제(실패는 경고만). staging 정리·롤백 공용."""
+    for key in keys:
+        try:
+            _get_s3().delete_object(Bucket=bucket, Key=key)
+        except Exception as e:
+            log.warning("S3 삭제 실패(무시): %s, %s", key, e)
+
+
+def stage_raw_files(
+    bucket: str,
+    prefix: str,
+    files: list[tuple[bytes, str]],
+) -> list[str]:
+    """원본 바이트를 staging/ 에만 적재(변환·색인 X) — 업로드 HTTP 요청용.
+
+    변환(Upstage 등)을 요청 밖(백그라운드)으로 미뤄 다중 PDF 등에서 프록시
+    타임아웃(504)을 방지. staging 적재 *전에* 형식/크기·누적 상한을 선검증해,
+    상한 초과 시 S3 에 아무것도 올리지 않고 즉시 거부(고아 방지). 부분 적재 실패
+    시 이미 올린 분을 롤백.
+
+    prefix: raw/ prefix (적재 위치는 그 형제 staging/).
+    반환: staging 에 적재된 파일명 목록.
+    """
+    _validate_upload_files(files)
+    # 누적 문서 수 상한을 staging 전에 선검증(빠른 거부, 사용자 즉시 피드백).
+    # 최종 보장은 색인 시 upload_files_to_kb 가 prefix 락 하에서 재검증(동시 race 방어).
+    enforce_kb_doc_limit(bucket, prefix, [fn for _, fn in files])
+
+    staging = get_staging_prefix(prefix)
+    staged_names: list[str] = []
+    try:
+        for file_bytes, filename in files:
+            _get_s3().put_object(Bucket=bucket, Key=f"{staging}{filename}", Body=file_bytes)
+            staged_names.append(filename)
+    except Exception:
+        _delete_keys_quietly(bucket, [f"{staging}{n}" for n in staged_names])
+        raise
+    return staged_names
+
+
+def process_staged_files(
+    bucket: str,
+    prefix: str,
+    names: list[str],
+) -> list[str]:
+    """staging/ 의 원본을 읽어 변환+raw/+originals/ 적재(색인 준비) 후 staging 정리.
+
+    백그라운드(on_upload_complete)에서 호출 — Upstage 변환 등 무거운 작업이 여기서
+    일어난다(HTTP 요청 밖). 변환·적재는 upload_files_to_kb 를 그대로 재사용하며
+    with_rollback=True 라 실패 시 부분 raw/originals 가 정리된다. staging/ 원본은
+    성공·실패와 무관하게 정리해 고아를 남기지 않는다.
+
+    prefix: raw/ prefix. names: staging 에 적재된 원본 파일명(=업로드 파일명).
+    반환: 색인된 raw/originals URI 목록.
+    """
+    staging = get_staging_prefix(prefix)
+    staged_keys = [f"{staging}{name}" for name in names]
+    try:
+        files: list[tuple[bytes, str]] = []
+        for key, name in zip(staged_keys, names):
+            obj = _get_s3().get_object(Bucket=bucket, Key=key)
+            files.append((obj["Body"].read(), name))
+        return upload_files_to_kb(bucket, prefix, files, with_rollback=True)
+    finally:
+        # 성공: 원본 staging 정리 / 실패: upload_files_to_kb 가 raw·originals 롤백,
+        # 여기서 staging 정리 → 어느 경로든 고아 없음.
+        _delete_keys_quietly(bucket, staged_keys)
 
 
 def delete_files_from_kb(bucket: str, prefix: str, filenames: list[str]) -> None:
