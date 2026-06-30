@@ -67,6 +67,15 @@ def kb_base(kind: str) -> str:
     return f"{_KB_KIND_PREFIX_BASE[kind]}{env_suffix()}"
 
 
+def shared_base() -> str:
+    """공용 KB S3 경로 첫 세그먼트: 'shared'/'shared-dev'. (개인/팀의 kb_base 와 동일 규칙.)
+
+    공용 KB는 개인/팀과 달리 'shared/{대분류}/raw/{소분류}' 2단계 구조라 kb_base/
+    raw_prefix 를 재사용하지 않고 이 base 만 공유한다(목록 조회·업로드·DS 생성 단일 출처).
+    """
+    return f"shared{env_suffix()}"
+
+
 # ──────────────────────────────────────────────
 # 설정 / 리전 (lazy — import 사이드이펙트 방지)
 # ──────────────────────────────────────────────

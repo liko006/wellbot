@@ -100,9 +100,9 @@ from wellbot.services.knowledgebase.kb_utils import (  # noqa: E402
     TABULAR_EXTS,
     convert_pdf_to_markdown,
     convert_xlsx_to_markdown,
-    env_suffix,
     pdf_via_upstage_enabled,
     pptx_to_dict,
+    shared_base,
     xlsx_via_upstage_enabled,
 )
 
@@ -118,11 +118,11 @@ EMBEDDING_MODEL        = _kb_cfg["embedding_model"]
 POLL_INTERVAL          = _kb_cfg.get("poll_interval", 5)
 POLL_TIMEOUT           = _kb_cfg.get("poll_timeout", 300)
 
-# S3 경로의 환경 네임스페이스 base. APP_ENV 로 결정(개인/팀의 users{env}/teams{env} 와 동일 규칙,
-# env_suffix 는 kb_utils 단일 출처). dev → 'shared-dev', prod/미설정 → 'shared'.
-# dev/prd 가 같은 버킷을 공유해도 prefix 가 갈려 충돌 방지. 공용 KB id·벡터인덱스는 dev/prd
-# 별도 .env 의 KB_ID 로 갈리고 인덱스는 KB 에 바인딩되므로, 매니저는 prefix 만 분기하면 된다.
-_SHARED_BASE = f"shared{env_suffix()}"
+# S3 경로의 환경 네임스페이스 base. APP_ENV 로 결정(kb_utils.shared_base 단일 출처).
+# dev → 'shared-dev', prod/미설정 → 'shared'. dev/prd 가 같은 버킷을 공유해도 prefix 가 갈려
+# 충돌 방지. 공용 KB id·벡터인덱스는 dev/prd 별도 .env 의 KB_ID 로 갈리고 인덱스는 KB 에
+# 바인딩되므로, 매니저는 prefix 만 분기하면 된다. (목록 조회 chat_state 와 base 공유.)
+_SHARED_BASE = shared_base()
 
 # 업로드 제한 상수(ROWS_PER_SPLIT/TABULAR_EXTS/CONVERTIBLE_EXTS/MAX_FILE_SIZES/
 # MAX_FILE_SIZE_DEFAULT)·SUPPORTED_EXTENSIONS 는 kb_utils 단일 출처에서 import (위 import 블록).

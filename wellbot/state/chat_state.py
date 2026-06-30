@@ -796,17 +796,20 @@ class ChatState(rx.State):
         loop = _asyncio.get_running_loop()
         try:
             if tab == "shared":
-                # 회사 KB: shared/{문서종류}/raw/{파일} 구조 → 문서종류 단위 그룹 뷰
+                # 회사 KB: shared{env}/{문서종류}/raw/{파일} 구조 → 문서종류 단위 그룹 뷰.
+                # 공용 prefix base 는 dev/prd 분기(shared / shared-dev) — kb_utils 단일 출처.
                 from wellbot.services.knowledgebase.config import get_kb_config
+                from wellbot.services.knowledgebase.kb_utils import shared_base
                 shared_cfg = get_kb_config().get("shared_kb", {})
                 shared_bucket = shared_cfg.get("s3_bucket", "")
                 if not shared_bucket:
                     self.kb_folder_list = []
                     return
 
+                base = shared_base()
                 items = await loop.run_in_executor(
                     None,
-                    lambda: storage_service.list_objects_with_meta("shared/", shared_bucket),
+                    lambda: storage_service.list_objects_with_meta(f"{base}/", shared_bucket),
                 )
                 # 대분류 → 소분류 → 파일목록 으로 그룹핑.
                 # raw/ = 인덱싱 대상(원본 + 변환본). originals/ = 인덱싱 제외 원본
@@ -818,10 +821,10 @@ class ChatState(rx.State):
                 for obj in items:
                     key = obj["key"]
                     parts = key.split("/")
-                    # shared/{대분류}/{raw|originals}/{...} 형태만 채택
+                    # shared{env}/{대분류}/{raw|originals}/{...} 형태만 채택
                     if (
                         len(parts) < 4
-                        or parts[0] != "shared"
+                        or parts[0] != base
                         or parts[2] not in ("raw", "originals")
                     ):
                         continue
