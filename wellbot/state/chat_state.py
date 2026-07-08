@@ -1599,16 +1599,29 @@ class ChatState(rx.State):
         모든 pending 파일이 ready 상태가 되면 조기 종료.
         대용량 파일 처리를 고려해 최대 120초까지 폴링.
         """
-        deadline = time.time() + 120.0
+        start = time.time()
+        deadline = start + 120.0
+        # 트리거 시점의 기존 첨부 수. 이보다 늘어나야(=새 업로드가 DB 안착) 조기 종료 허용.
+        # (붙여넣은 이미지가 이미 ready 인 상태에서 파일추가 시, 새 파일이 아직 DB 에
+        #  없을 때 'all ready' 로 조기 종료돼 새 파일이 UI 에 안 뜨던 버그 방지)
+        start_count = len(self.pending_attachments)
+        settle_grace = 8.0  # 새 업로드가 안 올라오면(취소 등) 이 시간 후 종료 허용
         # 업로드 직후 칩이 빨리 뜨도록 처음엔 촘촘히 폴링하고 점차 백오프.
         # (이미지는 파싱을 건너뛰어 거의 즉시 ready 가 되므로 초기 응답성이 중요)
         interval = 0.3
         while time.time() < deadline:
             async with self:
                 self._sync_attachments_from_db()
+                # 새 업로드 안착(개수 증가) 또는 grace 경과 또는 기존 첨부 없음(빈 시작)일 때만
+                # 조기 종료 허용 — 인플라이트 업로드를 놓치지 않도록.
+                can_exit = (
+                    start_count == 0
+                    or len(self.pending_attachments) > start_count
+                    or (time.time() - start) >= settle_grace
+                )
                 # 모든 pending 파일이 종료 상태(ready 또는 failed)면 폴링 종료.
                 # (실패도 종료 상태로 취급해야 실패 시 120초 데드라인까지 헛돌지 않음)
-                if self.pending_attachments and all(
+                if can_exit and self.pending_attachments and all(
                     a.status != "processing" for a in self.pending_attachments
                 ):
                     break
