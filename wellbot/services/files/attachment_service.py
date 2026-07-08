@@ -246,6 +246,18 @@ def process_attachment(file_no: int, emp_no: str) -> bool:
                 index_bytes=index_bytes,
             )
 
+        # 전체 문서 텍스트를 read_attachment(전체 읽기) 용 파생물로 저장 (best-effort).
+        # 실패해도 read_attachment 가 chunks.jsonl 재조립으로 폴백하므로 본 흐름은 계속.
+        text_key = f"{s3_prefix}text.txt"
+        try:
+            storage_service.upload_bytes(
+                parsed.text.encode("utf-8"),
+                text_key,
+                content_type="text/plain; charset=utf-8",
+            )
+        except Exception:
+            log.warning("text.txt 업로드 실패(무시) file_no=%s", file_no, exc_info=True)
+
         # commit point: 이 라인 이전에는 검색에서 스킵됨
         _update_token_count(file_no, emp_no, total_tokens)
 

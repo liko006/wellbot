@@ -117,6 +117,11 @@ KB_NOT_FOUND_PATTERNS: tuple[str, ...] = (
 # 결과는 점수 내림차순이라 상위(고관련) 청크가 보존된다.
 TOOL_RESULT_MAX_TOKENS: int = int(os.environ.get("TOOL_RESULT_MAX_TOKENS", "6000"))
 
+# read_attachment(전체 문서 읽기) 전용 토큰 예산. 위 6000 캡과 별개로, 대용량
+# 컨텍스트 모델을 활용해 문서를 통째로 싣되 폭주는 막는다. 초과분은 잘리고
+# LLM 이 offset 으로 이어읽는다.
+READ_ATTACHMENT_MAX_TOKENS: int = int(os.environ.get("READ_ATTACHMENT_MAX_TOKENS", "60000"))
+
 TOOL_USE_MAX_ITERATIONS: int = 3          # tool 호출 무한루프 방지 (천장)
 TOOL_USE_EMPTY_RESULT_LIMIT: int = 2      # 연속 빈 결과 시 강제 종료
 TOOL_USE_DUPLICATE_QUERY_LIMIT: int = 1   # 동일 (query, file_ids/names) 재호출 차단

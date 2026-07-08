@@ -59,6 +59,7 @@ from wellbot.state.chat_helpers.download_script import (
 )
 from wellbot.state.chat_helpers.system_prompt import (
     augment_system_with_attachments,
+    augment_system_with_datetime,
     augment_system_with_kb,
 )
 from wellbot.state.chat_helpers.upload_script import build_upload_script
@@ -1881,7 +1882,9 @@ class ChatState(rx.State):
             base_system = prompt.content if prompt else cfg.system_prompt
 
             # 대화 전체 첨부파일 메타를 system prompt 에 추가
-            system_prompt = augment_system_with_attachments(base_system, conv_id)
+            # 현재 시각(KST) 주입 → 상대 날짜 표현 해석. 매 턴 최신값으로 갱신.
+            system_prompt = augment_system_with_datetime(base_system)
+            system_prompt = augment_system_with_attachments(system_prompt, conv_id)
             # KB 활성화 시 검색 지침 + 인용 표기 규칙 추가
             if use_kb and kb_modes:
                 system_prompt = augment_system_with_kb(system_prompt, kb_modes)
