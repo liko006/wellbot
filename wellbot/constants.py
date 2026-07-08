@@ -111,6 +111,12 @@ KB_NOT_FOUND_PATTERNS: tuple[str, ...] = (
     "관련 정보가 없", "기재되어 있지 않", "언급되어 있지 않", "언급되지 않", "나와 있지 않", "확인되지 않",
 )
 
+# tool 결과(주로 kb_search) 텍스트를 이 토큰 예산으로 절단.
+# tool-use 루프는 누적된 tool_result 를 매 반복마다 재전송하므로, 절단 없이는
+# 대용량 검색 결과가 입력 토큰을 폭증시킨다(운영에서 200K~410K 관측).
+# 결과는 점수 내림차순이라 상위(고관련) 청크가 보존된다.
+TOOL_RESULT_MAX_TOKENS: int = int(os.environ.get("TOOL_RESULT_MAX_TOKENS", "6000"))
+
 TOOL_USE_MAX_ITERATIONS: int = 3          # tool 호출 무한루프 방지 (천장)
 TOOL_USE_EMPTY_RESULT_LIMIT: int = 2      # 연속 빈 결과 시 강제 종료
 TOOL_USE_DUPLICATE_QUERY_LIMIT: int = 1   # 동일 (query, file_ids/names) 재호출 차단

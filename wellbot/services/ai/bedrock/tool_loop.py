@@ -7,14 +7,41 @@ import json
 import logging
 from typing import Any
 
+from wellbot.constants import TOOL_RESULT_MAX_TOKENS
 from wellbot.services.ai.bedrock.converse import (
     adrain_generator,
     build_messages,
     stream_one_turn_iter,
 )
 from wellbot.services.core.settings import ModelConfig
+from wellbot.services.files.chunker import estimate_tokens
 
 log = logging.getLogger(__name__)
+
+
+def _cap_tool_result_text(sanitized: Any) -> Any:
+    """tool 결과 텍스트를 TOOL_RESULT_MAX_TOKENS 로 절단.
+
+    루프가 tool_result 를 매 반복 재전송하므로 대용량 결과(kb_search 등)를
+    그대로 두면 입력 토큰이 폭증한다. 결과는 점수 내림차순이라 뒤쪽(저관련)을
+    잘라 상위 청크를 보존한다.
+    """
+    if not isinstance(sanitized, dict):
+        return sanitized
+    text = sanitized.get("text")
+    if not isinstance(text, str) or not text:
+        return sanitized
+    total = estimate_tokens(text)
+    if total <= TOOL_RESULT_MAX_TOKENS:
+        return sanitized
+    density = total / max(1, len(text))  # 토큰/문자
+    keep_chars = max(1, int(TOOL_RESULT_MAX_TOKENS / density))
+    trimmed = text[:keep_chars].rstrip()
+    log.info(
+        "tool_result 절단: est %d > %d 토큰 → %d자 유지",
+        total, TOOL_RESULT_MAX_TOKENS, len(trimmed),
+    )
+    return {**sanitized, "text": trimmed + "\n\n…(관련도 낮은 이후 결과는 생략됨)"}
 
 
 def _call_signature(name: str, tool_input: dict) -> tuple:
@@ -208,7 +235,7 @@ async def astream_chat_with_tools(
             else:
                 empty_streak = 0
 
-            sanitized = _strip_tool_result_meta(result_content)
+            sanitized = _cap_tool_result_text(_strip_tool_result_meta(result_content))
             tool_result_blocks.append({
                 "toolResult": {
                     "toolUseId": tu.get("toolUseId", ""),
