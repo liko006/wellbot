@@ -2016,6 +2016,21 @@ class ChatState(rx.State):
             if stream_interrupted and content:
                 content += "\n\n*[생성이 중단되었습니다]*"
 
+            # 빈 응답 방지: 텍스트 없이 정상 종료(콘텐츠 필터 차단 등)면 침묵 대신 안내.
+            # content_filtered 는 스트림에서 별도 신호를 주지 않으므로 '비었고 & 중단 아님'
+            # 으로 포괄 감지한다. (오류 케이스는 위 except 에서 이미 content 설정)
+            used_empty_fallback = False
+            if not content.strip() and not stream_interrupted:
+                used_empty_fallback = True
+                content = (
+                    "요청은 처리했지만 표시할 답변을 받지 못했어요. "
+                    "안전 정책에 의해 응답이 차단되었거나 일시적인 문제일 수 있어요. "
+                    "질문 표현을 조금 바꿔 다시 시도해 주세요."
+                )
+                log.warning(
+                    "빈 응답 대체 메시지 적용 conv_id=%s model=%s", conv_id, model_name
+                )
+
             # 출처 필터링: LLM 이 본문에 [N] 인용 마커를 표기한 청크만 유지
             # 1) 본문에서 [1], [1, 3], [1][3] 등 인용 마커의 번호 추출
             # 2) 마커가 있으면 → 인용된 ranks 만 유지
@@ -2033,7 +2048,10 @@ class ChatState(rx.State):
                     except ValueError:
                         pass
 
-            if cited_ranks:
+            if used_empty_fallback:
+                # 답변이 아닌 안내 메시지엔 출처를 붙이지 않음
+                final_sources = []
+            elif cited_ranks:
                 final_sources = [
                     s for s in all_sources
                     if any(r in cited_ranks for r in (s.get("ranks") or []))

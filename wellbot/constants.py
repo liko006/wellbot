@@ -59,6 +59,13 @@ PDF_VIA_UPSTAGE: bool = True
 UPSTAGE_MAX_PAGES: int = 100
 UPSTAGE_MAX_SIZE_MB: int = 50
 
+# ── Upstage 호출 재시도 ──
+# 502/503/504/429·연결/타임아웃 오류는 일시적일 수 있어 지수 백오프로 재시도한다.
+# 413(페이지/용량 초과) 등 4xx 는 영구 오류라 재시도하지 않는다.
+UPSTAGE_TIMEOUT_SEC: float = 300.0        # 요청당 타임아웃
+UPSTAGE_MAX_RETRIES: int = 2              # 일시적 오류 최대 재시도 횟수(총 3회 시도)
+UPSTAGE_RETRY_BASE_DELAY: float = 1.0     # 지수 백오프 기본 대기(초)
+
 # ── 자동 분할 (PDF 전용) ──
 AUTO_SPLIT_PDF_PAGES: int = 100           # 페이지 초과 시 분할
 AUTO_SPLIT_PDF_SIZE_MB: int = 50          # 용량 초과 시 분할
@@ -68,10 +75,18 @@ SPLIT_SAFETY_PAGES: int = 90
 SPLIT_SAFETY_SIZE_MB: int = 45
 
 # ── 청킹 & 임베딩 ──
-AVG_TOKENS_PER_WORD = 1.4                 # 한국어 ~1.5·영어 ~1.3 기준 평균값
+AVG_TOKENS_PER_WORD = 1.4                 # (레거시) 공백 어절 기반 평균값
 CHUNK_SIZE_TOKENS: int = 1000
 CHUNK_OVERLAP_TOKENS: int = 200
 # 임베딩 모델 ID/차원은 config/models.yaml 의 embedding 섹션으로 이관됨.
+
+# CJK 인식 토큰 추정.
+# 공백 어절 기반 추정은 한국어/중국어/일본어를 5~15배 과소추정한다
+# (띄어쓰기 없는 CJK 는 문단 전체가 1 어절 → Titan 8192 토큰 한도 초과로 임베딩 실패).
+# 문자 단위로 상한적(=실제보다 크게) 추정해 오버플로를 원천 차단.
+CJK_TOKENS_PER_CHAR: float = 1.0          # 한글/한자/가나: 문자당 추정 토큰(상한적)
+LATIN_CHARS_PER_TOKEN: float = 4.0        # 비-CJK: 문자 4개 ≈ 1토큰
+EMBED_TOKEN_HARD_MAX: int = 7000          # 임베딩 청크 하드 상한(8192 안전마진). 초과 시 강제 재분할.
 
 # ── 임베딩 병렬 처리 ──
 EMBED_MAX_WORKERS: int = 5            # 동시 임베딩 요청 수

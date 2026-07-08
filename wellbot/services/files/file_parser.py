@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,13 +29,25 @@ from wellbot.constants import (
     LOCAL_SUPPORTED_EXTS,
     SPLIT_SAFETY_PAGES,
     SPLIT_SAFETY_SIZE_MB,
+    UPSTAGE_MAX_PAGES,
+    UPSTAGE_MAX_RETRIES,
     UPSTAGE_MAX_SIZE_MB,
+    UPSTAGE_RETRY_BASE_DELAY,
     UPSTAGE_SUPPORTED_EXTS,
+    UPSTAGE_TIMEOUT_SEC,
 )
 from wellbot.paths import wellbot_temp_dir
 
 
 log = logging.getLogger(__name__)
+
+# Upstage 재시도 대상 HTTP 상태 (일시적 오류)
+_UPSTAGE_RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def _upstage_retry_delay(attempt: int) -> float:
+    """지수 백오프 + jitter."""
+    return UPSTAGE_RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 0.5)
 
 
 # ── 예외 ──
@@ -305,32 +318,62 @@ class UpstageParser:
             "upstage parse 호출 file=%s bytes=%d", file_path.name, len(file_bytes),
             extra={"file": file_path.name, "bytes": len(file_bytes)},
         )
-        try:
-            response = httpx.post(
-                self._api_url,
-                headers=headers,
-                files={"document": (file_path.name, file_bytes)},
-                data={"output_formats": '["markdown"]'},
-                timeout=300.0,
-            )
-            if response.status_code != 200:
+
+        payload = None
+        for attempt in range(UPSTAGE_MAX_RETRIES + 1):
+            try:
+                response = httpx.post(
+                    self._api_url,
+                    headers=headers,
+                    files={"document": (file_path.name, file_bytes)},
+                    data={"output_formats": '["markdown"]'},
+                    timeout=UPSTAGE_TIMEOUT_SEC,
+                )
+            except httpx.HTTPError as e:
+                # 타임아웃/연결 등 전송 계층 오류 — 일시적일 수 있어 재시도
+                if attempt < UPSTAGE_MAX_RETRIES:
+                    delay = _upstage_retry_delay(attempt)
+                    log.warning(
+                        "upstage parse 호출 오류 file=%s err=%s → %.1fs 후 재시도(%d/%d)",
+                        file_path.name, e, delay, attempt + 1, UPSTAGE_MAX_RETRIES,
+                        extra={"file": file_path.name},
+                    )
+                    time.sleep(delay)
+                    continue
                 log.warning(
-                    "upstage parse HTTP %s file=%s", response.status_code, file_path.name,
+                    "upstage parse 호출 실패 file=%s err=%s", file_path.name, e,
+                    extra={"file": file_path.name},
+                )
+                raise ParsingFailedError(f"Upstage API 호출 실패: {e}") from e
+
+            if response.status_code == 200:
+                payload = response.json()
+                break
+
+            # 5xx/429 는 일시적 → 재시도, 그 외 4xx 는 영구 오류 → 즉시 실패
+            if response.status_code in _UPSTAGE_RETRY_STATUS and attempt < UPSTAGE_MAX_RETRIES:
+                delay = _upstage_retry_delay(attempt)
+                log.warning(
+                    "upstage parse HTTP %s file=%s → %.1fs 후 재시도(%d/%d)",
+                    response.status_code, file_path.name, delay, attempt + 1, UPSTAGE_MAX_RETRIES,
                     extra={"file": file_path.name, "status": response.status_code},
                 )
-                raise ParsingFailedError(
-                    f"Upstage API 오류 (HTTP {response.status_code}): "
-                    f"{response.text[:200]}"
-                )
-            payload = response.json()
-        except ParsingFailedError:
-            raise
-        except httpx.HTTPError as e:
+                time.sleep(delay)
+                continue
+
             log.warning(
-                "upstage parse 호출 실패 file=%s err=%s", file_path.name, e,
-                extra={"file": file_path.name},
+                "upstage parse HTTP %s file=%s", response.status_code, file_path.name,
+                extra={"file": file_path.name, "status": response.status_code},
             )
-            raise ParsingFailedError(f"Upstage API 호출 실패: {e}") from e
+            if response.status_code == 413:
+                raise FileTooLargeError(
+                    f"'{file_path.name}' 이(가) Upstage 페이지/용량 제한"
+                    f"({UPSTAGE_MAX_PAGES}p/{UPSTAGE_MAX_SIZE_MB}MB)을 초과했습니다. "
+                    f"파일을 나눠 다시 업로드해주세요."
+                )
+            raise ParsingFailedError(
+                f"Upstage API 오류 (HTTP {response.status_code}): {response.text[:200]}"
+            )
 
         log.info(
             "upstage parse done file=%s", file_path.name,
