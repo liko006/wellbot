@@ -1890,20 +1890,28 @@ class ChatState(rx.State):
             if image_blocks and api_messages:
                 api_messages[-1] = {**api_messages[-1], "image_blocks": image_blocks}
 
-            # 대화에 첨부파일이 있으면 tool use(search_attachment) 활성화
-            has_attachments = False
+            # 검색 가능한(텍스트) 첨부가 있을 때만 search_attachment 활성화.
+            # token_count>0 = 텍스트 추출·청킹 완료. 이미지(0)·처리중(None)은 검색 대상이
+            # 아니므로 제외 — 노출하면 LLM 이 빈 검색을 반복(폴백까지 소진)한다.
+            has_searchable_attachments = False
             try:
-                has_attachments = bool(
-                    await asyncio.to_thread(
-                        attachment_service.get_conversation_attachments, conv_id
-                    )
+                conv_attachments = await asyncio.to_thread(
+                    attachment_service.get_conversation_attachments, conv_id
+                )
+                has_searchable_attachments = any(
+                    (getattr(a, "token_count", None) or 0) > 0 for a in conv_attachments
                 )
             except Exception:
                 log.warning("첨부 보유 여부 조회 실패 conv_id=%s", conv_id, exc_info=True)
-                has_attachments = False
 
-            if has_attachments or use_kb:
-                tool_config = tool_executor.build_tool_config()
+            tool_config = None
+            if has_searchable_attachments or use_kb:
+                tool_config = tool_executor.build_tool_config(
+                    include_attachment=has_searchable_attachments,
+                    include_kb=bool(use_kb),
+                )
+
+            if tool_config:
 
                 def _tool_exec(name: str, tool_input: dict) -> dict:
                     # 검색 범위는 사용자의 UI 선택(kb_modes)으로 결정. kb_scope 는 LLM 에

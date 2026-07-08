@@ -109,10 +109,27 @@ KB_SEARCH_TOOL: dict = {
 }
 
 
-def build_tool_config() -> dict:
-    """Bedrock Converse 의 toolConfig 파라미터 전체를 반환"""
+def build_tool_config(
+    *, include_attachment: bool = True, include_kb: bool = True
+) -> dict | None:
+    """Bedrock Converse 의 toolConfig 파라미터 반환.
+
+    적용 가능한 도구만 포함한다. 검색 가능한(텍스트) 첨부가 없는데
+    search_attachment 를 노출하면 LLM 이 이미지 전용 첨부에 대고 빈 검색을
+    반복(empty_limit/max_iter 폴백까지 소진)하므로, 해당 도구는 제외한다.
+
+    Returns:
+        toolConfig dict, 또는 노출할 도구가 없으면 None (호출자는 일반 스트리밍).
+    """
+    tools: list[dict] = []
+    if include_attachment:
+        tools.append(SEARCH_ATTACHMENT_TOOL)
+    if include_kb:
+        tools.append(KB_SEARCH_TOOL)
+    if not tools:
+        return None
     return {
-        "tools": [SEARCH_ATTACHMENT_TOOL, KB_SEARCH_TOOL],
+        "tools": tools,
         # auto: LLM 이 자율적으로 사용 여부 결정
         "toolChoice": {"auto": {}},
     }
