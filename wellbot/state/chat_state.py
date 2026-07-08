@@ -1605,9 +1605,10 @@ class ChatState(rx.State):
         while time.time() < deadline:
             async with self:
                 self._sync_attachments_from_db()
-                # 모든 pending 파일이 ready 면 폴링 종료
+                # 모든 pending 파일이 종료 상태(ready 또는 failed)면 폴링 종료.
+                # (실패도 종료 상태로 취급해야 실패 시 120초 데드라인까지 헛돌지 않음)
                 if self.pending_attachments and all(
-                    a.status == "ready" for a in self.pending_attachments
+                    a.status != "processing" for a in self.pending_attachments
                 ):
                     break
                 # pending 이 비었으면(전송 완료 등) 종료

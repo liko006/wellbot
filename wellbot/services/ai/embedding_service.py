@@ -294,10 +294,17 @@ def load_conversation_index(smry_id: str) -> ConversationIndex:
 
         # token_count is None: 처리 중 - S3 파생물 미생성
         # token_count == 0: 이미지·파싱 결과 비어있음 - S3 파생물 없음
-        if not att.token_count:
+        # token_count < 0 : 처리 실패 - S3 파생물 없음
+        if not att.token_count or att.token_count < 0:
             if att.token_count is None:
                 log.info(
                     "load_conversation_index: 처리 미완료 스킵 file=%s (file_no=%d)",
+                    att.file_name, att.file_no,
+                )
+                missing_files.append(att.file_name)
+            elif att.token_count < 0:
+                log.info(
+                    "load_conversation_index: 처리 실패 스킵 file=%s (file_no=%d)",
                     att.file_name, att.file_no,
                 )
                 missing_files.append(att.file_name)

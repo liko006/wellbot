@@ -15,6 +15,15 @@ from wellbot.state.chat_models import AttachmentInfo
 log = logging.getLogger(__name__)
 
 
+def _status_from_token_count(token_count: int | None) -> str:
+    """token_count → UI 상태. None=처리중 / 음수=실패 / 0 이상=완료."""
+    if token_count is None:
+        return "processing"
+    if token_count < 0:
+        return "failed"
+    return "ready"
+
+
 def row_to_attachment_info(row: Any) -> AttachmentInfo:
     """ORM/DTO 행을 AttachmentInfo 로 변환"""
     return AttachmentInfo(
@@ -22,7 +31,7 @@ def row_to_attachment_info(row: Any) -> AttachmentInfo:
         name=row.file_name,
         mime=row.mime,
         token_count=row.token_count or 0,
-        status="ready" if row.token_count is not None else "processing",
+        status=_status_from_token_count(row.token_count),
     )
 
 

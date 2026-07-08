@@ -33,6 +33,11 @@ from wellbot.services.files import chunker, file_parser, storage_service
 
 log = logging.getLogger(__name__)
 
+# atch_file_tokn_ecnt(=token_count) 센티널.
+#   None: 처리 중 / 0 이상: 처리 완료(0=이미지·빈 결과) / 음수: 처리 실패
+# 실패를 영속화해 UI 가 '처리중'에 무한 대기하지 않고 '실패'로 표시되게 한다.
+TOKEN_COUNT_FAILED = -1
+
 
 # ── 데이터 전송 객체 ──
 
@@ -264,6 +269,11 @@ def process_attachment(file_no: int, emp_no: str) -> bool:
 
     except Exception as exc:
         log.exception("process_attachment 실패: file_no=%s err=%s", file_no, exc)
+        # 실패 상태를 영속화 → UI 가 '처리중'에 멈추지 않고 '실패'로 표시.
+        try:
+            _update_token_count(file_no, emp_no, TOKEN_COUNT_FAILED)
+        except Exception:
+            log.warning("첨부 실패 상태 마킹 실패 file_no=%s", file_no, exc_info=True)
         return False
     finally:
         try:
