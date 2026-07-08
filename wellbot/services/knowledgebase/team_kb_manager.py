@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Optional
 
 from wellbot.constants import KST
+from wellbot.logger import log_context
 from wellbot.models import AgntMmryUseN, EmpM
 
 from wellbot.services.core.database import get_session
@@ -236,6 +237,7 @@ def upload_and_ingest(
     팀 파일 업로드 + KB 생성(최초) + Ingestion
     진행 중인 ingestion 이 있으면 에러 반환
     """
+    log_context.bind(emp_no=emp_no)
     kb_info = get_or_create_team_kb(emp_no, dept_cd)
     kb_id = kb_info["kb_id"]
     data_source_id = kb_info["data_source_id"]

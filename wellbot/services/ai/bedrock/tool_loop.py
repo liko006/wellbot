@@ -7,14 +7,45 @@ import json
 import logging
 from typing import Any
 
+from wellbot.constants import READ_ATTACHMENT_MAX_TOKENS, TOOL_RESULT_MAX_TOKENS
 from wellbot.services.ai.bedrock.converse import (
     adrain_generator,
     build_messages,
     stream_one_turn_iter,
 )
 from wellbot.services.core.settings import ModelConfig
+from wellbot.services.files.chunker import estimate_tokens
 
 log = logging.getLogger(__name__)
+
+
+def _cap_tool_result_text(sanitized: Any, name: str = "") -> Any:
+    """tool 결과 텍스트를 토큰 예산으로 절단.
+
+    루프가 tool_result 를 매 반복 재전송하므로 대용량 결과(kb_search 등)를
+    그대로 두면 입력 토큰이 폭증한다. 검색 결과는 점수 내림차순이라 뒤쪽(저관련)을
+    잘라 상위 청크를 보존한다.
+
+    read_attachment(전체 문서 읽기)는 성격상 큰 예산(READ_ATTACHMENT_MAX_TOKENS)을
+    적용하고, 이미 tool 자체가 예산 내로 잘라 반환하므로 여기선 안전망 역할.
+    """
+    if not isinstance(sanitized, dict):
+        return sanitized
+    text = sanitized.get("text")
+    if not isinstance(text, str) or not text:
+        return sanitized
+    cap = READ_ATTACHMENT_MAX_TOKENS if name == "read_attachment" else TOOL_RESULT_MAX_TOKENS
+    total = estimate_tokens(text)
+    if total <= cap:
+        return sanitized
+    density = total / max(1, len(text))  # 토큰/문자
+    keep_chars = max(1, int(cap / density))
+    trimmed = text[:keep_chars].rstrip()
+    log.info(
+        "tool_result 절단: name=%s est %d > %d 토큰 → %d자 유지",
+        name or "?", total, cap, len(trimmed),
+    )
+    return {**sanitized, "text": trimmed + "\n\n…(관련도 낮은 이후 결과는 생략됨)"}
 
 
 def _call_signature(name: str, tool_input: dict) -> tuple:
@@ -208,7 +239,7 @@ async def astream_chat_with_tools(
             else:
                 empty_streak = 0
 
-            sanitized = _strip_tool_result_meta(result_content)
+            sanitized = _cap_tool_result_text(_strip_tool_result_meta(result_content), name)
             tool_result_blocks.append({
                 "toolResult": {
                     "toolUseId": tu.get("toolUseId", ""),

@@ -7,9 +7,30 @@ ChatState 의 send_message 가 LLM 호출 직전 system prompt 에
 from __future__ import annotations
 
 import textwrap
+from datetime import datetime
 
+from wellbot.constants import KST
 from wellbot.services.files import attachment_service
 from wellbot.state.chat_models import mime_to_label
+
+_WEEKDAYS_KO = ("월", "화", "수", "목", "금", "토", "일")
+
+
+def augment_system_with_datetime(base_prompt: str) -> str:
+    """system prompt 맨 앞에 현재 시각(KST) + 상대 날짜 해석 지침 주입.
+
+    LLM 은 현재 시각을 모르므로, 매 턴 재조립되는 system prompt 에 최신 KST 를
+    넣어 '오늘/지금/이번 주' 등 상대 표현을 올바르게 해석하도록 한다.
+    """
+    now = datetime.now(KST)
+    stamp = now.strftime("%Y-%m-%d") + f" ({_WEEKDAYS_KO[now.weekday()]}) " + now.strftime("%H:%M")
+    block = (
+        "## 현재 시각\n"
+        f"현재 시각(KST): {stamp}\n"
+        "사용자가 '오늘', '지금', '이번 주', '지난달', 'N일 후' 등 상대적 시점을 말하면 "
+        "반드시 위 현재 시각을 기준으로 계산·해석하세요."
+    )
+    return f"{block}\n\n{base_prompt}"
 
 
 def augment_system_with_attachments(base_prompt: str, conv_id: str) -> str:

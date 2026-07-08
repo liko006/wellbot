@@ -9,6 +9,7 @@ import bcrypt
 import jwt
 
 from wellbot.constants import KST, LOCK_DURATION_MINUTES, LOCK_THRESHOLD, TOKEN_EXPIRE_HOURS
+from wellbot.logger import log_context
 from wellbot.models.auth_token import AuthToken
 from wellbot.models.dept import Dept
 from wellbot.models.employee import Employee
@@ -48,6 +49,8 @@ def authenticate_user(emp_no: str, password: str) -> dict:
         {"success": True, "user": {...}} 또는
         {"success": False, "error": "에러 메시지"}
     """
+    # 로그 상관관계: 로그인 시도는 Reflex 이벤트라 API 스코프가 없어 emp_no 를 직접 바인딩
+    log_context.bind(emp_no=emp_no)
     with get_session() as session:
         emp = session.get(Employee, emp_no)
         if not emp:
@@ -55,6 +58,12 @@ def authenticate_user(emp_no: str, password: str) -> dict:
             return {"success": False, "error": "사원번호 또는 비밀번호가 올바르지 않습니다."}
 
         if emp.acnt_sts_nm != "ACTIVE":
+            if emp.acnt_sts_nm == "PENDING":
+                log.info("login denied: pending emp_no=%s", emp_no)
+                return {
+                    "success": False,
+                    "error": "가입 승인 대기 중입니다. 관리자 승인 후 이용할 수 있습니다.",
+                }
             log.info("login denied: inactive emp_no=%s status=%s", emp_no, emp.acnt_sts_nm)
             return {"success": False, "error": "비활성 계정입니다. 관리자에게 문의하세요."}
 
@@ -76,6 +85,8 @@ def authenticate_user(emp_no: str, password: str) -> dict:
             password.encode(), emp.ecr_pwd.encode()
         ):
             emp.lgn_flr_tscnt = int(emp.lgn_flr_tscnt or 0) + 1
+            emp.upd_dtm = datetime.now(KST)
+            emp.uppr_id = emp_no
             if int(emp.lgn_flr_tscnt) >= LOCK_THRESHOLD:
                 emp.lock_dsbn_dtm = datetime.now(KST) + timedelta(
                     minutes=LOCK_DURATION_MINUTES
@@ -84,13 +95,18 @@ def authenticate_user(emp_no: str, password: str) -> dict:
                     "account locked: emp_no=%s fail_count=%s lock_min=%s",
                     emp_no, emp.lgn_flr_tscnt, LOCK_DURATION_MINUTES,
                 )
-            else:
-                log.info(
-                    "login failed: bad password emp_no=%s fail_count=%s",
-                    emp_no, emp.lgn_flr_tscnt,
-                )
-            emp.upd_dtm = datetime.now(KST)
-            emp.uppr_id = emp_no
+                # 잠금을 유발한 시도에서 바로 잠금 사실을 안내 (다음 시도까지 미루지 않음)
+                return {
+                    "success": False,
+                    "error": (
+                        f"로그인 실패가 {LOCK_THRESHOLD}회 누적되어 계정이 잠겼습니다. "
+                        f"{LOCK_DURATION_MINUTES}분 후 다시 시도하거나 관리자에게 문의하세요."
+                    ),
+                }
+            log.info(
+                "login failed: bad password emp_no=%s fail_count=%s",
+                emp_no, emp.lgn_flr_tscnt,
+            )
             return {"success": False, "error": "사원번호 또는 비밀번호가 올바르지 않습니다."}
 
         emp.lgn_flr_tscnt = 0
@@ -113,6 +129,7 @@ def authenticate_user(emp_no: str, password: str) -> dict:
 
 def create_session_token(emp_no: str) -> str:
     """세션 토큰(JWT) 발급 및 DB 저장"""
+    log_context.bind(emp_no=emp_no)
     now = datetime.now(KST)
     expires = now + timedelta(hours=TOKEN_EXPIRE_HOURS)
     token_id = uuid.uuid4().hex[:50]
@@ -194,6 +211,7 @@ def invalidate_session_token(token: str) -> bool:
     if not token_id or not emp_no:
         return False
 
+    log_context.bind(emp_no=emp_no)
     now = datetime.now(KST)
     with get_session() as session:
         record = session.get(AuthToken, (token_id, emp_no))
@@ -222,6 +240,7 @@ def register_user(
     if not emp_no or not password or not user_nm:
         return {"success": False, "error": "모든 필드를 입력해주세요."}
 
+    log_context.bind(emp_no=emp_no)
     with get_session() as session:
         existing = session.get(Employee, emp_no)
         if existing:

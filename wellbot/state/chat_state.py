@@ -59,6 +59,7 @@ from wellbot.state.chat_helpers.download_script import (
 )
 from wellbot.state.chat_helpers.system_prompt import (
     augment_system_with_attachments,
+    augment_system_with_datetime,
     augment_system_with_kb,
 )
 from wellbot.state.chat_helpers.upload_script import build_upload_script
@@ -1598,16 +1599,30 @@ class ChatState(rx.State):
         모든 pending 파일이 ready 상태가 되면 조기 종료.
         대용량 파일 처리를 고려해 최대 120초까지 폴링.
         """
-        deadline = time.time() + 120.0
+        start = time.time()
+        deadline = start + 120.0
+        # 트리거 시점의 기존 첨부 수. 이보다 늘어나야(=새 업로드가 DB 안착) 조기 종료 허용.
+        # (붙여넣은 이미지가 이미 ready 인 상태에서 파일추가 시, 새 파일이 아직 DB 에
+        #  없을 때 'all ready' 로 조기 종료돼 새 파일이 UI 에 안 뜨던 버그 방지)
+        start_count = len(self.pending_attachments)
+        settle_grace = 8.0  # 새 업로드가 안 올라오면(취소 등) 이 시간 후 종료 허용
         # 업로드 직후 칩이 빨리 뜨도록 처음엔 촘촘히 폴링하고 점차 백오프.
         # (이미지는 파싱을 건너뛰어 거의 즉시 ready 가 되므로 초기 응답성이 중요)
         interval = 0.3
         while time.time() < deadline:
             async with self:
                 self._sync_attachments_from_db()
-                # 모든 pending 파일이 ready 면 폴링 종료
-                if self.pending_attachments and all(
-                    a.status == "ready" for a in self.pending_attachments
+                # 새 업로드 안착(개수 증가) 또는 grace 경과 또는 기존 첨부 없음(빈 시작)일 때만
+                # 조기 종료 허용 — 인플라이트 업로드를 놓치지 않도록.
+                can_exit = (
+                    start_count == 0
+                    or len(self.pending_attachments) > start_count
+                    or (time.time() - start) >= settle_grace
+                )
+                # 모든 pending 파일이 종료 상태(ready 또는 failed)면 폴링 종료.
+                # (실패도 종료 상태로 취급해야 실패 시 120초 데드라인까지 헛돌지 않음)
+                if can_exit and self.pending_attachments and all(
+                    a.status != "processing" for a in self.pending_attachments
                 ):
                     break
                 # pending 이 비었으면(전송 완료 등) 종료
@@ -1880,7 +1895,9 @@ class ChatState(rx.State):
             base_system = prompt.content if prompt else cfg.system_prompt
 
             # 대화 전체 첨부파일 메타를 system prompt 에 추가
-            system_prompt = augment_system_with_attachments(base_system, conv_id)
+            # 현재 시각(KST) 주입 → 상대 날짜 표현 해석. 매 턴 최신값으로 갱신.
+            system_prompt = augment_system_with_datetime(base_system)
+            system_prompt = augment_system_with_attachments(system_prompt, conv_id)
             # KB 활성화 시 검색 지침 + 인용 표기 규칙 추가
             if use_kb and kb_modes:
                 system_prompt = augment_system_with_kb(system_prompt, kb_modes)
@@ -1890,20 +1907,28 @@ class ChatState(rx.State):
             if image_blocks and api_messages:
                 api_messages[-1] = {**api_messages[-1], "image_blocks": image_blocks}
 
-            # 대화에 첨부파일이 있으면 tool use(search_attachment) 활성화
-            has_attachments = False
+            # 검색 가능한(텍스트) 첨부가 있을 때만 search_attachment 활성화.
+            # token_count>0 = 텍스트 추출·청킹 완료. 이미지(0)·처리중(None)은 검색 대상이
+            # 아니므로 제외 — 노출하면 LLM 이 빈 검색을 반복(폴백까지 소진)한다.
+            has_searchable_attachments = False
             try:
-                has_attachments = bool(
-                    await asyncio.to_thread(
-                        attachment_service.get_conversation_attachments, conv_id
-                    )
+                conv_attachments = await asyncio.to_thread(
+                    attachment_service.get_conversation_attachments, conv_id
+                )
+                has_searchable_attachments = any(
+                    (getattr(a, "token_count", None) or 0) > 0 for a in conv_attachments
                 )
             except Exception:
                 log.warning("첨부 보유 여부 조회 실패 conv_id=%s", conv_id, exc_info=True)
-                has_attachments = False
 
-            if has_attachments or use_kb:
-                tool_config = tool_executor.build_tool_config()
+            tool_config = None
+            if has_searchable_attachments or use_kb:
+                tool_config = tool_executor.build_tool_config(
+                    include_attachment=has_searchable_attachments,
+                    include_kb=bool(use_kb),
+                )
+
+            if tool_config:
 
                 def _tool_exec(name: str, tool_input: dict) -> dict:
                     # 검색 범위는 사용자의 UI 선택(kb_modes)으로 결정. kb_scope 는 LLM 에
@@ -2016,6 +2041,21 @@ class ChatState(rx.State):
             if stream_interrupted and content:
                 content += "\n\n*[생성이 중단되었습니다]*"
 
+            # 빈 응답 방지: 텍스트 없이 정상 종료(콘텐츠 필터 차단 등)면 침묵 대신 안내.
+            # content_filtered 는 스트림에서 별도 신호를 주지 않으므로 '비었고 & 중단 아님'
+            # 으로 포괄 감지한다. (오류 케이스는 위 except 에서 이미 content 설정)
+            used_empty_fallback = False
+            if not content.strip() and not stream_interrupted:
+                used_empty_fallback = True
+                content = (
+                    "요청은 처리했지만 표시할 답변을 받지 못했어요. "
+                    "안전 정책에 의해 응답이 차단되었거나 일시적인 문제일 수 있어요. "
+                    "질문 표현을 조금 바꿔 다시 시도해 주세요."
+                )
+                log.warning(
+                    "빈 응답 대체 메시지 적용 conv_id=%s model=%s", conv_id, model_name
+                )
+
             # 출처 필터링: LLM 이 본문에 [N] 인용 마커를 표기한 청크만 유지
             # 1) 본문에서 [1], [1, 3], [1][3] 등 인용 마커의 번호 추출
             # 2) 마커가 있으면 → 인용된 ranks 만 유지
@@ -2033,7 +2073,10 @@ class ChatState(rx.State):
                     except ValueError:
                         pass
 
-            if cited_ranks:
+            if used_empty_fallback:
+                # 답변이 아닌 안내 메시지엔 출처를 붙이지 않음
+                final_sources = []
+            elif cited_ranks:
                 final_sources = [
                     s for s in all_sources
                     if any(r in cited_ranks for r in (s.get("ranks") or []))

@@ -264,6 +264,74 @@ def get_cache() -> FaissCache:
 # ── 대화별 인덱스 로드 + 검색 ──
 
 
+def _filter_attachments(atts, file_ids, file_names):
+    """file_ids(정확) 우선, 없으면 file_names(부분매칭), 둘 다 없으면 전체."""
+    if file_ids:
+        idset = set(file_ids)
+        return [a for a in atts if a.file_no in idset]
+    if file_names:
+        lowered = [n.lower() for n in file_names]
+        return [a for a in atts if any(l in (a.file_name or "").lower() for l in lowered)]
+    return list(atts)
+
+
+def load_conversation_texts(
+    smry_id: str,
+    file_ids: list[int] | None = None,
+    file_names: list[str] | None = None,
+) -> dict:
+    """대화 첨부의 '전체 텍스트'를 로드 (read_attachment 용).
+
+    각 파일의 text.txt 파생물을 GET, 없으면(레거시) chunks.jsonl 재조립으로 폴백.
+    처리중(None)·실패(<0) 파일은 missing 으로 표기하고 스킵.
+
+    Returns:
+        {"files": [{"file_no","file_name","text"}...], "missing_files": [...], "fallback": str|None}
+    """
+    from wellbot.services.files import attachment_service
+    from wellbot.services.files import chunker as chunker_mod
+    from wellbot.services.files import storage_service
+
+    atts = attachment_service.get_conversation_attachments(smry_id)
+    selected = _filter_attachments(atts, file_ids, file_names)
+    fallback = None
+    if (file_ids or file_names) and not selected:
+        selected = list(atts)
+        fallback = "지정한 파일을 찾지 못해 대화의 모든 첨부를 대상으로 읽음"
+
+    files: list[dict] = []
+    missing: list[str] = []
+    for att in selected:
+        if not att.s3_prefix:
+            continue  # 이미지 등 파생물 없음
+        if not att.token_count or att.token_count < 0:
+            if att.token_count is None or att.token_count < 0:
+                missing.append(att.file_name)  # 처리중/실패
+            continue
+        text: str | None = None
+        try:
+            text = storage_service.download_bytes(
+                f"{att.s3_prefix}text.txt"
+            ).decode("utf-8", errors="replace")
+        except Exception:
+            # 레거시(text.txt 미생성): chunks 재조립 (overlap 중첩 포함 가능)
+            try:
+                cb = storage_service.download_bytes(f"{att.s3_prefix}chunks.jsonl")
+                text = "\n".join(c.text for c in chunker_mod.chunks_from_jsonl(cb))
+            except Exception as exc:
+                log.warning(
+                    "load_conversation_texts: 전체텍스트 로드 실패 file=%s err=%s",
+                    att.file_name, exc,
+                )
+                missing.append(att.file_name)
+                continue
+        if text and text.strip():
+            files.append(
+                {"file_no": att.file_no, "file_name": att.file_name, "text": text}
+            )
+    return {"files": files, "missing_files": missing, "fallback": fallback}
+
+
 def load_conversation_index(smry_id: str) -> ConversationIndex:
     """대화에 속한 모든 파일의 청크/인덱스를 S3 에서 로드해 통합.
 
@@ -294,10 +362,17 @@ def load_conversation_index(smry_id: str) -> ConversationIndex:
 
         # token_count is None: 처리 중 - S3 파생물 미생성
         # token_count == 0: 이미지·파싱 결과 비어있음 - S3 파생물 없음
-        if not att.token_count:
+        # token_count < 0 : 처리 실패 - S3 파생물 없음
+        if not att.token_count or att.token_count < 0:
             if att.token_count is None:
                 log.info(
                     "load_conversation_index: 처리 미완료 스킵 file=%s (file_no=%d)",
+                    att.file_name, att.file_no,
+                )
+                missing_files.append(att.file_name)
+            elif att.token_count < 0:
+                log.info(
+                    "load_conversation_index: 처리 실패 스킵 file=%s (file_no=%d)",
                     att.file_name, att.file_no,
                 )
                 missing_files.append(att.file_name)

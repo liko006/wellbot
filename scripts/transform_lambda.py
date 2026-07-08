@@ -307,29 +307,44 @@ def _chunk_table_rows(
     batch_start = 0
     cur_chars = 0
 
+    def _emit(text: str, row_start: int, row_end: int) -> None:
+        if not text.strip():
+            return
+        meta = {
+            "source":    source,
+            "doc_type":  doc_type,
+            "row_start": row_start,
+            "row_end":   row_end,
+            "columns":   headers_ext,
+        }
+        if extra_meta:
+            meta.update(extra_meta)
+        chunks.append(Chunk(text=text, metadata=meta))
+
     def _flush(end_idx: int) -> None:
         nonlocal batch, cur_chars
-        rows_text = "\n".join(batch)
-        if rows_text.strip():
-            meta = {
-                "source":    source,
-                "doc_type":  doc_type,
-                "row_start": batch_start,
-                "row_end":   end_idx - 1,
-                "columns":   headers_ext,
-            }
-            if extra_meta:
-                meta.update(extra_meta)
-            chunks.append(Chunk(text=rows_text, metadata=meta))
+        if batch:
+            _emit("\n".join(batch), batch_start, end_idx - 1)
         batch = []
         cur_chars = 0
 
     for i, row in enumerate(rows):
         rt = _row_text(row)
-        # 이미 쌓인 행이 있을 때, 새 행을 넣으면 행 수/문자 상한을 넘으면 먼저 flush.
-        # batch 가 비어 있으면(단일 행이 상한 초과) 그 행 하나로라도 청크를 만든다(무한루프 방지).
+        # 단일 행이 문자 상한을 초과(넓은 표·긴 셀)하면 그 행을 문자 단위로 쪼갠다.
+        # 과거엔 이런 행을 통째로 한 청크로 내보내 Titan v2 8192 토큰 한도를 넘겨
+        # xlsx 인제스트가 FAILED 되었다 — '단일 행 미분할'이 근본 원인이었다.
+        if len(rt) > TABLE_CHUNK_CHARS:
+            if batch:
+                _flush(i)
+            for j in range(0, len(rt), TABLE_CHUNK_CHARS):
+                _emit(rt[j:j + TABLE_CHUNK_CHARS], i, i)
+            batch_start = i + 1
+            continue
+        # 행 수/문자 상한 중 먼저 걸리는 쪽에서 청크를 끊는다.
         if batch and (len(batch) >= rpc or cur_chars + len(rt) + 1 > TABLE_CHUNK_CHARS):
             _flush(i)
+            batch_start = i
+        if not batch:
             batch_start = i
         batch.append(rt)
         cur_chars += len(rt) + 1

@@ -303,6 +303,24 @@ class AdminState(rx.State):
         except Exception as e:
             self.error_message = str(e)
 
+    def approve_employee(self, emp_no: str) -> None:
+        """가입 대기 사원 승인 (PENDING → ACTIVE)"""
+        try:
+            admin_service.approve_employee(emp_no)
+            self.load_employees()
+            self.success_message = f"'{emp_no}' 사원을 승인했습니다."
+        except Exception as e:
+            self.error_message = str(e)
+
+    def unlock_employee(self, emp_no: str) -> None:
+        """로그인 실패/잠금 해제"""
+        try:
+            admin_service.unlock_employee(emp_no)
+            self.load_employees()
+            self.success_message = f"'{emp_no}' 계정 잠금을 해제했습니다."
+        except Exception as e:
+            self.error_message = str(e)
+
     def save_agent(self) -> None:
         """에이전트 생성/수정"""
         try:

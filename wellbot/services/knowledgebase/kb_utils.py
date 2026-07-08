@@ -973,6 +973,22 @@ def delete_files_from_kb(bucket: str, prefix: str, filenames: list[str]) -> None
 # ──────────────────────────────────────────────
 # Ingestion 상태 폴링
 # ──────────────────────────────────────────────
+
+# Bedrock failureReasons 는 실패 문서 목록을 통째로 담은 장문 사유를 반환할 때가
+# 있어, 그대로 로그에 남기면 JSON 로그 1줄이 수십 KB 로 비대해진다(파일 회전 가속·
+# 대시보드 노이즈). 사유당·전체 길이를 제한한다.
+_FAIL_REASON_MAX_CHARS = 300
+_FAIL_DETAIL_MAX_CHARS = 800
+
+
+def _cap_fail_detail(reasons: list) -> str:
+    """failureReasons 를 사유당/전체 길이 제한으로 요약."""
+    detail = "; ".join(str(r)[:_FAIL_REASON_MAX_CHARS] for r in (reasons or [])[:3])
+    if len(detail) > _FAIL_DETAIL_MAX_CHARS:
+        detail = detail[:_FAIL_DETAIL_MAX_CHARS] + f"…(+{len(detail) - _FAIL_DETAIL_MAX_CHARS}자 생략)"
+    return detail
+
+
 def poll_ingestion_status(
     kb_id: str,
     data_source_id: str,
@@ -1005,7 +1021,7 @@ def poll_ingestion_status(
             if status != "COMPLETE":
                 reasons = job.get("failureReasons", [])
                 if reasons:
-                    detail = "; ".join(reasons[:3])
+                    detail = _cap_fail_detail(reasons)
                     log.warning("Bedrock Ingestion 실패: %s", detail)
                     return f"{status}: {detail}"
             num_failed = stats.get("numberOfDocumentsFailed", 0)

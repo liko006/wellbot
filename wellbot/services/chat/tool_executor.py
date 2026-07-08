@@ -13,8 +13,9 @@ import json
 import logging
 from typing import Any
 
-from wellbot.constants import KB_SEARCH_TOP_K, SEARCH_TOP_K
+from wellbot.constants import KB_SEARCH_TOP_K, READ_ATTACHMENT_MAX_TOKENS, SEARCH_TOP_K
 from wellbot.services.ai import embedding_service
+from wellbot.services.files.chunker import estimate_tokens
 from wellbot.services.knowledgebase import retrieve as kb_retrieve
 
 log = logging.getLogger(__name__)
@@ -71,6 +72,48 @@ SEARCH_ATTACHMENT_TOOL: dict = {
 }
 
 
+READ_ATTACHMENT_TOOL: dict = {
+    "toolSpec": {
+        "name": "read_attachment",
+        "description": (
+            "현재 대화에 첨부된 문서의 전체 내용을 처음부터 끝까지 읽습니다. "
+            "문서 전체를 대상으로 하는 작업(전체 요약, 번역, 전수 검토, 목차·구조 파악 등)에 사용하세요. "
+            "특정 사실·키워드만 필요하면 search_attachment 를 쓰세요. "
+            "여러 파일이 필요하면 file_ids 에 모두 포함하세요. "
+            "문서가 매우 길어 결과가 잘리면, 반환된 안내의 offset 값으로 다시 호출해 이어읽으세요."
+        ),
+        "inputSchema": {
+            "json": {
+                "type": "object",
+                "properties": {
+                    "file_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": (
+                            "읽을 파일의 정수 ID 배열. system prompt 의 [#NNN] 숫자. "
+                            "생략하면 대화의 모든 첨부를 읽음."
+                        ),
+                    },
+                    "file_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "fallback. file_ids 를 모를 때만 사용(부분 매칭).",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": (
+                            "이어읽기 시작 위치(문자 오프셋). 기본 0. "
+                            "직전 호출 결과가 잘렸을 때만 안내된 값으로 사용."
+                        ),
+                    },
+                },
+                "required": [],
+            }
+        },
+    }
+}
+
+
 KB_SEARCH_TOOL: dict = {
     "toolSpec": {
         "name": "kb_search",
@@ -109,10 +152,28 @@ KB_SEARCH_TOOL: dict = {
 }
 
 
-def build_tool_config() -> dict:
-    """Bedrock Converse 의 toolConfig 파라미터 전체를 반환"""
+def build_tool_config(
+    *, include_attachment: bool = True, include_kb: bool = True
+) -> dict | None:
+    """Bedrock Converse 의 toolConfig 파라미터 반환.
+
+    적용 가능한 도구만 포함한다. 검색 가능한(텍스트) 첨부가 없는데
+    search_attachment 를 노출하면 LLM 이 이미지 전용 첨부에 대고 빈 검색을
+    반복(empty_limit/max_iter 폴백까지 소진)하므로, 해당 도구는 제외한다.
+
+    Returns:
+        toolConfig dict, 또는 노출할 도구가 없으면 None (호출자는 일반 스트리밍).
+    """
+    tools: list[dict] = []
+    if include_attachment:
+        tools.append(SEARCH_ATTACHMENT_TOOL)
+        tools.append(READ_ATTACHMENT_TOOL)
+    if include_kb:
+        tools.append(KB_SEARCH_TOOL)
+    if not tools:
+        return None
     return {
-        "tools": [SEARCH_ATTACHMENT_TOOL, KB_SEARCH_TOOL],
+        "tools": tools,
         # auto: LLM 이 자율적으로 사용 여부 결정
         "toolChoice": {"auto": {}},
     }
@@ -177,6 +238,8 @@ def execute_tool(
     try:
         if tool_name == "search_attachment":
             return _run_search_attachment(tool_input, smry_id)
+        if tool_name == "read_attachment":
+            return _run_read_attachment(tool_input, smry_id)
         if tool_name == "kb_search":
             return _run_kb_search(tool_input, emp_no)
         log.warning("알 수 없는 tool 호출: %s", tool_name)
@@ -246,6 +309,89 @@ def _run_search_attachment(tool_input: dict[str, Any], smry_id: str) -> dict:
         "_meta": {
             "result_count": len(results),
             "fallback": fallback,
+            "missing_files": list(missing),
+        },
+    }
+
+
+def _run_read_attachment(tool_input: dict[str, Any], smry_id: str) -> dict:
+    """read_attachment 실행 — 첨부 문서 전체 텍스트 반환(예산 내), 초과 시 잘림+이어읽기 안내."""
+    raw_file_ids = tool_input.get("file_ids") or []
+    file_ids: list[int] | None = None
+    if isinstance(raw_file_ids, list):
+        coerced: list[int] = []
+        for v in raw_file_ids:
+            try:
+                coerced.append(int(v))
+            except (TypeError, ValueError):
+                continue
+        file_ids = coerced or None
+
+    raw_file_names = tool_input.get("file_names") or []
+    file_names = [
+        n for n in raw_file_names if isinstance(n, str) and n.strip()
+    ] or None
+
+    try:
+        offset = max(0, int(tool_input.get("offset") or 0))
+    except (TypeError, ValueError):
+        offset = 0
+
+    data = embedding_service.load_conversation_texts(
+        smry_id, file_ids=file_ids, file_names=file_names
+    )
+    files = data.get("files", [])
+    missing = data.get("missing_files") or []
+    fallback = data.get("fallback")
+
+    if not files:
+        note = "읽을 수 있는 첨부 문서가 없습니다."
+        if missing:
+            note += " (처리 중이거나 실패한 파일: " + ", ".join(missing) + ")"
+        return {"text": note, "_meta": {"result_count": 0, "missing_files": list(missing)}}
+
+    sections = [
+        f"===== 파일: {f['file_name']} (#{f['file_no']}) =====\n{f['text']}"
+        for f in files
+    ]
+    full = "\n\n".join(sections)
+    total_chars = len(full)
+    body = full[offset:] if offset < total_chars else ""
+
+    truncated = False
+    next_offset = 0
+    if estimate_tokens(body) > READ_ATTACHMENT_MAX_TOKENS:
+        density = estimate_tokens(body) / max(1, len(body))  # 토큰/문자
+        keep = max(1, int(READ_ATTACHMENT_MAX_TOKENS / density))
+        body = body[:keep]
+        truncated = True
+        next_offset = offset + keep
+
+    header = [
+        f"첨부 문서 {len(files)}개, 전체 {total_chars:,}자 중 "
+        f"{offset:,}~{offset + len(body):,}자 구간."
+    ]
+    if fallback:
+        header.append(f"(참고: {fallback})")
+    if missing:
+        header.append("(참고: 제외된 파일 - " + ", ".join(missing) + ")")
+    text = "\n".join(header) + "\n\n" + body
+    if truncated:
+        text += (
+            f"\n\n…(문서가 길어 여기까지만 표시했습니다. 이어읽으려면 "
+            f"offset={next_offset} 로 read_attachment 를 다시 호출하세요.)"
+        )
+
+    log.info(
+        "read_attachment: smry=%s files=%d offset=%d chars=%d truncated=%s "
+        "(fallback=%s, missing=%d)",
+        smry_id, len(files), offset, len(body), truncated, fallback, len(missing),
+    )
+    return {
+        "text": text,
+        "_meta": {
+            "result_count": len(files),
+            "truncated": truncated,
             "missing_files": list(missing),
         },
     }

@@ -8,11 +8,20 @@ from __future__ import annotations
 import logging
 from typing import Any, Iterable
 
-from wellbot.services.ai.bedrock import image_format
+from wellbot.services.ai.bedrock import fit_image_for_bedrock, image_format
 from wellbot.services.files import attachment_service
 from wellbot.state.chat_models import AttachmentInfo
 
 log = logging.getLogger(__name__)
+
+
+def _status_from_token_count(token_count: int | None) -> str:
+    """token_count → UI 상태. None=처리중 / 음수=실패 / 0 이상=완료."""
+    if token_count is None:
+        return "processing"
+    if token_count < 0:
+        return "failed"
+    return "ready"
 
 
 def row_to_attachment_info(row: Any) -> AttachmentInfo:
@@ -22,7 +31,7 @@ def row_to_attachment_info(row: Any) -> AttachmentInfo:
         name=row.file_name,
         mime=row.mime,
         token_count=row.token_count or 0,
-        status="ready" if row.token_count is not None else "processing",
+        status=_status_from_token_count(row.token_count),
     )
 
 
@@ -85,6 +94,12 @@ def collect_image_blocks(
             data = None
         if not data:
             continue
-        blocks.append({"format": fmt, "bytes": data})
+        # Bedrock 제약(≤5MB, ≤8000px)에 맞게 정규화 — 초과 시 하드 실패 대신 다운스케일
+        fitted = fit_image_for_bedrock(data, fmt)
+        if not fitted:
+            log.warning("이미지 '%s' 정규화 실패 → 전송 제외", a.name)
+            continue
+        out_bytes, out_fmt = fitted
+        blocks.append({"format": out_fmt, "bytes": out_bytes})
 
     return blocks

@@ -49,7 +49,8 @@ TYPOGRAPHY = {
 GLOBAL_STYLE = {
     "font_family": TYPOGRAPHY["font_family"],
     "::selection": {
-        "background_color": rx.color("accent", 5),
+        "background_color": "#cde9fb",
+        "color": "#0a2540",
     },
     "::-webkit-scrollbar": {
         "width": "6px",

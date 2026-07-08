@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from wellbot.logger import log_context
 from wellbot.services.knowledgebase.kb_utils import (
     get_s3_bucket,
     is_ingestion_in_progress,
@@ -77,6 +78,9 @@ def ingest_staged(scope: str, emp_no: str, names: list[str]) -> IngestOutcome:
       - ingestion FAILED / 예외: 여기서 raw/originals 롤백.
       - 타임아웃 / team busy: 롤백 안 함(job 이 진행 중·예정이라 소스 삭제 시 유실/깨짐).
     """
+    # run_in_executor 스레드에서는 contextvar 가 전파되지 않으므로 여기서 재바인딩
+    # (KB 인제스트/롤백 로그의 emp_no 상관관계 확보).
+    log_context.bind(emp_no=emp_no)
     bucket = get_s3_bucket()
     dept_cd: str | None = None
     if scope == "team":
