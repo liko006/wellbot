@@ -52,6 +52,7 @@ class ReportCheckerState(rx.State):
     # ── 결과 ──
     job_id: str = ""
     source_file_name: str = ""
+    _emp_no: str = ""   # 백엔드 전용 — 업로드 시 인증 세션에서 확보 (클라이언트 비노출)
     typo_errors: list[dict] = []
     consistency_errors: list[dict] = []
     attention_errors: list[dict] = []
@@ -132,7 +133,7 @@ class ReportCheckerState(rx.State):
             "reportUpload()", callback=ReportCheckerState.on_uploaded
         )
 
-    def on_uploaded(self, result):
+    async def on_uploaded(self, result):
         if isinstance(result, str):
             try:
                 result = json.loads(result)
@@ -142,6 +143,10 @@ class ReportCheckerState(rx.State):
             self.status = "error"
             self.error_message = (result or {}).get("error") or "업로드에 실패했습니다."
             return
+        # 인증 세션에서 emp_no 확보 (일반 이벤트라 get_state 자유롭게 가능).
+        # S3 키가 업로드 엔드포인트가 쓴 경로와 일치하도록 백엔드에 보관.
+        auth = await self.get_state(AuthState)
+        self._emp_no = auth.current_emp_no
         self.job_id = result["job_id"]
         self.source_file_name = result.get("filename") or self.pending_file_name
         self.status = "analyzing"
@@ -190,9 +195,8 @@ class ReportCheckerState(rx.State):
     @rx.event(background=True)
     async def analyze(self):
         """S3 원본을 읽어 분석 실행. 진행률은 큐로 받아 UI 갱신."""
-        auth = await self.get_state(AuthState)
-        emp_no = auth.current_emp_no
         async with self:
+            emp_no = self._emp_no
             job_id = self.job_id
             source_name = self.source_file_name
             dictionary = self._parse_dictionary()
