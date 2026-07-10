@@ -8,6 +8,8 @@ KB 업로드 스크립트와 동일한 backendBase 결정 규칙을 사용한다
 
 from __future__ import annotations
 
+import json
+
 REPORT_CHECKER_SCRIPT = """
 window._reportBackendBase = window._reportBackendBase || async function() {
     try {
@@ -71,3 +73,46 @@ window.reportUpload = async function() {
     }
 };
 """
+
+
+def build_report_download_script(job_id: str, filename: str) -> str:
+    """결과 HTML 다운로드 JS 본문 반환.
+
+    백엔드 프록시(POST /api/report_checker/download)로 결과 HTML 을 받아
+    a[download] 트릭으로 저장. 한글 파일명 대응(RFC 5987)은 서버 헤더가 처리하되,
+    a.download 에는 원본 파일명을 그대로 지정한다. backendBase 는 REPORT_CHECKER_SCRIPT
+    가 정의한 window._reportBackendBase 를 재사용.
+    """
+    job_js = json.dumps(job_id)
+    name_js = json.dumps(filename)
+    return f"""
+    (async function() {{
+        try {{
+            var base = (typeof window._reportBackendBase === 'function')
+                ? await window._reportBackendBase() : '';
+            var resp = await fetch(base + '/api/report_checker/download', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{job_id: {job_js}, filename: {name_js}}}),
+                credentials: 'include',
+            }});
+            if (!resp.ok) {{
+                var err = await resp.json().catch(function() {{ return {{}}; }});
+                alert(err.detail || '다운로드 실패');
+                return;
+            }}
+            var blob = await resp.blob();
+            var objUrl = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = objUrl;
+            a.download = {name_js};
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(objUrl);
+        }} catch (e) {{
+            console.error('[report download]', e);
+        }}
+    }})();
+    """

@@ -9,6 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+class AnalysisCancelled(Exception):
+    """사용자가 분석을 중단했을 때 발생 (협조적 취소)."""
+
+
 @dataclass
 class TypoError:
     """오탈자 1건."""

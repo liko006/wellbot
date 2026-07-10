@@ -199,53 +199,116 @@ _STAGE_LABEL = {
 }
 
 
+def _step(label: str, index: int, count_var=None) -> rx.Component:
+    """진행 스텝 한 줄. stage_index 와 자신의 index 를 비교해 상태 표시.
+
+    완료(stage_index > index): ✓ + (건수 또는 '완료')
+    진행중(== index): 스피너 + '현재/전체'
+    대기(< index): ○ + '대기'
+    """
+    icon = rx.cond(
+        ReportCheckerState.stage_index > index,
+        rx.icon("circle-check", size=18, color=rx.color("green", 11)),
+        rx.cond(
+            ReportCheckerState.stage_index == index,
+            rx.spinner(size="2"),
+            rx.icon("circle", size=18, color=COLORS["text_secondary"]),
+        ),
+    )
+    done_status = (
+        rx.hstack(
+            rx.text(count_var, size="2", weight="medium", color=COLORS["text_primary"]),
+            rx.text("건", size="2", color=COLORS["text_secondary"]),
+            spacing="1",
+            align="center",
+        )
+        if count_var is not None
+        else rx.text("완료", size="2", color=rx.color("green", 11))
+    )
+    active_status = rx.cond(
+        ReportCheckerState.stage_total > 0,
+        rx.text(
+            ReportCheckerState.stage_current,
+            " / ",
+            ReportCheckerState.stage_total,
+            size="2",
+            color=COLORS["text_secondary"],
+        ),
+        rx.text("진행 중", size="2", color=COLORS["text_secondary"]),
+    )
+    status = rx.cond(
+        ReportCheckerState.stage_index > index,
+        done_status,
+        rx.cond(
+            ReportCheckerState.stage_index == index,
+            active_status,
+            rx.text("대기", size="2", color=COLORS["text_secondary"]),
+        ),
+    )
+    label_color = rx.cond(
+        ReportCheckerState.stage_index >= index,
+        COLORS["text_primary"],
+        COLORS["text_secondary"],
+    )
+    return rx.hstack(
+        rx.box(icon, width="20px", display="flex", justify_content="center"),
+        rx.text(label, size="2", weight="medium", color=label_color),
+        rx.spacer(),
+        status,
+        width="100%",
+        align="center",
+        spacing="3",
+    )
+
+
 def _progress_panel() -> rx.Component:
     return _section_card(
         rx.vstack(
             rx.hstack(
                 rx.spinner(size="2"),
-                rx.text(
-                    "분석 진행 중...",
-                    size="4",
-                    weight="bold",
-                    color=COLORS["text_primary"],
-                ),
-                align="center",
-                spacing="2",
-            ),
-            rx.progress(value=ReportCheckerState.progress_pct, width="100%"),
-            rx.hstack(
-                rx.text(
-                    ReportCheckerState.progress_detail,
-                    size="2",
-                    color=COLORS["text_secondary"],
-                ),
+                rx.text("분석 진행 중...", size="4", weight="bold", color=COLORS["text_primary"]),
                 rx.spacer(),
                 rx.text(
                     ReportCheckerState.progress_pct,
                     "%",
-                    size="2",
-                    color=COLORS["text_secondary"],
-                    weight="medium",
+                    size="3",
+                    weight="bold",
+                    color=rx.color("indigo", 11),
                 ),
+                align="center",
+                spacing="2",
                 width="100%",
             ),
-            rx.hstack(
-                rx.badge(
-                    rx.icon("spell-check", size=14),
-                    "오탈자 ",
-                    ReportCheckerState.typo_count,
-                    color_scheme="red",
-                    variant="soft",
+            rx.progress(value=ReportCheckerState.progress_pct, width="100%"),
+            rx.vstack(
+                _step("PDF 페이지 추출", 0),
+                _step("오탈자 검사", 1, ReportCheckerState.typo_count),
+                rx.cond(
+                    ReportCheckerState.watch_active,
+                    _step("주의 항목 검사", 2, ReportCheckerState.attention_count),
+                    rx.fragment(),
                 ),
-                rx.badge(
-                    rx.icon("triangle-alert", size=14),
-                    "일관성 ",
-                    ReportCheckerState.consistency_count,
-                    color_scheme="orange",
-                    variant="soft",
+                rx.cond(
+                    ReportCheckerState.include_consistency,
+                    _step("일관성 검사", 3, ReportCheckerState.consistency_count),
+                    rx.fragment(),
                 ),
                 spacing="2",
+                width="100%",
+                padding_top="0.5em",
+            ),
+            rx.hstack(
+                rx.spacer(),
+                rx.button(
+                    rx.icon("square", size=15),
+                    rx.cond(ReportCheckerState.cancel_requested, "중단 중...", "분석 중단"),
+                    on_click=ReportCheckerState.request_cancel,
+                    disabled=ReportCheckerState.cancel_requested,
+                    color_scheme="red",
+                    variant="soft",
+                    size="2",
+                ),
+                width="100%",
             ),
             spacing="3",
             width="100%",
@@ -404,16 +467,13 @@ def _result_panel() -> rx.Component:
                 rx.spacer(),
                 rx.vstack(
                     rx.cond(
-                        ReportCheckerState.download_url != "",
-                        rx.link(
-                            rx.button(
-                                rx.icon("download", size=16),
-                                "HTML 다운로드",
-                                color_scheme="indigo",
-                                variant="soft",
-                            ),
-                            href=ReportCheckerState.download_url,
-                            is_external=True,
+                        ReportCheckerState.download_ready,
+                        rx.button(
+                            rx.icon("download", size=16),
+                            "HTML 다운로드",
+                            on_click=ReportCheckerState.download_result,
+                            color_scheme="indigo",
+                            variant="soft",
                         ),
                     ),
                     rx.button(
@@ -484,6 +544,28 @@ def _result_panel() -> rx.Component:
     )
 
 
+def _notice_panel(icon: str, message: str, scheme: str) -> rx.Component:
+    """간단한 안내 카드 (중단됨 등) + 새 분석 버튼."""
+    return _section_card(
+        rx.hstack(
+            rx.icon(icon, size=18, color=rx.color(scheme, 11)),
+            rx.text(message, size="2", color=COLORS["text_primary"]),
+            rx.spacer(),
+            rx.button(
+                rx.icon("rotate-ccw", size=15),
+                "새 분석",
+                on_click=ReportCheckerState.reset_checker,
+                variant="ghost",
+                color_scheme="gray",
+                size="2",
+            ),
+            width="100%",
+            align="center",
+            spacing="3",
+        ),
+    )
+
+
 def _error_panel() -> rx.Component:
     return _section_card(
         rx.vstack(
@@ -542,6 +624,11 @@ def report_checker_page() -> rx.Component:
                     rx.vstack(
                         _upload_panel(),
                         rx.cond(ReportCheckerState.is_running, _progress_panel(), rx.fragment()),
+                        rx.cond(
+                            ReportCheckerState.status == "cancelled",
+                            _notice_panel("circle-slash", "분석이 중단되었습니다.", "gray"),
+                            rx.fragment(),
+                        ),
                         rx.cond(
                             ReportCheckerState.status == "error",
                             _error_panel(),

@@ -15,6 +15,7 @@ from collections.abc import Callable
 from wellbot.services.report_checker.bedrock import call_model, parse_json_response
 from wellbot.services.report_checker.config import get_config
 from wellbot.services.report_checker.models import (
+    AnalysisCancelled,
     ProgressEvent,
     TypoError,
     UserDictionary,
@@ -61,6 +62,7 @@ def check_typos(
     pages: dict[int, str],
     dictionary: UserDictionary | None = None,
     on_progress: ProgressCb = None,
+    cancel_check=None,
 ) -> list[TypoError]:
     """오탈자 검사. 청크별로 Bedrock 호출."""
     cfg = get_config()
@@ -75,6 +77,8 @@ def check_typos(
     total = len(chunks)
 
     for idx, chunk in enumerate(chunks, 1):
+        if cancel_check and cancel_check():
+            raise AnalysisCancelled()
         if on_progress:
             on_progress(
                 ProgressEvent(

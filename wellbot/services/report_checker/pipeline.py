@@ -36,23 +36,27 @@ def run_analysis(
     on_progress: ProgressCb = None,
     *,
     do_consistency: bool = True,
+    cancel_check=None,
 ) -> AnalysisResult:
-    """오탈자 검사(항상) + 일관성 검사(do_consistency 시)."""
+    """오탈자 검사(항상) + 일관성 검사(do_consistency 시).
+
+    cancel_check: 인자 없이 호출해 True 면 청크 사이에서 AnalysisCancelled 발생.
+    """
     dictionary = dictionary or UserDictionary()
     result = AnalysisResult()
 
     # 1) 오탈자 검사 (기본)
-    result.typo_errors = check_typos(pages, dictionary, on_progress)
+    result.typo_errors = check_typos(pages, dictionary, on_progress, cancel_check)
 
     # 2) 주의 항목 검사 (사용자 규칙이 있을 때만)
     if dictionary.watch_items:
-        result.attention_errors = check_attention(pages, dictionary, on_progress)
+        result.attention_errors = check_attention(pages, dictionary, on_progress, cancel_check)
 
     # 3) 일관성 검사 (3단계, 선택)
     if do_consistency:
-        facts = extract_facts(pages, on_progress)
+        facts = extract_facts(pages, on_progress, cancel_check)
         conflicts = find_conflicts(facts, dictionary)
-        result.consistency_errors = validate_conflicts(conflicts, on_progress)
+        result.consistency_errors = validate_conflicts(conflicts, on_progress, cancel_check)
 
     if on_progress:
         on_progress(

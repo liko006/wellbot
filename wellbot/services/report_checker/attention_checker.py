@@ -15,6 +15,7 @@ from collections.abc import Callable
 from wellbot.services.report_checker.bedrock import call_model, parse_json_response
 from wellbot.services.report_checker.config import get_config
 from wellbot.services.report_checker.models import (
+    AnalysisCancelled,
     AttentionIssue,
     ProgressEvent,
     UserDictionary,
@@ -51,6 +52,7 @@ def check_attention(
     pages: dict[int, str],
     dictionary: UserDictionary | None = None,
     on_progress: ProgressCb = None,
+    cancel_check=None,
 ) -> list[AttentionIssue]:
     """주의 규칙 위반 검사. 규칙이 없으면 빈 목록."""
     dictionary = dictionary or UserDictionary()
@@ -68,6 +70,8 @@ def check_attention(
     total = len(chunks)
 
     for idx, chunk in enumerate(chunks, 1):
+        if cancel_check and cancel_check():
+            raise AnalysisCancelled()
         if on_progress:
             on_progress(
                 ProgressEvent(

@@ -13,18 +13,31 @@ import asyncio
 import json
 import logging
 import re
+import threading
 from pathlib import Path
 
 import reflex as rx
 
 from wellbot.services.report_checker import storage
-from wellbot.services.report_checker.models import ProgressEvent, UserDictionary
+from wellbot.services.report_checker.models import (
+    AnalysisCancelled,
+    ProgressEvent,
+    UserDictionary,
+)
 from wellbot.services.report_checker.pdf_extract import extract_pages_from_bytes
 from wellbot.services.report_checker.pipeline import run_analysis
 from wellbot.services.report_checker.report_html import generate_html
 from wellbot.state.auth_state import AuthState
+from wellbot.state.report_checker_scripts import build_report_download_script
 
 log = logging.getLogger(__name__)
+
+# 스텝퍼 순서 (건너뛴 단계가 있어도 비교는 이 인덱스로 일관되게 동작)
+_STAGE_ORDER = {"parsing": 0, "typo": 1, "attention": 2, "consistency": 3, "done": 4}
+
+# job_id → 취소 신호 Event. State 는 스레드 Event 를 var 로 못 들고 있으므로
+# (같은 프로세스) 모듈 레지스트리로 백그라운드 워커와 취소 이벤트를 연결한다.
+_CANCEL_EVENTS: dict[str, threading.Event] = {}
 
 
 class ReportCheckerState(rx.State):
@@ -42,11 +55,15 @@ class ReportCheckerState(rx.State):
 
     # ── 진행 ──
     status: str = "idle"        # idle | uploading | analyzing | done | error
-    stage: str = ""             # parsing | typo | consistency | done
+    stage: str = ""             # parsing | typo | attention | consistency | done
+    stage_index: int = 0        # 단계 순서 인덱스 (스텝퍼 상태 계산용)
+    stage_current: int = 0      # 현재 단계의 진행 (예: 청크 3/5 의 3)
+    stage_total: int = 0        # 현재 단계의 총량 (예: 청크 3/5 의 5)
     progress_pct: int = 0
     progress_detail: str = ""
     typo_count: int = 0
     consistency_count: int = 0
+    cancel_requested: bool = False   # 중단 요청됨 (현재 단계 완료 후 정지)
     error_message: str = ""
 
     # ── 결과 ──
@@ -57,7 +74,8 @@ class ReportCheckerState(rx.State):
     consistency_errors: list[dict] = []
     attention_errors: list[dict] = []
     attention_count: int = 0
-    download_url: str = ""
+    download_ready: bool = False
+    download_filename: str = ""
 
     # ── 파생 ──
     @rx.var
@@ -119,6 +137,7 @@ class ReportCheckerState(rx.State):
             return rx.toast.error("PDF 파일을 먼저 선택해주세요.")
         self.status = "uploading"
         self.stage = ""
+        self.cancel_requested = False
         self.error_message = ""
         self.typo_errors = []
         self.consistency_errors = []
@@ -126,8 +145,12 @@ class ReportCheckerState(rx.State):
         self.typo_count = 0
         self.consistency_count = 0
         self.attention_count = 0
-        self.download_url = ""
+        self.download_ready = False
+        self.download_filename = ""
         self.progress_pct = 0
+        self.stage_index = 0
+        self.stage_current = 0
+        self.stage_total = 0
         self.progress_detail = "업로드 중..."
         return rx.call_script(
             "reportUpload()", callback=ReportCheckerState.on_uploaded
@@ -168,6 +191,9 @@ class ReportCheckerState(rx.State):
 
     def _apply_progress(self, evt: ProgressEvent) -> None:
         self.stage = evt.stage
+        self.stage_index = _STAGE_ORDER.get(evt.stage, self.stage_index)
+        self.stage_current = evt.current
+        self.stage_total = evt.total
         if evt.detail:
             self.progress_detail = evt.detail
         if evt.typo_count:
@@ -212,6 +238,8 @@ class ReportCheckerState(rx.State):
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
+        cancel_event = threading.Event()
+        _CANCEL_EVENTS[job_id] = cancel_event
 
         def on_progress(evt: ProgressEvent) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, evt)
@@ -229,25 +257,41 @@ class ReportCheckerState(rx.State):
                 )
             )
             return run_analysis(
-                pages, dictionary, on_progress, do_consistency=do_consistency
+                pages,
+                dictionary,
+                on_progress,
+                do_consistency=do_consistency,
+                cancel_check=cancel_event.is_set,
             )
 
-        task = asyncio.create_task(asyncio.to_thread(worker))
         try:
-            while not (task.done() and queue.empty()):
-                try:
-                    evt = await asyncio.wait_for(queue.get(), timeout=0.15)
-                except asyncio.TimeoutError:
-                    continue
+            task = asyncio.create_task(asyncio.to_thread(worker))
+            try:
+                while not (task.done() and queue.empty()):
+                    try:
+                        evt = await asyncio.wait_for(queue.get(), timeout=0.15)
+                    except asyncio.TimeoutError:
+                        continue
+                    async with self:
+                        self._apply_progress(evt)
+                result = await task
+            except AnalysisCancelled:
+                log.info("report_checker 분석 중단 job_id=%s", job_id)
                 async with self:
-                    self._apply_progress(evt)
-            result = await task
-        except Exception as e:  # noqa: BLE001 - UI 에 표면화
-            log.exception("report_checker 분석 실패 job_id=%s", job_id)
-            async with self:
-                self.status = "error"
-                self.error_message = str(e)
-            return
+                    self.status = "cancelled"
+                    self.stage = ""
+                    self.cancel_requested = False
+                    self.progress_detail = "분석이 중단되었습니다."
+                return
+            except Exception as e:  # noqa: BLE001 - UI 에 표면화
+                log.exception("report_checker 분석 실패 job_id=%s", job_id)
+                async with self:
+                    self.status = "error"
+                    self.cancel_requested = False
+                    self.error_message = str(e)
+                return
+        finally:
+            _CANCEL_EVENTS.pop(job_id, None)
 
         # 결과 HTML 생성 + S3 저장 + 다운로드 URL (블로킹은 스레드로)
         html = generate_html(
@@ -259,15 +303,12 @@ class ReportCheckerState(rx.State):
         stem = Path(source_name).stem or "report"
         filename = f"{stem}_검출결과.html"
 
-        def finalize() -> str:
-            storage.save_result_html(emp_no, job_id, html)
-            return storage.result_download_url(emp_no, job_id, filename=filename)
-
         try:
-            url = await asyncio.to_thread(finalize)
-        except Exception as e:  # noqa: BLE001
+            await asyncio.to_thread(storage.save_result_html, emp_no, job_id, html)
+            download_ready = True
+        except Exception:  # noqa: BLE001
             log.exception("report_checker 결과 저장 실패 job_id=%s", job_id)
-            url = ""
+            download_ready = False
 
         async with self:
             self.typo_errors = [e.to_dict() for e in result.typo_errors]
@@ -285,11 +326,30 @@ class ReportCheckerState(rx.State):
             self.ran_consistency = do_consistency
             self.attention_errors = [e.to_dict() for e in result.attention_errors]
             self.attention_count = len(result.attention_errors)
-            self.download_url = url
+            self.download_filename = filename
+            self.download_ready = download_ready
             self.status = "done"
             self.stage = "done"
             self.progress_pct = 100
             self.progress_detail = "분석 완료"
+
+    def request_cancel(self):
+        """분석 중단 요청 — 현재 단계 완료 후 다음 단계 진입 전에 정지."""
+        if self.status != "analyzing":
+            return
+        self.cancel_requested = True
+        self.progress_detail = "중단 요청됨 — 현재 단계 완료 후 정지합니다..."
+        ev = _CANCEL_EVENTS.get(self.job_id)
+        if ev is not None:
+            ev.set()
+
+    def download_result(self):
+        """결과 HTML 다운로드 (백엔드 프록시 경유 → a[download])."""
+        if not self.download_ready or not self.job_id:
+            return rx.toast.error("다운로드할 결과가 없습니다.")
+        return rx.call_script(
+            build_report_download_script(self.job_id, self.download_filename)
+        )
 
     def reset_checker(self):
         """새 분석을 위해 상태 초기화."""
@@ -303,7 +363,11 @@ class ReportCheckerState(rx.State):
         self.include_consistency = False
         self.ran_consistency = False
         self.watch_active = False
+        self.cancel_requested = False
         self.progress_pct = 0
+        self.stage_index = 0
+        self.stage_current = 0
+        self.stage_total = 0
         self.progress_detail = ""
         self.typo_count = 0
         self.consistency_count = 0
@@ -314,4 +378,5 @@ class ReportCheckerState(rx.State):
         self.consistency_errors = []
         self.attention_errors = []
         self.attention_count = 0
-        self.download_url = ""
+        self.download_ready = False
+        self.download_filename = ""

@@ -59,11 +59,14 @@ def save_result_html(emp_no: str, job_id: str, html: str) -> str:
     return key
 
 
-def result_download_url(emp_no: str, job_id: str, filename: str) -> str:
-    """결과 HTML 다운로드용 presigned URL (Content-Disposition: attachment)."""
-    return storage_service.get_presigned_url(
-        result_key(emp_no, job_id), filename=filename
-    )
+def result_exists(emp_no: str, job_id: str) -> bool:
+    """결과 HTML 이 S3 에 존재하는지."""
+    return storage_service.object_exists(result_key(emp_no, job_id))
+
+
+def iter_result(emp_no: str, job_id: str):
+    """결과 HTML 을 청크 스트리밍 (다운로드 프록시용)."""
+    return storage_service.iter_download_stream(result_key(emp_no, job_id))
 
 
 def cleanup_job(emp_no: str, job_id: str) -> int:

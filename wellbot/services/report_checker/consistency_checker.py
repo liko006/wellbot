@@ -20,6 +20,7 @@ from collections.abc import Callable
 from wellbot.services.report_checker.bedrock import call_model, parse_json_response
 from wellbot.services.report_checker.config import get_config
 from wellbot.services.report_checker.models import (
+    AnalysisCancelled,
     ConsistencyError,
     Fact,
     ProgressEvent,
@@ -118,6 +119,7 @@ def normalize_key(k: str, synonym_map: dict[str, str] | None = None) -> str:
 def extract_facts(
     pages: dict[int, str],
     on_progress: ProgressCb = None,
+    cancel_check=None,
 ) -> list[Fact]:
     """전체 문서에서 핵심 사실 추출 (청크별)."""
     cfg = get_config()
@@ -128,6 +130,8 @@ def extract_facts(
     total = len(chunks)
 
     for idx, chunk in enumerate(chunks, 1):
+        if cancel_check and cancel_check():
+            raise AnalysisCancelled()
         if on_progress:
             on_progress(
                 ProgressEvent(
@@ -210,6 +214,7 @@ def find_conflicts(
 def validate_conflicts(
     conflicts: list[dict],
     on_progress: ProgressCb = None,
+    cancel_check=None,
 ) -> list[ConsistencyError]:
     """불일치 후보를 LLM 으로 검증 (배치)."""
     if not conflicts:
@@ -225,6 +230,8 @@ def validate_conflicts(
     all_errors: list[ConsistencyError] = []
 
     for idx, batch in enumerate(batches, 1):
+        if cancel_check and cancel_check():
+            raise AnalysisCancelled()
         if on_progress:
             on_progress(
                 ProgressEvent(
