@@ -71,13 +71,21 @@ def _upload_panel() -> rx.Component:
                 spacing="3",
                 width="100%",
             ),
-            rx.hstack(
+            rx.vstack(
                 rx.checkbox(
-                    "일관성 검사 포함 (수치·항목 불일치 검출)",
+                    "값 일관성 검사 (같은 항목의 수치가 페이지마다 다른지)",
                     checked=ReportCheckerState.include_consistency,
                     on_change=ReportCheckerState.set_include_consistency,
                     disabled=ReportCheckerState.is_running,
                     color_scheme="indigo",
+                    size="2",
+                ),
+                rx.checkbox(
+                    "표기 일관성 검사 (같은 개념을 다르게 표기했는지, 예: 총 금액/총금액)",
+                    checked=ReportCheckerState.include_notation,
+                    on_change=ReportCheckerState.set_include_notation,
+                    disabled=ReportCheckerState.is_running,
+                    color_scheme="purple",
                     size="2",
                 ),
                 rx.text(
@@ -85,9 +93,8 @@ def _upload_panel() -> rx.Component:
                     size="1",
                     color=COLORS["text_secondary"],
                 ),
-                align="center",
-                spacing="3",
-                wrap="wrap",
+                align="start",
+                spacing="2",
             ),
             _dictionary_inputs(),
             rx.hstack(
@@ -109,7 +116,7 @@ def _upload_panel() -> rx.Component:
 
 
 def _dictionary_inputs() -> rx.Component:
-    """제외어 / 정합성 어서션 / 주의 항목 입력 (접이식)."""
+    """제외어 / 동일 항목(표기 통일) / 주의 항목 입력 (접이식)."""
     return rx.accordion.root(
         rx.accordion.item(
             header=rx.hstack(
@@ -139,20 +146,21 @@ def _dictionary_inputs() -> rx.Component:
                 ),
                 rx.vstack(
                     rx.text(
-                        "정합성 항목 — 값이 서로 일치해야 하는 항목 이름들 (한 줄에 한 묶음, 콤마로 구분)",
+                        "동일 항목(표기 통일) — 같은 항목을 다르게 적은 표기들을 한 묶음으로 (한 줄=한 묶음, 콤마 구분)",
                         size="1",
                         color=COLORS["text_secondary"],
                     ),
                     rx.text_area(
-                        placeholder="예: 총예산, 전체예산, 사업예산\n지원금, 지원 금액",
-                        value=ReportCheckerState.assertions_text,
-                        on_change=ReportCheckerState.set_assertions_text,
+                        placeholder="예: 총 금액, 합계 금액, Total\n지원금, 지원 금액",
+                        value=ReportCheckerState.aliases_text,
+                        on_change=ReportCheckerState.set_aliases_text,
                         rows="3",
                         width="100%",
                         disabled=ReportCheckerState.is_running,
                     ),
                     rx.text(
-                        "※ 이름이 달라도 같은 항목으로 묶어 교차 비교하고, 값이 다르면 오류로 보고합니다.",
+                        "※ 같은 항목을 '총 금액/합계 금액/Total'처럼 다르게 기입한 경우, 하나로 묶어 "
+                        "값을 교차 비교합니다. 값 불일치가 실제 오류인지는 AI가 다시 판정합니다.",
                         size="1",
                         color=COLORS["text_secondary"],
                     ),
@@ -294,8 +302,13 @@ def _progress_panel() -> rx.Component:
                     rx.fragment(),
                 ),
                 rx.cond(
+                    ReportCheckerState.notation_active,
+                    _step("표기 일관성 검사", 3, ReportCheckerState.notation_count),
+                    rx.fragment(),
+                ),
+                rx.cond(
                     ReportCheckerState.include_consistency,
-                    _step("일관성 검사", 3, ReportCheckerState.consistency_count),
+                    _step("값 일관성 검사", 4, ReportCheckerState.consistency_count),
                     rx.fragment(),
                 ),
                 spacing="2",
@@ -453,6 +466,53 @@ def _attention_section() -> rx.Component:
     )
 
 
+def _notation_table() -> rx.Component:
+    return rx.table.root(
+        rx.table.header(
+            rx.table.row(
+                rx.table.column_header_cell("개념"),
+                rx.table.column_header_cell("표기 변형 (페이지)"),
+            ),
+        ),
+        rx.table.body(
+            rx.foreach(
+                ReportCheckerState.notation_errors,
+                lambda e: rx.table.row(
+                    rx.table.cell(rx.badge(e["concept"], color_scheme="purple", variant="soft")),
+                    rx.table.cell(
+                        rx.text(e["variants_str"], size="1", color=rx.color("purple", 11), weight="medium")
+                    ),
+                ),
+            ),
+        ),
+        variant="surface",
+        size="1",
+        width="100%",
+    )
+
+
+def _notation_section() -> rx.Component:
+    return _section_card(
+        rx.vstack(
+            rx.hstack(
+                rx.icon("case-sensitive", size=18, color=rx.color("purple", 11)),
+                rx.text("표기 일관성", size="4", weight="bold", color=COLORS["text_primary"]),
+                rx.badge(ReportCheckerState.notation_count, "건", color_scheme="purple", variant="soft"),
+                align="center",
+                spacing="2",
+            ),
+            rx.cond(
+                ReportCheckerState.notation_count > 0,
+                _notation_table(),
+                rx.text("표기 불일치가 발견되지 않았습니다.", size="2", color=COLORS["text_secondary"]),
+            ),
+            spacing="3",
+            width="100%",
+            align="start",
+        ),
+    )
+
+
 def _result_panel() -> rx.Component:
     return rx.vstack(
         _section_card(
@@ -463,6 +523,11 @@ def _result_panel() -> rx.Component:
                     rx.cond(ReportCheckerState.ran_consistency, ReportCheckerState.consistency_count, "—"),
                     "수치/기술 오류",
                     "orange",
+                ),
+                rx.cond(
+                    ReportCheckerState.notation_active,
+                    _stat(ReportCheckerState.notation_count, "표기 불일치", "purple"),
+                    rx.fragment(),
                 ),
                 rx.cond(
                     ReportCheckerState.watch_active,
@@ -543,6 +608,7 @@ def _result_panel() -> rx.Component:
                 align="start",
             ),
         ),
+        rx.cond(ReportCheckerState.notation_active, _notation_section(), rx.fragment()),
         rx.cond(ReportCheckerState.watch_active, _attention_section(), rx.fragment()),
         spacing="4",
         width="100%",
