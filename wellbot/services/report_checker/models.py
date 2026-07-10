@@ -80,12 +80,34 @@ class AttentionIssue:
 
 
 @dataclass
+class Usage:
+    """LLM 토큰 사용량 누적기 (잡 전체 합산)."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    calls: int = 0
+
+    def add(self, u: dict | None) -> None:
+        """Converse 응답의 usage 블록을 누적."""
+        u = u or {}
+        it = int(u.get("inputTokens", 0) or 0)
+        ot = int(u.get("outputTokens", 0) or 0)
+        tt = int(u.get("totalTokens", 0) or 0) or (it + ot)
+        self.input_tokens += it
+        self.output_tokens += ot
+        self.total_tokens += tt
+        self.calls += 1
+
+
+@dataclass
 class AnalysisResult:
     """분석 최종 결과."""
 
     typo_errors: list = field(default_factory=list)
     consistency_errors: list = field(default_factory=list)
     attention_errors: list = field(default_factory=list)
+    usage: Usage = field(default_factory=Usage)
 
 
 @dataclass

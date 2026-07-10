@@ -120,6 +120,7 @@ def extract_facts(
     pages: dict[int, str],
     on_progress: ProgressCb = None,
     cancel_check=None,
+    usage=None,
 ) -> list[Fact]:
     """전체 문서에서 핵심 사실 추출 (청크별)."""
     cfg = get_config()
@@ -143,7 +144,7 @@ def extract_facts(
             )
         text = "\n\n".join(f"=== 페이지 {p} ===\n{pages[p]}" for p in chunk)
         try:
-            raw = call_model(f"다음 보고서에서 핵심 정보를 추출하세요:\n\n{text}", EXTRACT_SYSTEM)
+            raw = call_model(f"다음 보고서에서 핵심 정보를 추출하세요:\n\n{text}", EXTRACT_SYSTEM, usage=usage)
             items = parse_json_response(raw)
             for it in items:
                 all_facts.append(
@@ -215,6 +216,7 @@ def validate_conflicts(
     conflicts: list[dict],
     on_progress: ProgressCb = None,
     cancel_check=None,
+    usage=None,
 ) -> list[ConsistencyError]:
     """불일치 후보를 LLM 으로 검증 (배치)."""
     if not conflicts:
@@ -252,7 +254,7 @@ def validate_conflicts(
             + json.dumps(payload, ensure_ascii=False, indent=2)
         )
         try:
-            raw = call_model(prompt, VALIDATE_SYSTEM)
+            raw = call_model(prompt, VALIDATE_SYSTEM, usage=usage)
             items = parse_json_response(raw)
             for it in items:
                 if not it.get("include"):

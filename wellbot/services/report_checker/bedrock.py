@@ -34,11 +34,13 @@ def _get_client(region: str) -> Any:
     return boto3.client("bedrock-runtime", region_name=resolved)
 
 
-def call_model(prompt: str, system: str = "") -> str:
+def call_model(prompt: str, system: str = "", usage=None) -> str:
     """Bedrock Converse 로 단일 턴 호출 후 응답 텍스트 반환.
 
     JSON 잘림(stopReason == "max_tokens")은 상위에서 파싱 실패로 이어질 수 있어
     경고 로그를 남긴다(원본은 조용히 청크를 버렸음).
+
+    usage: Usage 누적기(선택). 전달되면 응답의 토큰 사용량을 누적한다.
     """
     cfg = get_config()
     client = _get_client(cfg.region)
@@ -65,6 +67,8 @@ def call_model(prompt: str, system: str = "") -> str:
                     "max_tokens 상향 필요 가능성 model=%s",
                     cfg.model_id,
                 )
+            if usage is not None:
+                usage.add(resp.get("usage"))
             blocks = resp["output"]["message"]["content"]
             texts = [b["text"] for b in blocks if "text" in b]
             return "".join(texts)

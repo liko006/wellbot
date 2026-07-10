@@ -63,6 +63,7 @@ def check_typos(
     dictionary: UserDictionary | None = None,
     on_progress: ProgressCb = None,
     cancel_check=None,
+    usage=None,
 ) -> list[TypoError]:
     """오탈자 검사. 청크별로 Bedrock 호출."""
     cfg = get_config()
@@ -91,7 +92,7 @@ def check_typos(
             )
         text = "\n\n".join(f"=== 페이지 {p} ===\n{pages[p]}" for p in chunk)
         try:
-            raw = call_model(f"다음 텍스트의 오탈자를 찾으세요:\n\n{text}", system)
+            raw = call_model(f"다음 텍스트의 오탈자를 찾으세요:\n\n{text}", system, usage=usage)
             items = parse_json_response(raw)
             for it in items:
                 original = it.get("original", "")

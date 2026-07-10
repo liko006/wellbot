@@ -21,6 +21,7 @@ from wellbot.services.report_checker.consistency_checker import (
 from wellbot.services.report_checker.models import (
     AnalysisResult,
     ProgressEvent,
+    Usage,
     UserDictionary,
 )
 from wellbot.services.report_checker.typo_checker import check_typos
@@ -37,26 +38,34 @@ def run_analysis(
     *,
     do_consistency: bool = True,
     cancel_check=None,
+    usage: Usage | None = None,
 ) -> AnalysisResult:
     """오탈자 검사(항상) + 일관성 검사(do_consistency 시).
 
     cancel_check: 인자 없이 호출해 True 면 청크 사이에서 AnalysisCancelled 발생.
+    usage: 외부에서 주입한 토큰 누적기. 예외(취소/에러)로 중단돼도 호출자가 그때까지의
+           부분 사용량을 읽을 수 있도록 여기에 계속 누적한다. 미지정 시 새로 생성.
     """
     dictionary = dictionary or UserDictionary()
-    result = AnalysisResult()
+    usage = usage if usage is not None else Usage()
+    result = AnalysisResult(usage=usage)
 
     # 1) 오탈자 검사 (기본)
-    result.typo_errors = check_typos(pages, dictionary, on_progress, cancel_check)
+    result.typo_errors = check_typos(pages, dictionary, on_progress, cancel_check, usage)
 
     # 2) 주의 항목 검사 (사용자 규칙이 있을 때만)
     if dictionary.watch_items:
-        result.attention_errors = check_attention(pages, dictionary, on_progress, cancel_check)
+        result.attention_errors = check_attention(
+            pages, dictionary, on_progress, cancel_check, usage
+        )
 
     # 3) 일관성 검사 (3단계, 선택)
     if do_consistency:
-        facts = extract_facts(pages, on_progress, cancel_check)
+        facts = extract_facts(pages, on_progress, cancel_check, usage)
         conflicts = find_conflicts(facts, dictionary)
-        result.consistency_errors = validate_conflicts(conflicts, on_progress, cancel_check)
+        result.consistency_errors = validate_conflicts(
+            conflicts, on_progress, cancel_check, usage
+        )
 
     if on_progress:
         on_progress(

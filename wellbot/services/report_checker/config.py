@@ -23,6 +23,7 @@ REPORT_CHECKER_YAML = Path(__file__).resolve().parent / "report_checker.yaml"
 class CheckerConfig:
     """보고서 오류 검출 설정."""
 
+    agent_id: str = "RPT_INTEG_CHK"
     model_id: str = "global.anthropic.claude-opus-4-8"
     region: str = ""
     max_tokens: int = 8192
@@ -50,6 +51,7 @@ def _load() -> CheckerConfig:
     raw = yaml.safe_load(REPORT_CHECKER_YAML.read_text(encoding="utf-8")) or {}
     exts = raw.get("allowed_extensions") or [".pdf"]
     return CheckerConfig(
+        agent_id=raw.get("agent_id", CheckerConfig.agent_id),
         model_id=raw.get("model_id", CheckerConfig.model_id),
         region=raw.get("region", "") or "",
         max_tokens=int(raw.get("max_tokens", CheckerConfig.max_tokens)),
