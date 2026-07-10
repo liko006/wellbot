@@ -39,6 +39,7 @@ def generate_html(
     source_file: str,
     consistency_checked: bool = True,
     attention_checked: bool = False,
+    notation_checked: bool = False,
 ) -> str:
     """분석 결과를 자체완결 HTML 문서 문자열로 렌더.
 
@@ -85,8 +86,22 @@ def generate_html(
         <td class="reason">{_esc(e.issue)}</td>
       </tr>"""
 
+    notation_rows = ""
+    for e in result.notation_errors:
+        vlist = " · ".join(
+            f'<strong class="val">{_esc(v["form"])}</strong>'
+            f'<small> ({", ".join(f"{_esc(p)}p" for p in v["pages"])})</small>'
+            for v in e.variants
+        )
+        notation_rows += f"""
+      <tr>
+        <td><span class="key-tag">{_esc(e.concept)}</span></td>
+        <td>{vlist}</td>
+      </tr>"""
+
     tc, cc = len(result.typo_errors), len(result.consistency_errors)
     ac = len(result.attention_errors)
+    ntc = len(result.notation_errors)
     src = _esc(source_file)
     model = _esc(cfg.model_id)
 
@@ -113,6 +128,23 @@ def generate_html(
         cc_stat = str(cc)
         cc_badge = f"{cc}건"
 
+    # 표기 일관성 섹션 (선택 시에만 표시)
+    if notation_checked:
+        empty_notation = '<p class="empty"><em>✓</em>표기 불일치가 발견되지 않았습니다.</p>'
+        notation_table = f"""
+  <table>
+    <thead><tr><th>개념</th><th>표기 변형 (페이지)</th></tr></thead>
+    <tbody>{notation_rows}</tbody>
+  </table>"""
+        notation_body = empty_notation if not result.notation_errors else notation_table
+        notation_stat_html = f'<div class="sc p"><div class="n">{ntc}</div><div class="l">표기 불일치</div></div>'
+        notation_section_html = (
+            f'<section><h2>🔤 표기 일관성 <span class="badge p">{ntc}건</span></h2>{notation_body}</section>'
+        )
+    else:
+        notation_stat_html = ""
+        notation_section_html = ""
+
     # 주의 항목 섹션 (사용자 규칙이 있을 때만 표시)
     if attention_checked:
         empty_attn = '<p class="empty"><em>✓</em>주의 항목 위반이 발견되지 않았습니다.</p>'
@@ -126,11 +158,11 @@ def generate_html(
         attn_section_html = (
             f'<section><h2>🔎 주의 항목 <span class="badge g">{ac}건</span></h2>{attn_body}</section>'
         )
-        total_errors = tc + cc + ac
     else:
         attn_stat_html = ""
         attn_section_html = ""
-        total_errors = tc + cc
+
+    total_errors = tc + cc + (ac if attention_checked else 0) + (ntc if notation_checked else 0)
 
     return f"""<!DOCTYPE html>
 <html lang="ko">
@@ -153,12 +185,14 @@ header p{{margin-top:6px;opacity:.75;font-size:.85rem}}
 .sc.e .n{{color:#e53e3e}}
 .sc.w .n{{color:#dd6b20}}
 .sc.g .n{{color:#2f855a}}
+.sc.p .n{{color:#6b46c1}}
 section{{margin:0 36px 28px}}
 h2{{font-size:1rem;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px}}
 .badge{{padding:2px 10px;border-radius:999px;font-size:.72rem;font-weight:700}}
 .badge.r{{background:#fed7d7;color:#c53030}}
 .badge.o{{background:#feebc8;color:#c05621}}
 .badge.g{{background:#c6f6d5;color:#276749}}
+.badge.p{{background:#e9d8fd;color:#553c9a}}
 table{{width:100%;border-collapse:collapse;background:#fff;border-radius:14px;
        overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.07)}}
 thead tr{{background:#f7fafc}}
@@ -195,6 +229,7 @@ footer{{text-align:center;padding:24px;color:#a0aec0;font-size:.78rem}}
   <div class="sc t"><div class="n">{total_errors}</div><div class="l">총 오류 건수</div></div>
   <div class="sc e"><div class="n">{tc}</div><div class="l">오탈자</div></div>
   <div class="sc w"><div class="n">{cc_stat}</div><div class="l">수치/기술 오류</div></div>
+  {notation_stat_html}
   {attn_stat_html}
 </div>
 
@@ -207,6 +242,8 @@ footer{{text-align:center;padding:24px;color:#a0aec0;font-size:.78rem}}
   <h2>⚠️ 수치/기술 오류 <span class="badge o">{cc_badge}</span></h2>
   {cons_body}
 </section>
+
+{notation_section_html}
 
 {attn_section_html}
 

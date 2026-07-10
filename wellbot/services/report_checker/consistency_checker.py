@@ -4,10 +4,10 @@ Step 1: 청크별 사실(Fact) 추출 (LLM)
 Step 2: Python dict 로 전체 교차 비교 → 불일치 후보 (컨텍스트 윈도우 무관)
 Step 3: 불일치 후보를 LLM 이 검증 (진짜 오류만 채택)
 
-사용자 사전의 정합성 어서션(assertion_groups)은 "이 이름들은 같은 항목이니 값이
-일치해야 한다"는 선언이다. 라벨이 달라(추출기가 다르게 표기해도) 서로 다른 키로
-흩어진 항목을 강제로 한 버킷에 모아 교차비교하고, 값이 다르면 LLM 판정을 건너뛰고
-불일치로 확정 보고한다(사용자 의도 존중).
+사용자 사전의 동일 항목 별칭(alias_groups)은 "총 금액 / 합계 금액 / Total" 처럼
+같은 항목을 다르게 기입한 표기 변형들을 하나로 묶는 것이다. 라벨이 달라 서로 다른
+키로 흩어진 사실을 한 버킷에 모아 값을 교차비교하게 한다. 값 불일치 자체는 이후
+LLM 검증(별도/연결·계획/실적 등 정당한 차이는 제외)을 그대로 거친다.
 """
 
 from __future__ import annotations
@@ -41,7 +41,12 @@ EXTRACT_SYSTEM = """당신은 보고서 정보 추출 전문가입니다.
 1. key 는 항목을 식별하는 짧고 일관된 이름 (예: "지원비", "이사비", "참여기업수", "사업기간")
 2. value 는 해당 수치/내용 (단위 포함, 예: "1,200만원", "3개사", "2023.01~2024.12")
 3. 같은 개념이면 key 를 동일하게 써야 함 (예: "총예산"과 "총 예산"은 "총예산"으로 통일)
-4. 일반적인 서술문(배경, 목적 등)은 추출하지 마세요 — 수치/정의만
+4. 그러나 범위·구분·기준이 다르면 서로 다른 항목이므로 key 에 그 구분을 반드시 포함하세요.
+   같은 지표라도 아래가 다르면 다른 key 로 추출:
+   - 재무제표 범위: 별도(개별) vs 연결  → 예: "별도 영업활동현금흐름", "연결 영업활동현금흐름"
+   - 계획 vs 실적, 당기 vs 전기, 연간 vs 분기, 부서·사업·법인별 등
+   (스코프를 떼고 뭉뚱그리면 성격이 다른 값이 오탐으로 잡히므로 금지)
+5. 일반적인 서술문(배경, 목적 등)은 추출하지 마세요 — 수치/정의만
 
 JSON 외 다른 텍스트는 절대 포함하지 마세요. 없으면 [] 반환.
 
@@ -59,8 +64,17 @@ VALIDATE_SYSTEM = """당신은 문서 교정 전문가입니다.
 주어진 불일치 후보 목록을 검토하여 진짜 오류인지 판단하고 JSON으로만 응답하세요.
 
 판단 기준:
-- 진짜 오류: 같은 항목에 대해 서로 다른 값이 기재된 경우 → include: true
-- 무시해도 됨: 맥락이 달라서 값이 다른 게 당연한 경우 (예: 계획 vs 실적) → include: false
+- 진짜 오류: 완전히 동일한 항목·범위·기준인데 값이 서로 다른 경우 → include: true
+- 무시해도 됨(include: false): 범위·구분·기준이 달라 값이 다른 게 당연한 경우.
+  예) 별도(개별) vs 연결 재무제표(예: "현금흐름표-영업활동현금흐름" vs
+      "연결현금흐름표-영업활동현금흐름"), 계획 vs 실적, 당기 vs 전기,
+      연간 vs 분기, 부서·사업·법인별 구분 등.
+  * key 나 문장에서 범위·구분을 나타내는 수식어(별도/연결/계획/실적 등)가 다르면
+    같은 지표여도 서로 다른 항목이므로 오류가 아님.
+
+후보에 "note" 필드가 있으면, 사용자가 그 항목들을 '동일 항목(표기만 다름)'으로 지정한
+것이니 라벨이 달라도 같은 항목으로 간주하고 값만 비교하세요. (단 그 경우에도 범위·기준이
+정말 다르면 오류가 아닐 수 있음)
 
 JSON 외 다른 텍스트는 절대 포함하지 마세요.
 
@@ -93,30 +107,26 @@ def normalize_key(k: str) -> str:
     return nk
 
 
-def _assertion_matchers(dictionary: UserDictionary) -> list[tuple[str, list[str]]]:
-    """정합성 어서션을 (표시용 대표 라벨, [정규화된 매칭어들]) 목록으로 변환."""
-    matchers: list[tuple[str, list[str]]] = []
-    for group in dictionary.assertion_groups:
+def _alias_groups(dictionary: UserDictionary) -> list[tuple[str, set[str]]]:
+    """동일 항목 별칭을 (표시용 대표 라벨, {정규화된 별칭들}) 목록으로 변환."""
+    groups: list[tuple[str, set[str]]] = []
+    for group in dictionary.alias_groups:
         terms = [t for t in group if t and t.strip()]
-        if not terms:
-            continue
-        norm = [normalize_key(t) for t in terms]
-        norm = [t for t in norm if t]
-        if norm:
-            matchers.append((terms[0], norm))
-    return matchers
+        norm = {normalize_key(t) for t in terms if normalize_key(t)}
+        if len(norm) >= 2:
+            groups.append((terms[0], norm))
+    return groups
 
 
-def _match_assertion(nk: str, matchers: list[tuple[str, list[str]]]) -> int:
-    """정규화된 키 nk 가 속하는 어서션 그룹 인덱스. 없으면 -1.
+def _match_alias(nk: str, groups: list[tuple[str, set[str]]]) -> int:
+    """정규화된 키 nk 가 속하는 별칭 그룹 인덱스. 없으면 -1.
 
-    부분 문자열(양방향 포함) 매칭 → 추출기가 라벨을 조금 다르게 붙여도
-    같은 항목으로 묶는다. (예: 어서션 '지원금' 이 '연구지원금' 을 포함)
+    정확 일치(정규화 후 동일) 매칭 — 사용자가 나열한 표기 변형과 같은 키만 묶는다.
+    (부분일치는 '금액' 이 모든 금액 항목을 흡수하는 과병합을 유발하므로 쓰지 않음)
     """
-    for i, (_label, terms) in enumerate(matchers):
-        for t in terms:
-            if t and (t in nk or nk in t):
-                return i
+    for i, (_label, terms) in enumerate(groups):
+        if nk in terms:
+            return i
     return -1
 
 
@@ -176,28 +186,28 @@ def find_conflicts(
     """Python dict 로 전체 비교 → 불일치 후보.
 
     - 일반 키: 정규화된 키가 같은 사실끼리 값 비교.
-    - 어서션 그룹: 라벨이 달라도 매칭되는 사실을 한 버킷에 모아 강제 교차비교하고,
-      후보에 asserted=True 표시(검증 단계에서 LLM 판정 없이 확정).
+    - 별칭 그룹: 사용자가 동일 항목으로 지정한 표기 변형들을 한 버킷에 모아 교차비교.
+      후보에 aliased=True 표시(검증 단계에서 LLM 에 '동일 항목' 힌트 제공).
 
-    반환: [{"id":.., "key":.., "occurrences":[...], "asserted": bool}]
+    반환: [{"id":.., "key":.., "occurrences":[...], "aliased": bool}]
     """
     dictionary = dictionary or UserDictionary()
-    matchers = _assertion_matchers(dictionary)
+    groups = _alias_groups(dictionary)
 
-    # bucket_key → {asserted, label, values: {normalized_value: [Fact,...]}}
+    # bucket_key → {aliased, label, values: {normalized_value: [Fact,...]}}
     buckets: dict[str, dict] = defaultdict(
-        lambda: {"asserted": False, "label": "", "values": defaultdict(list)}
+        lambda: {"aliased": False, "label": "", "values": defaultdict(list)}
     )
     for fact in facts:
         nk = normalize_key(fact.key)
         nv = normalize_value(fact.value)
         if not nk or not nv:
             continue
-        gi = _match_assertion(nk, matchers)
+        gi = _match_alias(nk, groups)
         if gi >= 0:
-            bkey = f"__assert__{gi}"
-            buckets[bkey]["asserted"] = True
-            buckets[bkey]["label"] = matchers[gi][0]
+            bkey = f"__alias__{gi}"
+            buckets[bkey]["aliased"] = True
+            buckets[bkey]["label"] = groups[gi][0]
         else:
             bkey = nk
         buckets[bkey]["values"][nv].append(fact)
@@ -207,7 +217,7 @@ def find_conflicts(
         value_groups = b["values"]
         if len(value_groups) <= 1:
             continue
-        if b["asserted"] and b["label"]:
+        if b["aliased"] and b["label"]:
             original_key = b["label"]
         else:
             original_key = max(
@@ -226,7 +236,7 @@ def find_conflicts(
                 "key": original_key,
                 "normalized_key": bkey,
                 "occurrences": occurrences,
-                "asserted": b["asserted"],
+                "aliased": b["aliased"],
             }
         )
 
@@ -234,9 +244,9 @@ def find_conflicts(
     # 검증 단계에서 안전하게 되찾을 수 있도록 안정적 id 부여
     for i, c in enumerate(conflicts):
         c["id"] = i
-    n_assert = sum(1 for c in conflicts if c["asserted"])
+    n_alias = sum(1 for c in conflicts if c["aliased"])
     log.info(
-        "report_checker 불일치 후보 count=%d (어서션 %d)", len(conflicts), n_assert
+        "report_checker 불일치 후보 count=%d (별칭병합 %d)", len(conflicts), n_alias
     )
     return conflicts
 
@@ -247,10 +257,11 @@ def validate_conflicts(
     cancel_check=None,
     usage=None,
 ) -> list[ConsistencyError]:
-    """불일치 후보 확정.
+    """불일치 후보를 LLM 으로 검증 (배치).
 
-    - 어서션 후보(asserted): 사용자가 "값이 일치해야 한다"고 선언 → LLM 판정 없이 확정.
-    - 일반 후보: LLM 이 진짜 오류인지 배치 검증.
+    별칭 그룹으로 병합된 후보(aliased)에는 "사용자가 동일 항목으로 지정(표기만 상이)"
+    힌트를 함께 넘겨, LLM 이 라벨이 다르다는 이유만으로 서로 다른 항목이라 오판하지
+    않게 한다. 그래도 계획/실적·별도/연결 같은 정당한 차이는 LLM 이 걸러낸다.
     """
     if not conflicts:
         return []
@@ -258,29 +269,10 @@ def validate_conflicts(
     cfg = get_config()
     all_errors: list[ConsistencyError] = []
 
-    # 1) 어서션 후보 — 즉시 확정 (사용자 의도 존중)
-    asserted = [c for c in conflicts if c.get("asserted")]
-    for c in asserted:
-        occ = c["occurrences"]
-        values = list({o["value"] for o in occ})
-        pages = sorted({o["page"] for o in occ})
-        detail = " / ".join(f"{o['page']}p: {o['value']}" for o in occ)
-        all_errors.append(
-            ConsistencyError(
-                pages=pages,
-                key=c["key"],
-                values=values,
-                inconsistent_content=f"'{c['key']}' 값이 페이지마다 다릅니다",
-                reason=f"[사용자 지정 정합성 항목] {detail}",
-            )
-        )
-
-    # 2) 일반 후보 — LLM 검증
-    normal = [c for c in conflicts if not c.get("asserted")]
-    by_id = {c["id"]: c for c in normal}
+    by_id = {c["id"]: c for c in conflicts}
     batch_size = cfg.validate_batch_size
     batches = [
-        normal[i : i + batch_size] for i in range(0, len(normal), batch_size)
+        conflicts[i : i + batch_size] for i in range(0, len(conflicts), batch_size)
     ]
     total = len(batches)
 
@@ -297,11 +289,13 @@ def validate_conflicts(
                     consistency_count=len(all_errors),
                 )
             )
-        # LLM 에는 id/key/occurrences 만 전달
-        payload = [
-            {"id": c["id"], "key": c["key"], "occurrences": c["occurrences"]}
-            for c in batch
-        ]
+        # LLM 에는 id/key/occurrences (+ 별칭 힌트) 전달
+        payload = []
+        for c in batch:
+            item = {"id": c["id"], "key": c["key"], "occurrences": c["occurrences"]}
+            if c.get("aliased"):
+                item["note"] = "사용자가 동일 항목으로 지정함(표기만 다를 뿐 같은 항목)"
+            payload.append(item)
         prompt = (
             "다음은 보고서에서 발견된 불일치 후보입니다. 진짜 오류인지 판단해주세요:\n\n"
             + json.dumps(payload, ensure_ascii=False, indent=2)

@@ -18,6 +18,7 @@ from wellbot.services.report_checker.consistency_checker import (
     find_conflicts,
     validate_conflicts,
 )
+from wellbot.services.report_checker.notation_checker import check_notation
 from wellbot.services.report_checker.models import (
     AnalysisResult,
     ProgressEvent,
@@ -37,10 +38,11 @@ def run_analysis(
     on_progress: ProgressCb = None,
     *,
     do_consistency: bool = True,
+    do_notation: bool = False,
     cancel_check=None,
     usage: Usage | None = None,
 ) -> AnalysisResult:
-    """오탈자 검사(항상) + 일관성 검사(do_consistency 시).
+    """오탈자 검사(항상) + 주의 항목 + 표기 일관성 + 값 일관성 검사(선택).
 
     cancel_check: 인자 없이 호출해 True 면 청크 사이에서 AnalysisCancelled 발생.
     usage: 외부에서 주입한 토큰 누적기. 예외(취소/에러)로 중단돼도 호출자가 그때까지의
@@ -59,7 +61,13 @@ def run_analysis(
             pages, dictionary, on_progress, cancel_check, usage
         )
 
-    # 3) 일관성 검사 (3단계, 선택)
+    # 3) 표기 일관성 검사 (선택) — 같은 개념의 표기 흔들림
+    if do_notation:
+        result.notation_errors = check_notation(
+            pages, on_progress, cancel_check, usage
+        )
+
+    # 4) 값 일관성 검사 (3단계, 선택)
     if do_consistency:
         facts = extract_facts(pages, on_progress, cancel_check, usage)
         conflicts = find_conflicts(facts, dictionary)

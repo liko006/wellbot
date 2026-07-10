@@ -101,12 +101,38 @@ class Usage:
 
 
 @dataclass
+class NotationIssue:
+    """표기 일관성 위반 — 같은 개념을 다르게 표기한 경우 (값과 무관).
+
+    예: '총 금액'(3p) 와 '총금액'(22p) 이 함께 쓰임.
+    """
+
+    concept: str        # 대표(정규화 후 첫 표기)
+    variants: list      # [{"form": str, "pages": [int]}]
+
+    def to_dict(self) -> dict:
+        variants = [
+            {"form": v["form"], "pages": list(v["pages"])} for v in self.variants
+        ]
+        # 중첩 foreach 회피용 표시 문자열: "총 금액(3p, 10p) · 총금액(22p)"
+        variants_str = " · ".join(
+            f"{v['form']}({', '.join(f'{p}p' for p in v['pages'])})" for v in variants
+        )
+        return {
+            "concept": self.concept,
+            "variants": variants,
+            "variants_str": variants_str,
+        }
+
+
+@dataclass
 class AnalysisResult:
     """분석 최종 결과."""
 
     typo_errors: list = field(default_factory=list)
     consistency_errors: list = field(default_factory=list)
     attention_errors: list = field(default_factory=list)
+    notation_errors: list = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
 
 
@@ -117,15 +143,15 @@ class UserDictionary:
     Attributes:
         exclusions: 오탈자로 보고하지 않을 올바른 표기 목록
                     (예: 고유명사·전문용어·브랜드명).
-        assertion_groups: 정합성 어서션 — "이 이름들은 같은 항목이니 값이 일치해야 한다"
-                    는 사용자 선언. 라벨이 달라도(추출기가 다르게 표기해도) 해당 항목들을
-                    강제로 교차비교하여 값이 다르면 불일치로 확정 보고한다.
-                    각 그룹은 항목명(부분 문자열 매칭)들의 묶음.
-                    예: [["총예산", "전체예산", "사업예산"], ["지원금", "지원 금액"]]
+        alias_groups: 동일 항목 별칭(표기 통일) — 같은 항목을 사람마다 다르게 기입한
+                    표기 변형들의 묶음. 라벨이 달라 서로 다른 항목으로 흩어진 사실을
+                    하나로 묶어 값을 교차비교하게 한다(값 불일치 자체는 이후 LLM 검증).
+                    각 그룹은 나열된 표기들과 정확히 일치하는 키를 하나로 취급.
+                    예: [["총 금액", "합계 금액", "Total"], ["지원금", "지원 금액"]]
     """
 
     exclusions: list[str] = field(default_factory=list)
-    assertion_groups: list[list[str]] = field(default_factory=list)
+    alias_groups: list[list[str]] = field(default_factory=list)
     # 주의 항목: 자연어 규칙 목록. 각 규칙 위반을 AI 가 텍스트에서 찾아 보고.
     # (예: "'2025년'은 한자 '2025年'으로 표기", "금액은 항상 '원' 단위 명시")
     # 주의: 윗첨자/굵게 등 순수 서식은 텍스트 추출로 판별 불가하여 검증 대상이 아님.
@@ -136,15 +162,15 @@ class UserDictionary:
         data = data or {}
         exclusions = [str(x).strip() for x in (data.get("exclusions") or []) if str(x).strip()]
         groups: list[list[str]] = []
-        for grp in data.get("assertion_groups") or []:
+        for grp in data.get("alias_groups") or []:
             terms = [str(t).strip() for t in (grp or []) if str(t).strip()]
-            if terms:
+            if len(terms) >= 2:
                 groups.append(terms)
         watch = [str(w).strip() for w in (data.get("watch_items") or []) if str(w).strip()]
-        return cls(exclusions=exclusions, assertion_groups=groups, watch_items=watch)
+        return cls(exclusions=exclusions, alias_groups=groups, watch_items=watch)
 
     def is_empty(self) -> bool:
-        return not self.exclusions and not self.assertion_groups and not self.watch_items
+        return not self.exclusions and not self.alias_groups and not self.watch_items
 
 
 @dataclass
@@ -161,3 +187,4 @@ class ProgressEvent:
     typo_count: int = 0
     consistency_count: int = 0
     attention_count: int = 0
+    notation_count: int = 0
