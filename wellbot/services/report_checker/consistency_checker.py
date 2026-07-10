@@ -4,8 +4,10 @@ Step 1: 청크별 사실(Fact) 추출 (LLM)
 Step 2: Python dict 로 전체 교차 비교 → 불일치 후보 (컨텍스트 윈도우 무관)
 Step 3: 불일치 후보를 LLM 이 검증 (진짜 오류만 채택)
 
-사용자 사전의 동의어 그룹(synonym_groups)은 키/값 정규화 시 대표어로 합쳐,
-표기만 다른 동일 개념이 불일치로 오탐되지 않게 한다.
+사용자 사전의 정합성 어서션(assertion_groups)은 "이 이름들은 같은 항목이니 값이
+일치해야 한다"는 선언이다. 라벨이 달라(추출기가 다르게 표기해도) 서로 다른 키로
+흩어진 항목을 강제로 한 버킷에 모아 교차비교하고, 값이 다르면 LLM 판정을 건너뛰고
+불일치로 확정 보고한다(사용자 의도 존중).
 """
 
 from __future__ import annotations
@@ -76,44 +78,46 @@ JSON 외 다른 텍스트는 절대 포함하지 마세요.
 ]"""
 
 
-def _build_synonym_map(dictionary: UserDictionary) -> dict[str, str]:
-    """동의어 그룹을 {정규화된 변형 → 정규화된 대표어} 맵으로 변환.
-
-    대표어는 각 그룹의 첫 번째 용어. 키/값 정규화 모두에 사용한다.
-    """
-    syn: dict[str, str] = {}
-    for group in dictionary.synonym_groups:
-        if len(group) < 2:
-            continue
-        canonical = _base_normalize(group[0])
-        for term in group:
-            syn[_base_normalize(term)] = canonical
-    return syn
+def normalize_value(v: str) -> str:
+    """값 정규화: 소문자 + 공백/콤마 제거 (표기 차이 흡수)."""
+    v = v.strip().lower()
+    v = re.sub(r"\s+", "", v)
+    v = re.sub(r",", "", v)
+    return v
 
 
-def _base_normalize(s: str) -> str:
-    """공통 정규화: 소문자 + 공백/콤마 제거."""
-    s = s.strip().lower()
-    s = re.sub(r"\s+", "", s)
-    s = re.sub(r",", "", s)
-    return s
-
-
-def normalize_value(v: str, synonym_map: dict[str, str] | None = None) -> str:
-    """값 정규화 + 동의어 대표어 치환."""
-    nv = _base_normalize(v)
-    if synonym_map and nv in synonym_map:
-        return synonym_map[nv]
-    return nv
-
-
-def normalize_key(k: str, synonym_map: dict[str, str] | None = None) -> str:
-    """키 정규화: 공백/특수문자 제거 + 동의어 대표어 치환."""
+def normalize_key(k: str) -> str:
+    """키 정규화: 소문자 + 공백/특수문자 제거."""
     nk = k.strip().lower()
     nk = re.sub(r"[\s_\-·•]", "", nk)
-    if synonym_map and nk in synonym_map:
-        return synonym_map[nk]
     return nk
+
+
+def _assertion_matchers(dictionary: UserDictionary) -> list[tuple[str, list[str]]]:
+    """정합성 어서션을 (표시용 대표 라벨, [정규화된 매칭어들]) 목록으로 변환."""
+    matchers: list[tuple[str, list[str]]] = []
+    for group in dictionary.assertion_groups:
+        terms = [t for t in group if t and t.strip()]
+        if not terms:
+            continue
+        norm = [normalize_key(t) for t in terms]
+        norm = [t for t in norm if t]
+        if norm:
+            matchers.append((terms[0], norm))
+    return matchers
+
+
+def _match_assertion(nk: str, matchers: list[tuple[str, list[str]]]) -> int:
+    """정규화된 키 nk 가 속하는 어서션 그룹 인덱스. 없으면 -1.
+
+    부분 문자열(양방향 포함) 매칭 → 추출기가 라벨을 조금 다르게 붙여도
+    같은 항목으로 묶는다. (예: 어서션 '지원금' 이 '연구지원금' 을 포함)
+    """
+    for i, (_label, terms) in enumerate(matchers):
+        for t in terms:
+            if t and (t in nk or nk in t):
+                return i
+    return -1
 
 
 def extract_facts(
@@ -171,28 +175,45 @@ def find_conflicts(
 ) -> list[dict]:
     """Python dict 로 전체 비교 → 불일치 후보.
 
-    반환: [{"id":.., "key":.., "occurrences":[{page,value,sentence}, ...]}]
+    - 일반 키: 정규화된 키가 같은 사실끼리 값 비교.
+    - 어서션 그룹: 라벨이 달라도 매칭되는 사실을 한 버킷에 모아 강제 교차비교하고,
+      후보에 asserted=True 표시(검증 단계에서 LLM 판정 없이 확정).
+
+    반환: [{"id":.., "key":.., "occurrences":[...], "asserted": bool}]
     """
     dictionary = dictionary or UserDictionary()
-    synonym_map = _build_synonym_map(dictionary)
+    matchers = _assertion_matchers(dictionary)
 
-    # normalized_key → normalized_value → [Fact, ...]
-    key_map: dict[str, dict[str, list[Fact]]] = defaultdict(lambda: defaultdict(list))
+    # bucket_key → {asserted, label, values: {normalized_value: [Fact,...]}}
+    buckets: dict[str, dict] = defaultdict(
+        lambda: {"asserted": False, "label": "", "values": defaultdict(list)}
+    )
     for fact in facts:
-        nk = normalize_key(fact.key, synonym_map)
-        nv = normalize_value(fact.value, synonym_map)
-        if nk and nv:
-            key_map[nk][nv].append(fact)
+        nk = normalize_key(fact.key)
+        nv = normalize_value(fact.value)
+        if not nk or not nv:
+            continue
+        gi = _match_assertion(nk, matchers)
+        if gi >= 0:
+            bkey = f"__assert__{gi}"
+            buckets[bkey]["asserted"] = True
+            buckets[bkey]["label"] = matchers[gi][0]
+        else:
+            bkey = nk
+        buckets[bkey]["values"][nv].append(fact)
 
     conflicts: list[dict] = []
-    for nk, value_groups in key_map.items():
+    for bkey, b in buckets.items():
+        value_groups = b["values"]
         if len(value_groups) <= 1:
             continue
-        # 가장 긴 원본 key 를 대표 이름으로
-        original_key = max(
-            (f.key for grp in value_groups.values() for f in grp),
-            key=len,
-        )
+        if b["asserted"] and b["label"]:
+            original_key = b["label"]
+        else:
+            original_key = max(
+                (f.key for grp in value_groups.values() for f in grp),
+                key=len,
+            )
         occurrences: list[dict] = []
         for _nv, fact_list in value_groups.items():
             for f in fact_list:
@@ -201,14 +222,22 @@ def find_conflicts(
                 )
         occurrences.sort(key=lambda x: x["page"])
         conflicts.append(
-            {"key": original_key, "normalized_key": nk, "occurrences": occurrences}
+            {
+                "key": original_key,
+                "normalized_key": bkey,
+                "occurrences": occurrences,
+                "asserted": b["asserted"],
+            }
         )
 
     conflicts.sort(key=lambda x: x["occurrences"][0]["page"])
     # 검증 단계에서 안전하게 되찾을 수 있도록 안정적 id 부여
     for i, c in enumerate(conflicts):
         c["id"] = i
-    log.info("report_checker 불일치 후보 count=%d", len(conflicts))
+    n_assert = sum(1 for c in conflicts if c["asserted"])
+    log.info(
+        "report_checker 불일치 후보 count=%d (어서션 %d)", len(conflicts), n_assert
+    )
     return conflicts
 
 
@@ -218,18 +247,42 @@ def validate_conflicts(
     cancel_check=None,
     usage=None,
 ) -> list[ConsistencyError]:
-    """불일치 후보를 LLM 으로 검증 (배치)."""
+    """불일치 후보 확정.
+
+    - 어서션 후보(asserted): 사용자가 "값이 일치해야 한다"고 선언 → LLM 판정 없이 확정.
+    - 일반 후보: LLM 이 진짜 오류인지 배치 검증.
+    """
     if not conflicts:
         return []
 
     cfg = get_config()
-    by_id = {c["id"]: c for c in conflicts}
+    all_errors: list[ConsistencyError] = []
+
+    # 1) 어서션 후보 — 즉시 확정 (사용자 의도 존중)
+    asserted = [c for c in conflicts if c.get("asserted")]
+    for c in asserted:
+        occ = c["occurrences"]
+        values = list({o["value"] for o in occ})
+        pages = sorted({o["page"] for o in occ})
+        detail = " / ".join(f"{o['page']}p: {o['value']}" for o in occ)
+        all_errors.append(
+            ConsistencyError(
+                pages=pages,
+                key=c["key"],
+                values=values,
+                inconsistent_content=f"'{c['key']}' 값이 페이지마다 다릅니다",
+                reason=f"[사용자 지정 정합성 항목] {detail}",
+            )
+        )
+
+    # 2) 일반 후보 — LLM 검증
+    normal = [c for c in conflicts if not c.get("asserted")]
+    by_id = {c["id"]: c for c in normal}
     batch_size = cfg.validate_batch_size
     batches = [
-        conflicts[i : i + batch_size] for i in range(0, len(conflicts), batch_size)
+        normal[i : i + batch_size] for i in range(0, len(normal), batch_size)
     ]
     total = len(batches)
-    all_errors: list[ConsistencyError] = []
 
     for idx, batch in enumerate(batches, 1):
         if cancel_check and cancel_check():

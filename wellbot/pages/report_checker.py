@@ -109,7 +109,7 @@ def _upload_panel() -> rx.Component:
 
 
 def _dictionary_inputs() -> rx.Component:
-    """제외어 / 동의어 사전 입력 (접이식)."""
+    """제외어 / 정합성 어서션 / 주의 항목 입력 (접이식)."""
     return rx.accordion.root(
         rx.accordion.item(
             header=rx.hstack(
@@ -139,17 +139,22 @@ def _dictionary_inputs() -> rx.Component:
                 ),
                 rx.vstack(
                     rx.text(
-                        "동의어 — 같은 뜻으로 볼 용어 묶음 (한 줄에 한 그룹, 콤마로 구분)",
+                        "정합성 항목 — 값이 서로 일치해야 하는 항목 이름들 (한 줄에 한 묶음, 콤마로 구분)",
                         size="1",
                         color=COLORS["text_secondary"],
                     ),
                     rx.text_area(
-                        placeholder="예: 총예산, 전체예산, 총 예산\n1분기, 1Q, Q1",
-                        value=ReportCheckerState.synonyms_text,
-                        on_change=ReportCheckerState.set_synonyms_text,
+                        placeholder="예: 총예산, 전체예산, 사업예산\n지원금, 지원 금액",
+                        value=ReportCheckerState.assertions_text,
+                        on_change=ReportCheckerState.set_assertions_text,
                         rows="3",
                         width="100%",
                         disabled=ReportCheckerState.is_running,
+                    ),
+                    rx.text(
+                        "※ 이름이 달라도 같은 항목으로 묶어 교차 비교하고, 값이 다르면 오류로 보고합니다.",
+                        size="1",
+                        color=COLORS["text_secondary"],
                     ),
                     spacing="1",
                     width="100%",

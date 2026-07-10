@@ -117,13 +117,15 @@ class UserDictionary:
     Attributes:
         exclusions: 오탈자로 보고하지 않을 올바른 표기 목록
                     (예: 고유명사·전문용어·브랜드명).
-        synonym_groups: 동일하다고 간주할 용어 묶음 목록.
-                    각 그룹의 용어들은 일관성 검사에서 같은 값/항목으로 정규화된다.
-                    예: [["총예산", "전체예산", "총 예산"], ["1분기", "1Q", "Q1"]]
+        assertion_groups: 정합성 어서션 — "이 이름들은 같은 항목이니 값이 일치해야 한다"
+                    는 사용자 선언. 라벨이 달라도(추출기가 다르게 표기해도) 해당 항목들을
+                    강제로 교차비교하여 값이 다르면 불일치로 확정 보고한다.
+                    각 그룹은 항목명(부분 문자열 매칭)들의 묶음.
+                    예: [["총예산", "전체예산", "사업예산"], ["지원금", "지원 금액"]]
     """
 
     exclusions: list[str] = field(default_factory=list)
-    synonym_groups: list[list[str]] = field(default_factory=list)
+    assertion_groups: list[list[str]] = field(default_factory=list)
     # 주의 항목: 자연어 규칙 목록. 각 규칙 위반을 AI 가 텍스트에서 찾아 보고.
     # (예: "'2025년'은 한자 '2025年'으로 표기", "금액은 항상 '원' 단위 명시")
     # 주의: 윗첨자/굵게 등 순수 서식은 텍스트 추출로 판별 불가하여 검증 대상이 아님.
@@ -134,15 +136,15 @@ class UserDictionary:
         data = data or {}
         exclusions = [str(x).strip() for x in (data.get("exclusions") or []) if str(x).strip()]
         groups: list[list[str]] = []
-        for grp in data.get("synonym_groups") or []:
+        for grp in data.get("assertion_groups") or []:
             terms = [str(t).strip() for t in (grp or []) if str(t).strip()]
-            if len(terms) >= 2:
+            if terms:
                 groups.append(terms)
         watch = [str(w).strip() for w in (data.get("watch_items") or []) if str(w).strip()]
-        return cls(exclusions=exclusions, synonym_groups=groups, watch_items=watch)
+        return cls(exclusions=exclusions, assertion_groups=groups, watch_items=watch)
 
     def is_empty(self) -> bool:
-        return not self.exclusions and not self.synonym_groups and not self.watch_items
+        return not self.exclusions and not self.assertion_groups and not self.watch_items
 
 
 @dataclass

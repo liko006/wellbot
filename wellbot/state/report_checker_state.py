@@ -51,7 +51,7 @@ class ReportCheckerState(rx.State):
     pending_file_name: str = ""
     pending_file_size: int = 0
     exclusions_text: str = ""       # 제외어 (콤마/줄바꿈 구분)
-    synonyms_text: str = ""         # 동의어 (한 줄 = 한 그룹, 콤마 구분)
+    assertions_text: str = ""       # 정합성 어서션 (한 줄 = 한 묶음, 콤마 구분)
     watch_items_text: str = ""      # 주의 항목 (한 줄 = 한 규칙)
     include_consistency: bool = False  # 일관성 검사 포함 여부 (기본: 오탈자만, 일관성은 선택)
     ran_consistency: bool = True    # 이번 결과에 일관성 검사가 실제 수행됐는지
@@ -109,8 +109,8 @@ class ReportCheckerState(rx.State):
     def set_exclusions_text(self, value: str) -> None:
         self.exclusions_text = value
 
-    def set_synonyms_text(self, value: str) -> None:
-        self.synonyms_text = value
+    def set_assertions_text(self, value: str) -> None:
+        self.assertions_text = value
 
     def set_watch_items_text(self, value: str) -> None:
         self.watch_items_text = value
@@ -184,13 +184,13 @@ class ReportCheckerState(rx.State):
     def _parse_dictionary(self) -> UserDictionary:
         exclusions = [t.strip() for t in re.split(r"[\n,]", self.exclusions_text) if t.strip()]
         groups: list[list[str]] = []
-        for line in self.synonyms_text.splitlines():
+        for line in self.assertions_text.splitlines():
             terms = [t.strip() for t in line.split(",") if t.strip()]
-            if len(terms) >= 2:
+            if terms:
                 groups.append(terms)
         watch = [ln.strip() for ln in self.watch_items_text.splitlines() if ln.strip()]
         return UserDictionary(
-            exclusions=exclusions, synonym_groups=groups, watch_items=watch
+            exclusions=exclusions, assertion_groups=groups, watch_items=watch
         )
 
     def _apply_progress(self, evt: ProgressEvent) -> None:
@@ -399,7 +399,7 @@ class ReportCheckerState(rx.State):
         self.pending_file_name = ""
         self.pending_file_size = 0
         self.exclusions_text = ""
-        self.synonyms_text = ""
+        self.assertions_text = ""
         self.watch_items_text = ""
         self.include_consistency = False
         self.ran_consistency = False
