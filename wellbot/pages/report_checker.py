@@ -126,7 +126,7 @@ def _dictionary_inputs() -> rx.Component:
                         color=COLORS["text_secondary"],
                     ),
                     rx.text_area(
-                        placeholder="예: 위메프, 다우기술, RPA, 온보딩",
+                        placeholder="예: RPA, 온보딩",
                         value=ReportCheckerState.exclusions_text,
                         on_change=ReportCheckerState.set_exclusions_text,
                         rows="2",
@@ -170,7 +170,7 @@ def _dictionary_inputs() -> rx.Component:
                         disabled=ReportCheckerState.is_running,
                     ),
                     rx.text(
-                        "※ 윗첨자·굵게 등 서식 규칙은 텍스트 추출 특성상 판별할 수 없습니다.",
+                        "※ 윗첨자·볼드 등 서식 규칙은 텍스트 추출 특성상 판별할 수 없습니다.",
                         size="1",
                         color=COLORS["text_secondary"],
                     ),
@@ -510,10 +510,13 @@ def _error_panel() -> rx.Component:
 
 
 def report_checker_page() -> rx.Component:
-    return chat_layout(
-        rx.box(
-            rx.script(REPORT_CHECKER_SCRIPT),
-            rx.vstack(
+    # rx.script 는 페이지 fragment 루트에 두어야(레이아웃 내부 깊숙이 X) mount 타이밍
+    # 이슈 없이 window 전역 함수(reportPickFile 등)가 클릭 전에 정의된다. (index.py 와 동일 패턴)
+    return rx.fragment(
+        rx.script(REPORT_CHECKER_SCRIPT),
+        chat_layout(
+            rx.box(
+                rx.vstack(
                 rx.vstack(
                     rx.hstack(
                         rx.link(
@@ -553,9 +556,10 @@ def report_checker_page() -> rx.Component:
                 max_width="1100px",
                 margin="0 auto",
             ),
-            width="100%",
-            height="100%",
-            overflow_y="auto",
-            padding="2.5em 2em",
-        )
+                width="100%",
+                height="100%",
+                overflow_y="auto",
+                padding="2.5em 2em",
+            ),
+        ),
     )
