@@ -315,6 +315,70 @@ def _models_view() -> rx.Component:
     )
 
 
+# ── AI 서비스 · 에이전트 ──────────────────────────────────────────────
+
+
+def _ai_card(c: dict) -> rx.Component:
+    return rx.box(
+        rx.text(c["value"], size="6", weight="bold", color=c["accent"]),
+        rx.text(c["label"], size="1", weight="medium", color=COLORS["text_primary"]),
+        rx.text(c["sub"], size="1", color=COLORS["text_secondary"]),
+        padding="0.9em 1.1em",
+        border=f"1px solid {COLORS['border']}",
+        border_radius="12px",
+        bg=COLORS["sidebar_bg"],
+        flex="1",
+        min_width="150px",
+    )
+
+
+def _ai_row(r: dict) -> rx.Component:
+    return rx.table.row(
+        cell(rx.text(r["agent"], size="1", weight="medium")),
+        cell(rx.text(r["model"], size="1")),
+        cell(rx.text(r["runs"], size="1")),
+        cell(rx.text(r["aborted"], size="1", color=COLORS["text_secondary"])),
+        cell(rx.text(r["pages"], size="1")),
+        cell(rx.text(r["in_tok"], size="1")),
+        cell(rx.text(r["out_tok"], size="1")),
+        cell(rx.text(r["users"], size="1")),
+        cell(rx.text(r["cost"], size="1", weight="medium")),
+    )
+
+
+def _ai_view() -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.foreach(MonitoringState.ai_cards, _ai_card),
+            spacing="3",
+            width="100%",
+            wrap="wrap",
+        ),
+        _section(
+            "에이전트별 사용량 · 추정 비용",
+            _table(
+                headers=[
+                    _th("에이전트"),
+                    _th("모델"),
+                    _th("실행"),
+                    _th("중단/실패"),
+                    _th("페이지"),
+                    _th("입력 토큰"),
+                    _th("출력 토큰"),
+                    _th("사용자"),
+                    _th("추정 비용"),
+                ],
+                body=rx.foreach(MonitoringState.ai_rows, _ai_row),
+                empty_len=MonitoringState.ai_rows.length(),
+                empty_msg="집계된 AI 서비스 사용 내역이 없습니다.",
+            ),
+        ),
+        spacing="4",
+        width="100%",
+        align="start",
+    )
+
+
 # ── 인증 · 보안 ───────────────────────────────────────────────────────
 
 
@@ -390,11 +454,13 @@ def _subtabs() -> rx.Component:
             rx.tabs.trigger("실패 피드", value="failures"),
             rx.tabs.trigger("파일 인제스트", value="ingest"),
             rx.tabs.trigger("모델·RAG", value="models"),
+            rx.tabs.trigger("AI 서비스", value="ai"),
             rx.tabs.trigger("인증·보안", value="auth"),
         ),
         rx.tabs.content(_failures_view(), value="failures", padding_top="1em"),
         rx.tabs.content(_ingest_view(), value="ingest", padding_top="1em"),
         rx.tabs.content(_models_view(), value="models", padding_top="1em"),
+        rx.tabs.content(_ai_view(), value="ai", padding_top="1em"),
         rx.tabs.content(_auth_view(), value="auth", padding_top="1em"),
         value=MonitoringState.sub_tab,
         on_change=MonitoringState.set_sub_tab,

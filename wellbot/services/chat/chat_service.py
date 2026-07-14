@@ -27,11 +27,23 @@ def _verify_ownership(session, smry_id: str, emp_no: str) -> ChatSummary | None:
 
 
 def list_conversations(emp_no: str) -> list[dict]:
-    """사원의 대화 목록 조회 (최근 30개, 메시지 제외)"""
+    """사원의 대화 목록 조회 (최근 30개, 메시지 제외).
+
+    AI 서비스/에이전트가 생성한 기록(메시지에 agnt_id 태깅)은 사람의 채팅이 아니므로
+    사이드바 목록에서 제외한다. (예: 보고서 오류 검출 사용 내역)
+    """
     with get_session() as session:
+        agent_smry = (
+            session.query(ChatMessage.chtb_tlk_smry_id)
+            .filter(ChatMessage.agnt_id.isnot(None))
+            .distinct()
+        )
         rows = (
             session.query(ChatSummary)
-            .filter(ChatSummary.emp_no == emp_no)
+            .filter(
+                ChatSummary.emp_no == emp_no,
+                ChatSummary.chtb_tlk_smry_id.notin_(agent_smry),
+            )
             .order_by(ChatSummary.rgst_dtm.desc())
             .limit(CONVERSATION_LIMIT)
             .all()

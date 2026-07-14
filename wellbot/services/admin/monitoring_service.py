@@ -289,6 +289,7 @@ def build_dashboard(window: str = "7d") -> dict:
         **_failures(scoped),
         **_ingest(scoped),
         **_models(scoped),
+        **_ai_services(scoped),
         **_auth(scoped),
     }
 
@@ -306,6 +307,8 @@ def _empty_dashboard() -> dict:
         "ingest_feed": [],
         "model_rows": [],
         "convo_rows": [],
+        "ai_cards": [],
+        "ai_rows": [],
         "rag_cards": [],
         "auth_cards": [],
         "auth_feed": [],
@@ -525,6 +528,74 @@ def _ingest_row(ev: dict, kind: str, color: str) -> dict:
         "target": target,
         "detail": detail,
     }
+
+
+def _ai_services(events: list[dict]) -> dict:
+    """AI 서비스/에이전트 사용량 — 채팅과 분리 집계.
+
+    service 필드가 있는 이벤트(완료/취소/에러 모두 — 토큰은 결과와 무관하게 소비됨)를
+    agnt_id 별로 묶어 실행 수·토큰·비용·사용자·중단/실패 건수를 집계한다.
+    채팅 지표(chat response)와 독립적이라 대시보드에서 별도 섹션으로 노출한다.
+    """
+    svc_events = [e for e in events if e.get("service") == "report_checker"]
+
+    by_agent: dict[str, dict] = defaultdict(
+        lambda: {
+            "runs": 0, "in": 0, "out": 0, "pages": 0, "model": "-",
+            "emps": set(), "cancelled": 0, "failed": 0,
+        }
+    )
+    for e in svc_events:
+        agnt = e.get("agnt_id") or e.get("service") or "?"
+        a = by_agent[agnt]
+        a["runs"] += 1
+        a["in"] += _gi(e, "input_tokens")
+        a["out"] += _gi(e, "output_tokens")
+        a["pages"] += _gi(e, "pages")
+        a["model"] = e.get("model", "-") or "-"
+        status = e.get("status")
+        if status == "cancelled":
+            a["cancelled"] += 1
+        elif status == "failed":
+            a["failed"] += 1
+        if e.get("emp_no") not in (None, "-"):
+            a["emps"].add(e.get("emp_no"))
+
+    total_runs = sum(a["runs"] for a in by_agent.values())
+    total_in = sum(a["in"] for a in by_agent.values())
+    total_out = sum(a["out"] for a in by_agent.values())
+    total_cost = sum(_cost(a["model"], a["in"], a["out"]) for a in by_agent.values())
+    total_users = len({emp for a in by_agent.values() for emp in a["emps"]})
+
+    ai_cards = [
+        _card("AI 서비스 실행", _num(total_runs), "에이전트 호출(잡)", _ACCENT["purple"]),
+        _card("사용 토큰", _num(total_in + total_out), "입력+출력", _ACCENT["info"]),
+        _card("예상 비용", _usd(total_cost), "추정 단가 기준", _ACCENT["warn"]),
+        _card("고유 사용자", _num(total_users), "서비스 이용 사원", _ACCENT["good"]),
+    ]
+
+    ai_rows = []
+    for agnt, a in by_agent.items():
+        cost = _cost(a["model"], a["in"], a["out"])
+        ai_rows.append(
+            {
+                "agent": agnt,
+                "model": a["model"],
+                "runs": _num(a["runs"]),
+                "aborted": _num(a["cancelled"] + a["failed"]),
+                "pages": _num(a["pages"]),
+                "in_tok": _num(a["in"]),
+                "out_tok": _num(a["out"]),
+                "users": _num(len(a["emps"])),
+                "cost": _usd(cost),
+                "_sort": cost,
+            }
+        )
+    ai_rows.sort(key=lambda r: r["_sort"], reverse=True)
+    for r in ai_rows:
+        r.pop("_sort", None)
+
+    return {"ai_cards": ai_cards, "ai_rows": ai_rows}
 
 
 def _models(events: list[dict]) -> dict:

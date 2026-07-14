@@ -23,5 +23,5 @@ ai_services:
     name: 보고서 오류 검출
     description: PDF 보고서의 오탈자와 논리(일관성) 오류를 AI가 자동으로 검출합니다.
     icon: file-search
-    route: ""          # TODO: 백엔드 구현 후 /ai-services/report-checker 로 설정
+    route: "/ai-services/report-checker"
     enabled: true
