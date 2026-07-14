@@ -5,6 +5,7 @@ DB 연동으로 대화 이력 영속화 보장.
 """
 
 import asyncio
+import json
 import logging
 import random
 import time
@@ -20,7 +21,10 @@ from wellbot.constants import (
     FILE_MAX_SIZE_MB,
     FILE_PARSER_MODE,
     KB_NOT_FOUND_PATTERNS,
+    LLM_CONTEXT_MAX_TOKENS,
     LOCAL_SUPPORTED_EXTS,
+    MESSAGE_PAGE_SIZE,
+    STREAM_FLUSH_INTERVAL_SEC,
     TITLE_MAX_LENGTH,
     TOOL_USE_MAX_ITERATIONS,
     UPSTAGE_SUPPORTED_EXTS,
@@ -29,14 +33,26 @@ from wellbot.services.ai.bedrock import (
     astream_chat,
     astream_chat_with_tools,
     generate_title,
+    read_budget_for,
 )
 from wellbot.services.chat import chat_service, response_filter, tool_executor
-from wellbot.services.core.settings import get_config, get_greetings
+from wellbot.services.core.executor import ensure_io_executor
+from wellbot.services.core.settings import ModelConfig, get_config, get_greetings
 from wellbot.services.files import attachment_service, file_parser
 from wellbot.state.chat_helpers.attachments import (
     collect_image_blocks,
     fetch_pending_attachments,
     rows_to_attachment_infos,
+)
+from wellbot.state.chat_helpers.context_window import select_context_window
+from wellbot.state.chat_helpers.model_params import (
+    EFFORT_LABELS,
+    EFFORT_PRESETS,
+    MAX_TOKENS_PRESETS,
+    THINKING_BUDGET_PRESETS,
+    apply_overrides,
+    nearest_index,
+    parse_overrides,
 )
 from wellbot.state.chat_helpers.download_script import (
     build_download_script,
@@ -44,6 +60,7 @@ from wellbot.state.chat_helpers.download_script import (
 )
 from wellbot.state.chat_helpers.system_prompt import (
     augment_system_with_attachments,
+    augment_system_with_datetime,
     augment_system_with_kb,
 )
 from wellbot.state.chat_helpers.upload_script import build_upload_script
@@ -76,6 +93,10 @@ class ChatState(rx.State):
     thinking_enabled: bool = False
     selected_prompt: str = "default"
     show_style_panel: bool = False
+    show_model_settings_panel: bool = False
+    # 모델별 파라미터 오버라이드. 브라우저 LocalStorage 에 JSON 으로 영구 저장
+    # ({model_name: {param: value}}). 서버 state 로 동기화되어 send_message 에서 읽힘.
+    model_settings_raw: str = rx.LocalStorage("{}", name="wellbot_model_settings")
     greeting_text: str = ""
 
     # ── 대화 검색 ──
@@ -154,18 +175,24 @@ class ChatState(rx.State):
             model_name=kwargs.get("model_name", conv.model_name),  # type: ignore[arg-type]
             is_loaded=kwargs.get("is_loaded", conv.is_loaded),  # type: ignore[arg-type]
             is_persisted=kwargs.get("is_persisted", conv.is_persisted),  # type: ignore[arg-type]
+            has_more_older=kwargs.get("has_more_older", conv.has_more_older),  # type: ignore[arg-type]
         )
         self.conversations = [
             updated if c.id == updated.id else c for c in self.conversations
         ]
 
     def _load_messages_for(self, idx: int) -> None:
-        """DB 에서 대화 메시지 로드. 이미 로드된 경우 첨부파일 목록만 갱신"""
+        """DB 에서 대화 최근 메시지(MESSAGE_PAGE_SIZE) 로드. 이미 로드된 경우 첨부만 갱신.
+
+        이전 메시지는 load_older_messages 로 커서 기반 추가 로드.
+        """
         conv = self.conversations[idx]
         if conv.is_loaded:
             self._load_conversation_attachments(conv.id)
             return
-        msgs = chat_service.get_conversation_messages(conv.id, self._emp_no)
+        msgs, has_more = chat_service.get_conversation_messages(
+            conv.id, self._emp_no, limit=MESSAGE_PAGE_SIZE
+        )
         loaded = [
             Message(
                 role=m["role"],
@@ -176,7 +203,9 @@ class ChatState(rx.State):
             )
             for m in msgs
         ]
-        self._update_conversation(idx, messages=loaded, is_loaded=True)
+        self._update_conversation(
+            idx, messages=loaded, is_loaded=True, has_more_older=has_more
+        )
         self._load_conversation_attachments(conv.id)
 
     def _load_conversation_attachments(self, conv_id: str) -> None:
@@ -201,6 +230,14 @@ class ChatState(rx.State):
     def has_messages(self) -> bool:
         """현재 대화에 메시지가 하나 이상 존재하는지 여부"""
         return len(self.current_messages) > 0
+
+    @rx.var
+    def can_load_older(self) -> bool:
+        """현재 대화에 로드되지 않은 이전 메시지가 DB 에 남아있는지 여부"""
+        idx = self._get_current_index()
+        if idx is None:
+            return False
+        return self.conversations[idx].has_more_older
 
     @rx.var
     def current_title(self) -> str:
@@ -334,6 +371,109 @@ class ChatState(rx.State):
         except Exception:
             return False
 
+    # ── 모델 설정(파라미터 오버라이드) ──
+
+    def _selected_model_config(self) -> ModelConfig | None:
+        """현재 선택된 모델의 base 설정 (없으면 None)."""
+        try:
+            return get_config().get_model(self.selected_model)
+        except Exception:
+            return None
+
+    @rx.var
+    def model_is_adaptive(self) -> bool:
+        """선택 모델이 adaptive thinking(effort 제어) 모델인지 여부"""
+        m = self._selected_model_config()
+        return bool(m and m.thinking_mode == "adaptive")
+
+    @rx.var
+    def model_has_top_p(self) -> bool:
+        """선택 모델이 top_p 파라미터를 쓰는지 여부"""
+        m = self._selected_model_config()
+        return bool(m and m.top_p is not None and m.supports_temperature)
+
+    @rx.var
+    def model_supports_temperature(self) -> bool:
+        """선택 모델이 temperature 등 sampling 파라미터를 지원하는지 여부.
+
+        Opus 4.7/4.8 등은 sampling 폐기 모델이라 False → 설정 패널에서 숨긴다.
+        """
+        m = self._selected_model_config()
+        return m.supports_temperature if m else True
+
+    @rx.var
+    def current_temperature_num(self) -> float:
+        """선택 모델의 유효 temperature (슬라이더 값)"""
+        ov = parse_overrides(self.model_settings_raw).get(self.selected_model, {})
+        m = self._selected_model_config()
+        base = m.temperature if m else 0.5
+        try:
+            return float(ov.get("temperature", base))
+        except (ValueError, TypeError):
+            return base
+
+    @rx.var
+    def current_temperature_display(self) -> str:
+        return str(self.current_temperature_num)
+
+    @rx.var
+    def current_top_p_num(self) -> float:
+        """선택 모델의 유효 top_p (슬라이더 값)"""
+        ov = parse_overrides(self.model_settings_raw).get(self.selected_model, {})
+        m = self._selected_model_config()
+        base = m.top_p if (m and m.top_p is not None) else 0.9
+        try:
+            return float(ov.get("top_p", base))
+        except (ValueError, TypeError):
+            return base
+
+    @rx.var
+    def current_top_p_display(self) -> str:
+        return str(self.current_top_p_num)
+
+    @rx.var
+    def current_max_tokens_index(self) -> int:
+        """max_tokens 슬라이더 인덱스 (프리셋 위치)"""
+        ov = parse_overrides(self.model_settings_raw).get(self.selected_model, {})
+        m = self._selected_model_config()
+        val = ov.get("max_tokens", m.max_tokens if m else 8192)
+        return nearest_index(MAX_TOKENS_PRESETS, val)
+
+    @rx.var
+    def current_max_tokens_display(self) -> str:
+        return MAX_TOKENS_PRESETS[self.current_max_tokens_index]
+
+    @rx.var
+    def current_thinking_budget_index(self) -> int:
+        """thinking_budget 슬라이더 인덱스 (프리셋 위치)"""
+        ov = parse_overrides(self.model_settings_raw).get(self.selected_model, {})
+        m = self._selected_model_config()
+        val = ov.get("thinking_budget", m.thinking_budget if m else 4096)
+        return nearest_index(THINKING_BUDGET_PRESETS, val)
+
+    @rx.var
+    def current_thinking_budget_display(self) -> str:
+        return THINKING_BUDGET_PRESETS[self.current_thinking_budget_index]
+
+    @rx.var
+    def current_effort_index(self) -> int:
+        """유효 effort 의 슬라이더 인덱스 (0=low ~ 3=xhigh)"""
+        ov = parse_overrides(self.model_settings_raw).get(self.selected_model, {})
+        m = self._selected_model_config()
+        eff = str(ov.get("effort", m.effort if m else "high"))
+        try:
+            return EFFORT_PRESETS.index(eff)
+        except ValueError:
+            return EFFORT_PRESETS.index("high")
+
+    @rx.var
+    def current_effort_display(self) -> str:
+        """effort 값 표시: 'High' / 'Extra high' 등"""
+        ov = parse_overrides(self.model_settings_raw).get(self.selected_model, {})
+        m = self._selected_model_config()
+        eff = str(ov.get("effort", m.effort if m else "high"))
+        return EFFORT_LABELS.get(eff, eff)
+
     @rx.var
     def prompt_list(self) -> list[PromptInfo]:
         """설정에서 읽은 사용 가능한 프롬프트 템플릿 목록"""
@@ -403,6 +543,10 @@ class ChatState(rx.State):
         AuthState 에서 사번 취득 후 모델·프롬프트 기본값 설정,
         DB 에서 대화 목록 로드. 이미 로드된 경우 재조회 생략.
         """
+        # 블로킹 I/O 처리용 기본 스레드풀 확대 (멱등, 첫 로드 시 1회 설치).
+        # lifespan 에서도 설치하지만 Reflex 이벤트 루프 컨텍스트를 보장하기 위해 재호출.
+        ensure_io_executor()
+
         # AuthState 에서 emp_no 취득
         from wellbot.state.auth_state import AuthState
         auth = await self.get_state(AuthState)
@@ -415,7 +559,9 @@ class ChatState(rx.State):
                 from wellbot.services.knowledgebase.personal_kb_manager import (
                     get_user_kb as _get_user_kb,
                 )
-                self.personal_kb_exists = _get_user_kb(self._emp_no) is not None
+                self.personal_kb_exists = (
+                    await asyncio.to_thread(_get_user_kb, self._emp_no) is not None
+                )
             except Exception:
                 self.personal_kb_exists = False
             try:
@@ -426,7 +572,10 @@ class ChatState(rx.State):
                     )
                     # 같은 팀의 다른 팀원이 이미 만든 팀 KB 가 있으면 본인 행 자동 등록
                     self.team_kb_exists = (
-                        _ensure_team_kb_membership(self._emp_no, self.dept_cd) is not None
+                        await asyncio.to_thread(
+                            _ensure_team_kb_membership, self._emp_no, self.dept_cd
+                        )
+                        is not None
                     )
             except Exception:
                 self.dept_cd = ""
@@ -455,7 +604,7 @@ class ChatState(rx.State):
 
         # DB 에서 대화 목록 로드
         if self._emp_no:
-            convs = chat_service.list_conversations(self._emp_no)
+            convs = await asyncio.to_thread(chat_service.list_conversations, self._emp_no)
             db_conversations = [
                 Conversation(
                     id=c["id"],
@@ -494,6 +643,70 @@ class ChatState(rx.State):
     def toggle_style_panel(self) -> None:
         """스타일 패널 표시/숨김 토글"""
         self.show_style_panel = not self.show_style_panel
+        if self.show_style_panel:
+            self.show_model_settings_panel = False
+
+    def toggle_model_settings_panel(self) -> None:
+        """모델 설정 패널 표시/숨김 토글"""
+        self.show_model_settings_panel = not self.show_model_settings_panel
+        if self.show_model_settings_panel:
+            self.show_style_panel = False
+
+    def _set_model_param(self, param: str, value: str) -> None:
+        """선택 모델의 파라미터 오버라이드를 LocalStorage(JSON)에 기록."""
+        data = parse_overrides(self.model_settings_raw)
+        entry = dict(data.get(self.selected_model, {}))
+        entry[param] = value
+        data[self.selected_model] = entry
+        self.model_settings_raw = json.dumps(data)
+
+    def _slider_first(self, value) -> float | None:
+        """rx.slider on_change 가 넘기는 list 에서 첫 값 추출."""
+        try:
+            return float(value[0])
+        except (ValueError, TypeError, IndexError):
+            return None
+
+    def set_model_temperature_slider(self, value: list) -> None:
+        v = self._slider_first(value)
+        if v is not None:
+            self._set_model_param("temperature", str(round(v, 2)))
+
+    def set_model_top_p_slider(self, value: list) -> None:
+        v = self._slider_first(value)
+        if v is not None:
+            self._set_model_param("top_p", str(round(v, 2)))
+
+    def set_model_effort_index(self, value: list) -> None:
+        """effort 슬라이더(0~3) → effort 레벨 문자열로 저장."""
+        v = self._slider_first(value)
+        if v is None:
+            return
+        idx = max(0, min(len(EFFORT_PRESETS) - 1, int(v)))
+        self._set_model_param("effort", EFFORT_PRESETS[idx])
+
+    def set_model_max_tokens_index(self, value: list) -> None:
+        """max_tokens 슬라이더 인덱스 → 프리셋 값 저장."""
+        v = self._slider_first(value)
+        if v is None:
+            return
+        idx = max(0, min(len(MAX_TOKENS_PRESETS) - 1, int(v)))
+        self._set_model_param("max_tokens", MAX_TOKENS_PRESETS[idx])
+
+    def set_model_thinking_budget_index(self, value: list) -> None:
+        """thinking_budget 슬라이더 인덱스 → 프리셋 값 저장."""
+        v = self._slider_first(value)
+        if v is None:
+            return
+        idx = max(0, min(len(THINKING_BUDGET_PRESETS) - 1, int(v)))
+        self._set_model_param("thinking_budget", THINKING_BUDGET_PRESETS[idx])
+
+    def reset_model_settings(self) -> None:
+        """선택 모델의 오버라이드 제거 → 기본값(models.yaml)으로 복귀."""
+        data = parse_overrides(self.model_settings_raw)
+        if self.selected_model in data:
+            del data[self.selected_model]
+            self.model_settings_raw = json.dumps(data)
 
     def select_prompt(self, name: str) -> None:
         """시스템 프롬프트 템플릿 선택 후 패널 닫기.
@@ -577,6 +790,48 @@ class ChatState(rx.State):
             "if (window.__resetAutoScroll) { window.__resetAutoScroll(); }"
         )
 
+    async def load_older_messages(self) -> None:
+        """현재 대화의 이전(더 오래된) 메시지 페이지를 커서 기반으로 추가 로드.
+
+        DB 조회는 to_thread 로 오프로드해 이벤트 루프를 막지 않는다.
+        """
+        idx = self._get_current_index()
+        if idx is None:
+            return
+        conv = self.conversations[idx]
+        if not conv.messages or not conv.has_more_older:
+            return
+
+        oldest_seq = conv.messages[0].seq
+        older, has_more = await asyncio.to_thread(
+            chat_service.get_conversation_messages,
+            conv.id,
+            self._emp_no,
+            limit=MESSAGE_PAGE_SIZE,
+            before_seq=oldest_seq,
+        )
+        older_msgs = [
+            Message(
+                role=m["role"],
+                content=m["content"],
+                timestamp=m["timestamp"],
+                model_name=m.get("model_name", ""),
+                seq=m.get("seq", 0),
+            )
+            for m in older
+        ]
+
+        # 로드 사이 대화가 전환되지 않았는지 재확인 후 prepend
+        idx = self._get_current_index()
+        if idx is None or self.conversations[idx].id != conv.id:
+            return
+        current = self.conversations[idx]
+        self._update_conversation(
+            idx,
+            messages=[*older_msgs, *current.messages],
+            has_more_older=has_more if older_msgs else False,
+        )
+
     def delete_conversation(self, conv_id: str) -> None:
         """대화 삭제. DB 에 저장된 경우 DB 에서도 제거"""
         conv = next((c for c in self.conversations if c.id == conv_id), None)
@@ -644,27 +899,29 @@ class ChatState(rx.State):
         else:
             self.expanded_kb_folders = self.expanded_kb_folders + [folder_type]
 
-    async def confirm_kb_delete(self) -> None:
+    @rx.event(background=True)
+    async def confirm_kb_delete(self):
         """선택된 파일들을 S3 에서 삭제한 뒤 ingestion job 으로 벡터 인덱스 정리.
 
-        현재 활성 탭(personal/team)에 따라 적절한 KB manager 로 분기.
-        team KB 는 같은 팀원 누구나 삭제 가능 (현재 정책).
+        background 이벤트 — 인덱스 정리 ingestion poll 이 길어도 이벤트 채널을 점유하지
+        않아 처리 중에도 토글/패널이 응답한다(긴 침묵으로 인한 websocket 끊김도 회피).
+        상태 변경(self.xxx)은 반드시 `async with self:` 안에서 수행하고, 무거운 작업
+        (run_in_executor)은 락 밖에서 await 한다.
+        현재 활성 탭(personal/team)에 따라 KB manager 분기. team KB 는 같은 팀원 누구나
+        삭제 가능(현재 정책).
         """
-        if not self.selected_kb_docs:
-            return
-
-        filenames = list(self.selected_kb_docs)
-        emp_no = self._emp_no
-        if not emp_no:
-            self.kb_delete_status = "error"
-            self.kb_delete_error = "로그인 정보를 확인할 수 없습니다."
-            return
-
-        tab = self.kb_doc_list_tab
-
-        self.kb_delete_status = "processing"
-        self.kb_delete_error = ""
-        yield
+        async with self:
+            if not self.selected_kb_docs:
+                return
+            filenames = list(self.selected_kb_docs)
+            emp_no = self._emp_no
+            tab = self.kb_doc_list_tab
+            if not emp_no:
+                self.kb_delete_status = "error"
+                self.kb_delete_error = "로그인 정보를 확인할 수 없습니다."
+                return
+            self.kb_delete_status = "processing"
+            self.kb_delete_error = ""
 
         try:
             import asyncio as _asyncio
@@ -749,17 +1006,27 @@ class ChatState(rx.State):
                 lambda: _poll(kb_info["kb_id"], kb_info["data_source_id"], job_id),
             )
 
-            if status == "COMPLETE" or status.startswith("COMPLETE_WITH_ERRORS"):
-                self.kb_delete_status = "ready"
-                self.selected_kb_docs = []
-                # 목록 새로고침
-                yield ChatState.load_kb_docs  # type: ignore
-            else:
-                self.kb_delete_status = "error"
-                self.kb_delete_error = f"인덱스 정리 실패: {status}"
+            ok = status == "COMPLETE" or status.startswith("COMPLETE_WITH_ERRORS")
+            async with self:
+                if ok:
+                    self.kb_delete_status = "ready"
+                    self.selected_kb_docs = []
+                else:
+                    self.kb_delete_status = "error"
+                    self.kb_delete_error = f"인덱스 정리 실패: {status}"
+            if ok:
+                yield ChatState.load_kb_docs  # 목록 새로고침
         except Exception as e:
-            self.kb_delete_status = "error"
-            self.kb_delete_error = str(e)
+            async with self:
+                self.kb_delete_status = "error"
+                self.kb_delete_error = str(e)
+        finally:
+            # processing 고착 방지(M3): 위 경로에서 종료 상태를 못 찍고 빠져나온 경우에만
+            # error 로 떨어뜨려 UI 가 영구 잠기지 않게 한다(정상 종료 시엔 no-op).
+            async with self:
+                if self.kb_delete_status == "processing":
+                    self.kb_delete_status = "error"
+                    self.kb_delete_error = "처리가 완료되지 않았습니다. 다시 시도해 주세요."
 
     async def load_kb_docs(self) -> None:
         """현재 탭(personal/team)에 해당하는 S3 파일 목록 로드.
@@ -784,17 +1051,20 @@ class ChatState(rx.State):
         loop = _asyncio.get_running_loop()
         try:
             if tab == "shared":
-                # 회사 KB: shared/{문서종류}/raw/{파일} 구조 → 문서종류 단위 그룹 뷰
+                # 회사 KB: shared{env}/{문서종류}/raw/{파일} 구조 → 문서종류 단위 그룹 뷰.
+                # 공용 prefix base 는 dev/prd 분기(shared / shared-dev) — kb_utils 단일 출처.
                 from wellbot.services.knowledgebase.config import get_kb_config
+                from wellbot.services.knowledgebase.kb_utils import shared_base
                 shared_cfg = get_kb_config().get("shared_kb", {})
                 shared_bucket = shared_cfg.get("s3_bucket", "")
                 if not shared_bucket:
                     self.kb_folder_list = []
                     return
 
+                base = shared_base()
                 items = await loop.run_in_executor(
                     None,
-                    lambda: storage_service.list_objects_with_meta("shared/", shared_bucket),
+                    lambda: storage_service.list_objects_with_meta(f"{base}/", shared_bucket),
                 )
                 # 대분류 → 소분류 → 파일목록 으로 그룹핑.
                 # raw/ = 인덱싱 대상(원본 + 변환본). originals/ = 인덱싱 제외 원본
@@ -806,10 +1076,10 @@ class ChatState(rx.State):
                 for obj in items:
                     key = obj["key"]
                     parts = key.split("/")
-                    # shared/{대분류}/{raw|originals}/{...} 형태만 채택
+                    # shared{env}/{대분류}/{raw|originals}/{...} 형태만 채택
                     if (
                         len(parts) < 4
-                        or parts[0] != "shared"
+                        or parts[0] != base
                         or parts[2] not in ("raw", "originals")
                     ):
                         continue
@@ -990,6 +1260,7 @@ class ChatState(rx.State):
         if not (
             self.active_panel
             or self.show_style_panel
+            or self.show_model_settings_panel
             or self.expanded_kb_folders
             or self.ingestion_status in ("ready", "error")
             or self.kb_delete_status in ("ready", "error")
@@ -997,6 +1268,7 @@ class ChatState(rx.State):
             return
         self.active_panel = ""
         self.show_style_panel = False
+        self.show_model_settings_panel = False
         self.expanded_kb_folders = []
         if self.ingestion_status in ("ready", "error"):
             self.ingestion_status = "idle"
@@ -1094,6 +1366,10 @@ class ChatState(rx.State):
             return "처리 시간이 초과되었습니다. 잠시 후 다시 시도해주세요."
         if "다른 팀원이 문서를 처리 중" in error:
             return error
+        if "No files selected" in error:
+            # 패널(pending_files)과 브라우저 선택(_kbSelectedFiles)이 어긋난 경우.
+            # 관리자 문의가 아니라 재선택을 안내.
+            return "선택된 파일을 찾을 수 없습니다. 파일을 다시 선택해 주세요."
         log.warning("KB 처리 오류 (사용자에게는 일반 메시지 표시): %s", error)
         return "문서 처리 중 오류가 발생했습니다. 관리자에게 문의해주세요."
 
@@ -1118,185 +1394,101 @@ class ChatState(rx.State):
             callback=ChatState.on_upload_complete,
         )
 
+    @rx.event(background=True)
     async def on_upload_complete(self, result):
-        """JS uploadKbFilesToApi() 완료 후 콜백"""
+        """JS uploadKbFilesToApi() 완료 후 콜백.
+
+        background 이벤트 — 변환+ingest 가 길어도 이벤트 채널을 점유하지 않아
+        처리 중에도 토글/패널이 응답하고, 긴 침묵으로 인한 websocket 유휴 끊김을
+        피한다. 상태 변경(self.xxx)은 반드시 `async with self:` 안에서 수행하고,
+        무거운 작업(run_in_executor)은 락 밖에서 await 한다.
+        """
         if isinstance(result, str):
             import json as _json
             try:
                 result = _json.loads(result)
             except Exception:
-                self.ingestion_status = "error"
-                self.ingestion_error = f"응답 파싱 실패: {result}"
-                self.pending_files = []
+                async with self:
+                    self.ingestion_status = "error"
+                    self.ingestion_error = f"응답 파싱 실패: {result}"
+                    self.pending_files = []
                 return
 
         if result is None or (isinstance(result, dict) and result.get("error")):
-            # 업로드 자체 실패: S3 는 엔드포인트(upload_files_to_kb, with_rollback=True)가
-            # 이미 롤백. 패널 대기 목록(pending_files)도 비워 stale 상태 방지
-            # (JS _kbSelectedFiles 는 이미 비워졌으므로, 재시도하려면 파일 재선택 필요).
+            # 업로드 자체 실패: S3 는 엔드포인트(stage_raw_files)가 부분 적재분을 롤백.
+            # 패널 대기 목록도 비워 stale 방지(JS _kbSelectedFiles 도 함께 비워져 재선택 가능).
             error_msg = result.get("error", "업로드 실패") if result else "업로드 응답 없음"
-            self.ingestion_status = "error"
-            self.ingestion_error = self._user_friendly_error(error_msg)
-            self.pending_files = []
+            async with self:
+                self.ingestion_status = "error"
+                self.ingestion_error = self._user_friendly_error(error_msg)
+                self.pending_files = []
             return
 
         import asyncio as _asyncio
 
-        # 이번 turn 에 S3 에 올라간 파일명(원본). ingestion 실패 시 색인 안 된 고아 파일 정리용.
-        uploaded_names = [f.name for f in self.pending_files]
-
-        self.ingestion_status = "processing"
-        yield
-
-        emp_no = self._emp_no
-        upload_target = self.upload_target
-        dept_cd = None
-
-        async def _rollback_orphans() -> None:
-            """ingestion 실패로 색인되지 못한 이번 turn 의 S3 파일을 삭제.
-
-            S3 에는 올라가 있어 문서 목록엔 보이지만 색인 실패로 검색은 안 되는
-            '고아 파일'을 정리한다. best-effort (삭제 실패해도 본 흐름은 진행).
-            """
-            if not uploaded_names:
-                return
-            try:
-                from wellbot.services.knowledgebase.personal_kb_manager import (
-                    delete_files_from_personal_kb as _del_personal,
-                )
-                from wellbot.services.knowledgebase.team_kb_manager import (
-                    delete_files_from_team_kb as _del_team,
-                    get_dept_cd as _get_dept_cd2,
-                )
-                loop2 = _asyncio.get_running_loop()
-                if upload_target == "team":
-                    d = dept_cd or await loop2.run_in_executor(None, lambda: _get_dept_cd2(emp_no))
-                    if d:
-                        await loop2.run_in_executor(None, lambda: _del_team(d, uploaded_names))
-                else:
-                    await loop2.run_in_executor(None, lambda: _del_personal(emp_no, uploaded_names))
-                log.warning("KB ingestion 실패 → 업로드 파일 롤백 삭제: %s", uploaded_names)
-            except Exception:
-                log.exception("KB ingestion 실패 후 S3 롤백 삭제 실패")
+        async with self:
+            # 이번 turn 에 S3 에 올라간 파일명(원본). 색인 실패 시 고아 정리용.
+            uploaded_names = [f.name for f in self.pending_files]
+            emp_no = self._emp_no
+            upload_target = self.upload_target
+            self.ingestion_status = "processing"
 
         try:
-            from wellbot.services.knowledgebase.personal_kb_manager import (
-                get_user_kb as _get_user_kb,
-                get_or_create_personal_kb as _get_or_create_personal_kb,
-                _insert_user_kb,
-                start_ingestion as personal_start_ingestion,
-            )
-            from wellbot.services.knowledgebase.team_kb_manager import (
-                get_or_create_team_kb as _get_or_create_team_kb,
-                start_ingestion as team_start_ingestion,
-            )
-            from wellbot.services.knowledgebase.kb_utils import poll_ingestion_status as _poll
+            # 축2(변환+KB확보+ingest+poll+롤백)는 kb_ingest_service 가 담당. blocking 이라
+            # run_in_executor 로 한 번에 실행 — async with self 밖이라 처리 중 락을 잡지 않는다.
+            from wellbot.services.knowledgebase.kb_ingest_service import ingest_staged
 
             loop = _asyncio.get_running_loop()
+            outcome = await loop.run_in_executor(
+                None, lambda: ingest_staged(upload_target, emp_no, uploaded_names)
+            )
 
-            if upload_target == "team":
-                from wellbot.services.knowledgebase.team_kb_manager import (
-                    get_dept_cd as _get_dept_cd,
-                )
-                from wellbot.services.knowledgebase.kb_utils import (
-                    is_ingestion_in_progress as _in_progress,
-                )
-
-                # 업로드(kb_upload.py)와 동일하게 dept_cd 는 클라이언트 상태가 아니라
-                # emp_no 로 서버에서 도출 — 업로드 prefix(서버 도출)와 ingest 대상 KB 가
-                # 어긋나 방금 올린 파일이 색인되지 않는 desync 를 방지.
-                dept_cd = await loop.run_in_executor(None, lambda: _get_dept_cd(emp_no))
-                if not dept_cd:
-                    raise ValueError("소속 팀 정보가 없습니다.")
-                kb_info = await loop.run_in_executor(
-                    None, lambda: _get_or_create_team_kb(emp_no, dept_cd)
-                )
-                # 같은 데이터소스에 동시 ingestion 은 Bedrock 이 거부(ConflictException)
-                # 하므로, 다른 팀원이 처리 중이면 명확한 안내로 분기 (삭제 경로와 동일 정책).
-                # 단, 여기서 raise 하면 안 된다: 진행 중인 job 이 teams/{dept}/raw/ 전체를
-                # 스캔하므로 방금 올린 파일도 그 job 이 색인한다(=고아 아님). raise 하면
-                # 아래 except 의 _rollback_orphans 가 색인 예정 파일을 지워 유실/역-고아를
-                # 유발하므로, 롤백을 타지 않도록 안내만 하고 종료한다.
-                if await loop.run_in_executor(
-                    None,
-                    lambda: _in_progress(kb_info["kb_id"], kb_info["data_source_id"]),
-                ):
+            async with self:
+                if outcome.busy:
                     self.ingestion_status = "error"
                     self.ingestion_error = (
                         "현재 다른 팀원이 문서를 처리 중입니다. 잠시 후 다시 시도해주세요."
                     )
-                    return
-                job_id = await loop.run_in_executor(
-                    None, lambda: team_start_ingestion(kb_info["kb_id"], kb_info["data_source_id"])
-                )
-                status = await loop.run_in_executor(
-                    None, lambda: _poll(kb_info["kb_id"], kb_info["data_source_id"], job_id)
-                )
-            else:
-                is_first = await loop.run_in_executor(
-                    None, lambda: _get_user_kb(emp_no) is None
-                )
-                kb_info = await loop.run_in_executor(
-                    None, lambda: _get_or_create_personal_kb(emp_no)
-                )
-                job_id = await loop.run_in_executor(
-                    None, lambda: personal_start_ingestion(kb_info["kb_id"], kb_info["data_source_id"])
-                )
-                status = await loop.run_in_executor(
-                    None, lambda: _poll(kb_info["kb_id"], kb_info["data_source_id"], job_id)
-                )
-                # 부분 실패(COMPLETE_WITH_ERRORS)도 KB 는 Bedrock 에 생성되고 일부
-                # 문서가 색인되므로 DB 에 등록. 그래야 아래에서 personal_kb_exists 를
-                # True 로 켠 것과 DB 가 일치하고, 다음 on_load 에서 그 값이 False 로
-                # 뒤집혀 retrieve 가 개인 KB 를 조용히 건너뛰는 desync 를 방지.
-                if is_first and status.startswith("COMPLETE"):
-                    await loop.run_in_executor(
-                        None, lambda: _insert_user_kb(emp_no, kb_info["kb_id"], kb_info["data_source_id"])
-                    )
-
-            if status == "COMPLETE":
-                self.ingestion_status = "ready"
-                self.ingestion_error = ""
-                if upload_target == "team":
-                    self.team_kb_exists = True
-                    if "team" not in self.kb_modes:
-                        self.kb_modes = self.kb_modes + ["team"]
                 else:
-                    self.personal_kb_exists = True
-                    if "personal" not in self.kb_modes:
-                        self.kb_modes = self.kb_modes + ["personal"]
-            elif status.startswith("COMPLETE_WITH_ERRORS"):
-                self.ingestion_status = "ready"
-                self.ingestion_error = "일부 문서 처리에 실패했습니다. 관리자에게 문의해주세요."
-                log.warning("KB ingestion 부분 실패: %s", status)
-                if upload_target == "team":
-                    self.team_kb_exists = True
-                    if "team" not in self.kb_modes:
-                        self.kb_modes = self.kb_modes + ["team"]
-                else:
-                    self.personal_kb_exists = True
-                    if "personal" not in self.kb_modes:
-                        self.kb_modes = self.kb_modes + ["personal"]
-            else:
-                self.ingestion_status = "error"
-                self.ingestion_error = "문서 처리에 실패했습니다. 관리자에게 문의해주세요."
-                log.error("KB ingestion 실패: %s", status)
-                await _rollback_orphans()
+                    status = outcome.status
+                    if status == "COMPLETE":
+                        self.ingestion_status = "ready"
+                        self.ingestion_error = ""
+                        self._mark_kb_exists(upload_target)
+                    elif status.startswith("COMPLETE_WITH_ERRORS"):
+                        self.ingestion_status = "ready"
+                        self.ingestion_error = "일부 문서 처리에 실패했습니다. 관리자에게 문의해주세요."
+                        log.warning("KB ingestion 부분 실패: %s", status)
+                        self._mark_kb_exists(upload_target)
+                    else:
+                        self.ingestion_status = "error"
+                        self.ingestion_error = "문서 처리에 실패했습니다. 관리자에게 문의해주세요."
 
         except TimeoutError:
-            self.ingestion_status = "error"
-            self.ingestion_error = "처리 시간이 초과되었습니다. 잠시 후 다시 시도해주세요."
+            async with self:
+                self.ingestion_status = "error"
+                self.ingestion_error = "처리 시간이 초과되었습니다. 잠시 후 다시 시도해주세요."
             log.warning("KB ingestion 타임아웃")
-            # 타임아웃은 ingestion job 이 아직 진행 중일 수 있어 자동 롤백 삭제하지 않음
-            # (진행 중인 job 의 소스를 지우면 인덱스/job 이 깨질 수 있음).
         except Exception as e:
-            self.ingestion_status = "error"
-            self.ingestion_error = self._user_friendly_error(str(e))
+            async with self:
+                self.ingestion_status = "error"
+                self.ingestion_error = self._user_friendly_error(str(e))
             log.exception("KB ingestion 예외")
-            await _rollback_orphans()
         finally:
-            self.pending_files = []
-            self._pending_file_data = {}
+            async with self:
+                self.pending_files = []
+                self._pending_file_data = {}
+
+    def _mark_kb_exists(self, upload_target: str) -> None:
+        """ingestion 성공 후 해당 scope 의 KB 존재 플래그 + kb_modes 갱신."""
+        if upload_target == "team":
+            self.team_kb_exists = True
+            if "team" not in self.kb_modes:
+                self.kb_modes = self.kb_modes + ["team"]
+        else:
+            self.personal_kb_exists = True
+            if "personal" not in self.kb_modes:
+                self.kb_modes = self.kb_modes + ["personal"]
 
     # ── 첨부파일 ──
 
@@ -1408,16 +1600,30 @@ class ChatState(rx.State):
         모든 pending 파일이 ready 상태가 되면 조기 종료.
         대용량 파일 처리를 고려해 최대 120초까지 폴링.
         """
-        deadline = time.time() + 120.0
+        start = time.time()
+        deadline = start + 120.0
+        # 트리거 시점의 기존 첨부 수. 이보다 늘어나야(=새 업로드가 DB 안착) 조기 종료 허용.
+        # (붙여넣은 이미지가 이미 ready 인 상태에서 파일추가 시, 새 파일이 아직 DB 에
+        #  없을 때 'all ready' 로 조기 종료돼 새 파일이 UI 에 안 뜨던 버그 방지)
+        start_count = len(self.pending_attachments)
+        settle_grace = 8.0  # 새 업로드가 안 올라오면(취소 등) 이 시간 후 종료 허용
         # 업로드 직후 칩이 빨리 뜨도록 처음엔 촘촘히 폴링하고 점차 백오프.
         # (이미지는 파싱을 건너뛰어 거의 즉시 ready 가 되므로 초기 응답성이 중요)
         interval = 0.3
         while time.time() < deadline:
             async with self:
                 self._sync_attachments_from_db()
-                # 모든 pending 파일이 ready 면 폴링 종료
-                if self.pending_attachments and all(
-                    a.status == "ready" for a in self.pending_attachments
+                # 새 업로드 안착(개수 증가) 또는 grace 경과 또는 기존 첨부 없음(빈 시작)일 때만
+                # 조기 종료 허용 — 인플라이트 업로드를 놓치지 않도록.
+                can_exit = (
+                    start_count == 0
+                    or len(self.pending_attachments) > start_count
+                    or (time.time() - start) >= settle_grace
+                )
+                # 모든 pending 파일이 종료 상태(ready 또는 failed)면 폴링 종료.
+                # (실패도 종료 상태로 취급해야 실패 시 120초 데드라인까지 헛돌지 않음)
+                if can_exit and self.pending_attachments and all(
+                    a.status != "processing" for a in self.pending_attachments
                 ):
                     break
                 # pending 이 비었으면(전송 완료 등) 종료
@@ -1548,8 +1754,9 @@ class ChatState(rx.State):
             # DB 에서 최신 상태 재조회해 처리 완료 여부 반영
             if self.pending_attachments and self._pending_msg_id:
                 try:
-                    fresh = attachment_service.get_attachments_by_msg_id(
-                        self._pending_msg_id
+                    fresh = await asyncio.to_thread(
+                        attachment_service.get_attachments_by_msg_id,
+                        self._pending_msg_id,
                     )
                     refreshed = rows_to_attachment_infos(fresh)
                     if refreshed:
@@ -1601,27 +1808,37 @@ class ChatState(rx.State):
             prompt_name = self.selected_prompt
             use_kb = self.use_kb
             kb_modes = list(self.kb_modes)
+            model_overrides_raw = self.model_settings_raw
 
             # 첨부파일이 있으면 미리 생성한 msg_id 재사용, 없으면 빈 문자열
             pending_msg_id = self._pending_msg_id or ""
             self._pending_msg_id = ""  # 소비 후 초기화
 
-            # API 호출용 메시지 — 텍스트만 포함 (이미지는 image_blocks 로 별도 전달해 중복 방지)
+            # API 호출용 메시지 — 텍스트만 포함 (이미지는 image_blocks 로 별도 전달해 중복 방지).
+            # 히스토리는 토큰 예산(LLM_CONTEXT_MAX_TOKENS)으로 제한해 긴 대화의
+            # 입력 토큰 폭증을 방지 (최근 우선 윈도우, 문서 회상은 툴이 담당).
+            context_messages = select_context_window(
+                updated_messages, LLM_CONTEXT_MAX_TOKENS
+            )
             api_messages = [
                 {"role": m.role, "content": m.content}
-                for m in updated_messages
+                for m in context_messages
             ]
 
-        # DB 저장: 대화·시스템 프롬프트·사용자 메시지 (State 락 밖)
+        # DB 저장: 대화·시스템 프롬프트·사용자 메시지 (State 락 밖).
+        # 동기 pymysql 호출을 to_thread 로 오프로드해 단일 이벤트 루프 블로킹 방지.
         if emp_no:
             if not is_persisted:
-                chat_service.save_conversation(emp_no, conv_id, title, model_name)
+                await asyncio.to_thread(
+                    chat_service.save_conversation, emp_no, conv_id, title, model_name
+                )
                 # 시스템 프롬프트를 첫 번째 메시지로 저장
                 try:
                     cfg = get_config()
                     prompt = cfg.get_prompt(prompt_name)
                     sys_content = prompt.content if prompt else cfg.system_prompt
-                    chat_service.append_message(
+                    await asyncio.to_thread(
+                        chat_service.append_message,
                         smry_id=conv_id,
                         role="system", content=sys_content,
                         emp_no=emp_no, model_name=prompt_name,
@@ -1629,8 +1846,11 @@ class ChatState(rx.State):
                 except Exception:
                     log.warning("첫 turn system 메시지 저장 실패", exc_info=True)
             elif is_first_msg:
-                chat_service.update_conversation_title(conv_id, title, emp_no)
-            user_msg_id = chat_service.append_message(
+                await asyncio.to_thread(
+                    chat_service.update_conversation_title, conv_id, title, emp_no
+                )
+            user_msg_id = await asyncio.to_thread(
+                chat_service.append_message,
                 smry_id=conv_id,
                 role="user", content=text,
                 emp_no=emp_no, model_name=model_name,
@@ -1667,12 +1887,18 @@ class ChatState(rx.State):
         try:
             cfg = get_config()
             model = cfg.get_model(model_name) or cfg.default_model
+            # 사용자 파라미터 오버라이드(모델 설정 패널) 적용
+            model = apply_overrides(
+                model, parse_overrides(model_overrides_raw).get(model_name, {})
+            )
             provider = model.provider
             prompt = cfg.get_prompt(prompt_name)
             base_system = prompt.content if prompt else cfg.system_prompt
 
             # 대화 전체 첨부파일 메타를 system prompt 에 추가
-            system_prompt = augment_system_with_attachments(base_system, conv_id)
+            # 현재 시각(KST) 주입 → 상대 날짜 표현 해석. 매 턴 최신값으로 갱신.
+            system_prompt = augment_system_with_datetime(base_system)
+            system_prompt = augment_system_with_attachments(system_prompt, conv_id)
             # KB 활성화 시 검색 지침 + 인용 표기 규칙 추가
             if use_kb and kb_modes:
                 system_prompt = augment_system_with_kb(system_prompt, kb_modes)
@@ -1682,25 +1908,40 @@ class ChatState(rx.State):
             if image_blocks and api_messages:
                 api_messages[-1] = {**api_messages[-1], "image_blocks": image_blocks}
 
-            # 대화에 첨부파일이 있으면 tool use(search_attachment) 활성화
-            has_attachments = False
+            # 검색 가능한(텍스트) 첨부가 있을 때만 search_attachment 활성화.
+            # token_count>0 = 텍스트 추출·청킹 완료. 이미지(0)·처리중(None)은 검색 대상이
+            # 아니므로 제외 — 노출하면 LLM 이 빈 검색을 반복(폴백까지 소진)한다.
+            has_searchable_attachments = False
             try:
-                has_attachments = bool(
-                    attachment_service.get_conversation_attachments(conv_id)
+                conv_attachments = await asyncio.to_thread(
+                    attachment_service.get_conversation_attachments, conv_id
+                )
+                has_searchable_attachments = any(
+                    (getattr(a, "token_count", None) or 0) > 0 for a in conv_attachments
                 )
             except Exception:
                 log.warning("첨부 보유 여부 조회 실패 conv_id=%s", conv_id, exc_info=True)
-                has_attachments = False
 
-            if has_attachments or use_kb:
-                tool_config = tool_executor.build_tool_config()
+            tool_config = None
+            if has_searchable_attachments or use_kb:
+                tool_config = tool_executor.build_tool_config(
+                    include_attachment=has_searchable_attachments,
+                    include_kb=bool(use_kb),
+                )
+
+            if tool_config:
+                # read_attachment 결과를 모델 윈도우에 맞춰 한 번에 싣도록 예산 산정.
+                # 이렇게 하면 offset 이어읽기 누적으로 인한 컨텍스트 초과가 원천 차단된다.
+                read_budget = read_budget_for(model.context_window, model.max_tokens)
 
                 def _tool_exec(name: str, tool_input: dict) -> dict:
                     # 검색 범위는 사용자의 UI 선택(kb_modes)으로 결정. kb_scope 는 LLM 에
                     # 노출하지 않고 여기서 주입 (툴 스키마에도 부재).
                     if name == "kb_search":
                         tool_input = {**tool_input, "kb_scope": kb_modes}
-                    return tool_executor.execute_tool(name, tool_input, conv_id, emp_no)
+                    return tool_executor.execute_tool(
+                        name, tool_input, conv_id, emp_no, max_read_tokens=read_budget
+                    )
 
                 stream = astream_chat_with_tools(
                     api_messages,
@@ -1719,24 +1960,45 @@ class ChatState(rx.State):
                     thinking_enabled=use_thinking,
                 )
 
-            async for event_type, chunk in stream:
-                # 취소 요청 확인
-                async with self:
-                    if self._cancel_requested:
-                        stream_interrupted = True
-                        break
+            # 토큰 배치 스트리밍: streaming_content 갱신(state 락 + WebSocket push)을
+            # STREAM_FLUSH_INTERVAL_SEC 간격으로 묶어 토큰당 락·네트워크 폭주를 방지.
+            # content 누적은 락 없이 수행하고, 취소 확인도 flush/경계 시점에만 한다.
+            last_flush = time.monotonic()
+            pending_text = False  # content 에 반영됐지만 아직 push 안 된 텍스트 존재
 
-                if event_type == "thinking":
-                    async with self:
-                        self.is_thinking = True
-                elif event_type == "text":
+            async for event_type, chunk in stream:
+                if event_type == "text":
                     content += chunk
+                    pending_text = True
+                    if time.monotonic() - last_flush >= STREAM_FLUSH_INTERVAL_SEC:
+                        async with self:
+                            if self._cancel_requested:
+                                stream_interrupted = True
+                                break
+                            self.is_thinking = False
+                            self.streaming_content = content
+                        pending_text = False
+                        last_flush = time.monotonic()
+                elif event_type == "thinking":
                     async with self:
-                        self.is_thinking = False
-                        self.streaming_content = content
+                        if pending_text:  # 경계 전 대기 텍스트 먼저 반영(순서 보존)
+                            self.streaming_content = content
+                            pending_text = False
+                        if self._cancel_requested:
+                            stream_interrupted = True
+                            break
+                        self.is_thinking = True
+                    last_flush = time.monotonic()
                 elif event_type == "tool_use":
                     async with self:
+                        if pending_text:
+                            self.streaming_content = content
+                            pending_text = False
+                        if self._cancel_requested:
+                            stream_interrupted = True
+                            break
                         self.is_thinking = True  # tool 실행 중 스피너 표시
+                    last_flush = time.monotonic()
                 elif event_type == "tool_result":
                     # kb_search 결과 출처 누적 (같은 source_uri 는 ranks 만 병합 — 인용 마커 매칭 보존).
                     # search_attachment 결과는 LLM 이 다음 turn 에서 활용 → UI 에 직접 표시 제외
@@ -1744,6 +2006,9 @@ class ChatState(rx.State):
                         new_docs = chunk.get("source_docs") or []
                         if new_docs:
                             async with self:
+                                if pending_text:  # 경계 전 대기 텍스트 먼저 반영
+                                    self.streaming_content = content
+                                    pending_text = False
                                 by_uri = {
                                     d.get("source_uri"): d
                                     for d in self._streaming_kb_sources
@@ -1770,9 +2035,9 @@ class ChatState(rx.State):
                     input_tokens += int(chunk.get("inputTokens", 0) or 0)
                     output_tokens += int(chunk.get("outputTokens", 0) or 0)
 
-        except Exception:
+        except Exception as exc:
             log.exception("chat streaming 실패 model=%s conv_id=%s", model_name, conv_id)
-            content = "오류가 발생했습니다."
+            content = response_filter.classify_stream_error(exc) or "오류가 발생했습니다."
 
         finally:
             # Nova 등 확장 사고 미지원 모델이 <thinking> 블록을 출력하는 경우 제거
@@ -1781,6 +2046,21 @@ class ChatState(rx.State):
             # 중단 시 접미사 추가
             if stream_interrupted and content:
                 content += "\n\n*[생성이 중단되었습니다]*"
+
+            # 빈 응답 방지: 텍스트 없이 정상 종료(콘텐츠 필터 차단 등)면 침묵 대신 안내.
+            # content_filtered 는 스트림에서 별도 신호를 주지 않으므로 '비었고 & 중단 아님'
+            # 으로 포괄 감지한다. (오류 케이스는 위 except 에서 이미 content 설정)
+            used_empty_fallback = False
+            if not content.strip() and not stream_interrupted:
+                used_empty_fallback = True
+                content = (
+                    "요청은 처리했지만 표시할 답변을 받지 못했어요. "
+                    "안전 정책에 의해 응답이 차단되었거나 일시적인 문제일 수 있어요. "
+                    "질문 표현을 조금 바꿔 다시 시도해 주세요."
+                )
+                log.warning(
+                    "빈 응답 대체 메시지 적용 conv_id=%s model=%s", conv_id, model_name
+                )
 
             # 출처 필터링: LLM 이 본문에 [N] 인용 마커를 표기한 청크만 유지
             # 1) 본문에서 [1], [1, 3], [1][3] 등 인용 마커의 번호 추출
@@ -1799,7 +2079,10 @@ class ChatState(rx.State):
                     except ValueError:
                         pass
 
-            if cited_ranks:
+            if used_empty_fallback:
+                # 답변이 아닌 안내 메시지엔 출처를 붙이지 않음
+                final_sources = []
+            elif cited_ranks:
                 final_sources = [
                     s for s in all_sources
                     if any(r in cited_ranks for r in (s.get("ranks") or []))
@@ -1884,7 +2167,8 @@ class ChatState(rx.State):
 
         # DB 저장: AI 응답 메시지 (State 락 밖). 텍스트 없이 중단된 경우 저장 생략
         if emp_no and content:
-            chat_service.append_message(
+            await asyncio.to_thread(
+                chat_service.append_message,
                 smry_id=conv_id,
                 role="assistant", content=content,
                 emp_no=emp_no, model_name=model_name,
@@ -1894,12 +2178,16 @@ class ChatState(rx.State):
                 reply_time=elapsed,
             )
 
-        # 4. 첫 메시지 교환 후 LLM 으로 대화 제목 자동 생성
+        # 4. 첫 메시지 교환 후 LLM 으로 대화 제목 자동 생성.
+        # generate_title 은 동기 Bedrock 호출 → to_thread 로 루프 블로킹 방지.
         if is_first_msg and content and emp_no:
             try:
-                generated = generate_title(text, content)
+                generated = await asyncio.to_thread(generate_title, text, content)
                 if generated:
-                    chat_service.update_conversation_title(conv_id, generated, emp_no)
+                    await asyncio.to_thread(
+                        chat_service.update_conversation_title,
+                        conv_id, generated, emp_no,
+                    )
                     async with self:
                         idx = self._get_current_index()
                         if idx is not None:

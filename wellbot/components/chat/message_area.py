@@ -171,6 +171,22 @@ def message_area() -> rx.Component:
         rx.cond(
             ChatState.has_messages,
             rx.vstack(
+                rx.cond(
+                    ChatState.can_load_older,
+                    rx.center(
+                        rx.button(
+                            rx.icon("chevron-up", size=14),
+                            "이전 대화 더 보기",
+                            on_click=ChatState.load_older_messages,
+                            variant="soft",
+                            color_scheme="gray",
+                            size="1",
+                            cursor="pointer",
+                        ),
+                        width="100%",
+                        padding_y="0.5em",
+                    ),
+                ),
                 rx.foreach(
                     ChatState.current_messages,
                     message_bubble,

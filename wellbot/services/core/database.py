@@ -15,6 +15,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from wellbot.constants import (
+    DB_MAX_OVERFLOW,
+    DB_POOL_RECYCLE_SEC,
+    DB_POOL_SIZE,
+    DB_POOL_TIMEOUT_SEC,
+)
+
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
 
@@ -31,7 +38,15 @@ def _ensure_engine() -> sessionmaker[Session]:
             "DB_URL 환경변수가 설정되지 않았습니다. "
             "엔트리포인트에서 wellbot.env.init_env() 가 호출되었는지 확인하세요."
         )
-    _engine = create_engine(db_url, echo=False, pool_pre_ping=True)
+    _engine = create_engine(
+        db_url,
+        echo=False,
+        pool_pre_ping=True,
+        pool_size=DB_POOL_SIZE,
+        max_overflow=DB_MAX_OVERFLOW,
+        pool_recycle=DB_POOL_RECYCLE_SEC,
+        pool_timeout=DB_POOL_TIMEOUT_SEC,
+    )
     _session_factory = sessionmaker(bind=_engine)
     return _session_factory
 

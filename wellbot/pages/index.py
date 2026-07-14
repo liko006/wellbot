@@ -12,6 +12,7 @@ from wellbot.components.chat.message_area import message_area, navigation_rail
 from wellbot.components.layout import chat_layout
 from wellbot.constants import BTN_THRESHOLD, SCROLL_THRESHOLD
 from wellbot.state.chat_helpers.upload_script import (
+    CLIENT_LOG_SCRIPT,
     KB_UPLOAD_SCRIPT,
     PASTE_UPLOAD_SCRIPT,
 )
@@ -192,5 +193,8 @@ def index_page() -> rx.Component:
         rx.script(KB_UPLOAD_SCRIPT),
         # 클립보드 이미지 붙여넣기 업로드 JS (paste 리스너 + window-global)
         rx.script(PASTE_UPLOAD_SCRIPT),
+        # 클라이언트 오류 비콘 — 브라우저 측 실패를 /api/client_log 로 전송.
+        # PASTE 스크립트의 _wellbotBackendBase 를 재사용하므로 그 뒤에 등록.
+        rx.script(CLIENT_LOG_SCRIPT),
         chat_layout(chat_main()),
     )

@@ -3,6 +3,7 @@
 import reflex as rx
 
 from wellbot.components.admin import cell, col_header
+from wellbot.constants import LOCK_THRESHOLD
 from wellbot.state.admin_state import AdminState
 from wellbot.styles import COLORS
 
@@ -28,6 +29,32 @@ def _emp_row(emp: dict) -> rx.Component:
         ),
         rx.table.cell(
             rx.hstack(
+                # 가입 대기(PENDING) → 원클릭 승인
+                rx.cond(
+                    emp["acnt_sts_nm"] == "PENDING",
+                    rx.icon_button(
+                        rx.icon("user-check", size=14),
+                        variant="ghost",
+                        size="1",
+                        cursor="pointer",
+                        color_scheme="green",
+                        title="승인 (PENDING → ACTIVE)",
+                        on_click=AdminState.approve_employee(emp["emp_no"]),
+                    ),
+                ),
+                # 로그인 실패 누적으로 잠긴 계정 → 원클릭 잠금 해제
+                rx.cond(
+                    emp["lgn_flr_tscnt"].to(int) >= LOCK_THRESHOLD,
+                    rx.icon_button(
+                        rx.icon("lock-open", size=14),
+                        variant="ghost",
+                        size="1",
+                        cursor="pointer",
+                        color_scheme="amber",
+                        title="계정 잠금 해제",
+                        on_click=AdminState.unlock_employee(emp["emp_no"]),
+                    ),
+                ),
                 rx.icon_button(
                     rx.icon("pencil", size=14),
                     variant="ghost",

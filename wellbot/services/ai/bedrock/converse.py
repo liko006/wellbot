@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from wellbot.constants import STREAM_MAX_CONCURRENT
 from wellbot.services.ai.bedrock.client import get_client
 from wellbot.services.core.settings import ModelConfig
 
@@ -92,17 +95,37 @@ def stream_one_turn(
     if tool_config:
         kwargs["toolConfig"] = tool_config
 
-    if model.thinking and model.thinking_budget > 0 and thinking_enabled:
-        kwargs["additionalModelRequestFields"] = {
-            "thinking": {
-                "type": "enabled",
-                "budget_tokens": model.thinking_budget,
+    # thinking 활성 여부·방식 결정.
+    #   adaptive: thinking:{type:adaptive} + output_config.effort (Opus 4.6+/Sonnet 4.6+/신형)
+    #             — effort 는 반드시 별도 output_config 에. thinking 안에 넣으면 ValidationException.
+    #             — Opus 4.7/4.8 은 manual(budget_tokens) 전송 시 400 이므로 반드시 이 경로.
+    #   manual:   thinking:{type:enabled, budget_tokens} (레거시: Sonnet 4.5/Opus 4.5)
+    thinking_active = False
+    if model.thinking and thinking_enabled:
+        if model.thinking_mode == "adaptive":
+            adaptive_fields: dict[str, Any] = {"thinking": {"type": "adaptive"}}
+            if model.effort:
+                adaptive_fields["output_config"] = {"effort": model.effort}
+            kwargs["additionalModelRequestFields"] = adaptive_fields
+            thinking_active = True
+        elif model.thinking_budget > 0:
+            kwargs["additionalModelRequestFields"] = {
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": model.thinking_budget,
+                }
             }
-        }
-    else:
+            thinking_active = True
+
+    # temperature/topP 는 두 경우에 전송하지 않는다.
+    #   1) thinking 활성 시 — Bedrock 이 sampling 지정을 허용하지 않음
+    #   2) supports_temperature=False (Opus 4.7/4.8 등) — 신형 모델이 sampling
+    #      파라미터를 폐기해 전송 시 ValidationException
+    #      ('temperature' is deprecated for this model) 발생
+    if not thinking_active and model.supports_temperature:
         kwargs["inferenceConfig"]["temperature"] = model.temperature
-    if model.top_p is not None:
-        kwargs["inferenceConfig"]["topP"] = model.top_p
+        if model.top_p is not None:
+            kwargs["inferenceConfig"]["topP"] = model.top_p
 
     call_start = time.perf_counter()
     has_tools = bool(tool_config)
@@ -300,6 +323,90 @@ def safe_next(
         return (False, None)
 
 
+# 스트리밍 producer 스레드 전용 풀 — 동시 스트림 상한(= 풀 크기).
+_stream_executor: ThreadPoolExecutor | None = None
+_stream_executor_lock = threading.Lock()
+
+# adrain_generator 큐 항목 종류 구분용 센티넬
+_ITEM = object()
+_ERROR = object()
+_DONE = object()
+
+
+def _get_stream_executor() -> ThreadPoolExecutor:
+    """스트리밍 producer 전용 스레드풀 (lazy, 스레드 안전)."""
+    global _stream_executor
+    if _stream_executor is not None:
+        return _stream_executor
+    with _stream_executor_lock:
+        if _stream_executor is None:
+            _stream_executor = ThreadPoolExecutor(
+                max_workers=STREAM_MAX_CONCURRENT,
+                thread_name_prefix="bedrock-stream",
+            )
+    return _stream_executor
+
+
+async def adrain_generator(make_gen):
+    """동기 이벤트 제너레이터를 producer 스레드 1개로 소비해 async 이터레이터로 변환.
+
+    기존 방식(이벤트당 asyncio.to_thread(safe_next))은 토큰마다 스레드풀 태스크를
+    제출해 다중 동시 스트림에서 스레드 경합을 유발했다. 여기서는 스트림(턴) 하나당
+    스레드 1개만 점유하고, 이벤트를 loop.call_soon_threadsafe 로 asyncio.Queue 에
+    밀어 넣는다. 동시 스트림 수는 전용 executor 크기(STREAM_MAX_CONCURRENT)로 상한되며
+    초과분은 슬롯이 빌 때까지 대기한다(backpressure).
+
+    Args:
+        make_gen: 인자 없이 호출하면 동기 제너레이터를 반환하는 callable
+                  (producer 스레드 안에서 호출됨).
+
+    Yields:
+        make_gen() 제너레이터가 산출하는 각 항목.
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    stop_flag = threading.Event()
+
+    def _producer() -> None:
+        try:
+            gen = make_gen()
+        except Exception as exc:  # noqa: BLE001 - 소비측에 전파
+            loop.call_soon_threadsafe(queue.put_nowait, (_ERROR, exc))
+            loop.call_soon_threadsafe(queue.put_nowait, (_DONE, None))
+            return
+        try:
+            for item in gen:
+                if stop_flag.is_set():
+                    break
+                loop.call_soon_threadsafe(queue.put_nowait, (_ITEM, item))
+        except Exception as exc:  # noqa: BLE001 - 소비측에 전파
+            loop.call_soon_threadsafe(queue.put_nowait, (_ERROR, exc))
+        finally:
+            try:
+                gen.close()  # botocore 스트림 등 자원 정리
+            except Exception:
+                pass
+            loop.call_soon_threadsafe(queue.put_nowait, (_DONE, None))
+
+    fut = loop.run_in_executor(_get_stream_executor(), _producer)
+    try:
+        while True:
+            kind, payload = await queue.get()
+            if kind is _ITEM:
+                yield payload
+            elif kind is _ERROR:
+                raise payload
+            else:  # _DONE
+                break
+    finally:
+        # 소비 조기 중단(취소) 시 producer 가 다음 이벤트에서 멈추도록 신호.
+        stop_flag.set()
+        try:
+            await fut
+        except Exception:
+            pass
+
+
 async def astream_chat(
     messages: list[dict[str, Any]],
     model: ModelConfig,
@@ -309,19 +416,20 @@ async def astream_chat(
 ):
     """stream_chat 의 비동기 래퍼.
 
-    asyncio.to_thread 로 동기 스트리밍을 감싸 이벤트 루프 블로킹 방지.
+    동기 스트림을 producer 스레드 1개(adrain_generator)로 소비해 토큰당 스레드 홉
+    없이 이벤트 루프 블로킹을 방지한다.
 
     Yields:
         ("thinking", text)  - reasoning delta
         ("text", text)      - 응답 텍스트 delta
         ("usage", dict)     - 토큰 사용량
     """
-    gen = stream_chat(messages, model, system_prompt, thinking_enabled=thinking_enabled)
-    while True:
-        has_value, value = await asyncio.to_thread(safe_next, gen)
-        if not has_value:
-            break
-        yield value  # type: ignore[misc]
+    async for value in adrain_generator(
+        lambda: stream_chat(
+            messages, model, system_prompt, thinking_enabled=thinking_enabled
+        )
+    ):
+        yield value
 
 
 def stream_one_turn_iter(

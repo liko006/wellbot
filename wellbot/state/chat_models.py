@@ -65,6 +65,7 @@ class Conversation(BaseModel):
     model_name: str = ""
     is_loaded: bool = False      # 메시지가 DB 에서 로드되었는지
     is_persisted: bool = False   # DB 에 저장된 대화인지
+    has_more_older: bool = False # 로드되지 않은 더 오래된 메시지가 DB 에 남아있는지
 
 
 # ── KB (Knowledge Base) 표시용 모델 ──

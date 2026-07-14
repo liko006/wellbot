@@ -102,6 +102,7 @@ from wellbot.services.knowledgebase.kb_utils import (  # noqa: E402
     convert_xlsx_to_markdown,
     pdf_via_upstage_enabled,
     pptx_to_dict,
+    shared_base,
     xlsx_via_upstage_enabled,
 )
 
@@ -116,6 +117,12 @@ LAMBDA_ARN             = _kb_cfg["lambda_arn"]
 EMBEDDING_MODEL        = _kb_cfg["embedding_model"]
 POLL_INTERVAL          = _kb_cfg.get("poll_interval", 5)
 POLL_TIMEOUT           = _kb_cfg.get("poll_timeout", 300)
+
+# S3 경로의 환경 네임스페이스 base. APP_ENV 로 결정(kb_utils.shared_base 단일 출처).
+# dev → 'shared-dev', prod/미설정 → 'shared'. dev/prd 가 같은 버킷을 공유해도 prefix 가 갈려
+# 충돌 방지. 공용 KB id·벡터인덱스는 dev/prd 별도 .env 의 KB_ID 로 갈리고 인덱스는 KB 에
+# 바인딩되므로, 매니저는 prefix 만 분기하면 된다. (목록 조회 chat_state 와 base 공유.)
+_SHARED_BASE = shared_base()
 
 # 업로드 제한 상수(ROWS_PER_SPLIT/TABULAR_EXTS/CONVERTIBLE_EXTS/MAX_FILE_SIZES/
 # MAX_FILE_SIZE_DEFAULT)·SUPPORTED_EXTENSIONS 는 kb_utils 단일 출처에서 import (위 import 블록).
@@ -146,7 +153,7 @@ def _split_folder(folder: str) -> tuple[str, str]:
 def _raw_prefix(folder: str) -> str:
     """업로드/인덱싱 대상 prefix. 소분류가 있으면 raw/ 안에 중첩한다."""
     top, sub = _split_folder(folder)
-    return f"shared/{top}/raw/{sub}/" if sub else f"shared/{top}/raw/"
+    return f"{_SHARED_BASE}/{top}/raw/{sub}/" if sub else f"{_SHARED_BASE}/{top}/raw/"
 
 
 def _originals_prefix(folder: str) -> str:
@@ -162,7 +169,7 @@ def _originals_prefix(folder: str) -> str:
 def _processed_prefix(folder: str) -> str:
     """DS 의 중간 저장(intermediateStorage) prefix — 대분류 단위."""
     top, _ = _split_folder(folder)
-    return f"shared/{top}/processed/"
+    return f"{_SHARED_BASE}/{top}/processed/"
 
 
 def _ds_name(folder: str) -> str:
@@ -297,7 +304,7 @@ def _ds_s3_config(top: str) -> dict:
         "type": "S3",
         "s3Configuration": {
             "bucketArn":         f"arn:aws:s3:::{S3_BUCKET}",
-            "inclusionPrefixes": [f"shared/{top}/raw/"],
+            "inclusionPrefixes": [f"{_SHARED_BASE}/{top}/raw/"],
         },
     }
 
@@ -355,8 +362,8 @@ def add_folder(folder: str) -> str:
 # ──────────────────────────────────────────────
 def _copy_prefix(old_top: str, new_top: str) -> int:
     """S3 shared/{old_top}/ 아래 전 객체를 shared/{new_top}/ 로 서버사이드 복사."""
-    src_prefix = f"shared/{old_top}/"
-    dst_prefix = f"shared/{new_top}/"
+    src_prefix = f"{_SHARED_BASE}/{old_top}/"
+    dst_prefix = f"{_SHARED_BASE}/{new_top}/"
     paginator = _s3.get_paginator("list_objects_v2")
     count = 0
     for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=src_prefix):
@@ -373,8 +380,8 @@ def _copy_prefix(old_top: str, new_top: str) -> int:
 
 
 def _delete_prefix(top: str) -> int:
-    """S3 shared/{top}/ 아래 전 객체 삭제."""
-    prefix = f"shared/{top}/"
+    """S3 shared{env}/{top}/ 아래 전 객체 삭제."""
+    prefix = f"{_SHARED_BASE}/{top}/"
     paginator = _s3.get_paginator("list_objects_v2")
     count = 0
     for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
@@ -412,11 +419,11 @@ def rename_folder(old: str, new: str) -> None:
 
     # 1. S3 서버사이드 복사 (재업로드 없음) — raw/·originals/ 포함 전부
     copied = _copy_prefix(old_top, new_top)
-    print(f"[S3] 복사 완료: shared/{old_top}/ → shared/{new_top}/ ({copied}개)")
+    print(f"[S3] 복사 완료: {_SHARED_BASE}/{old_top}/ → {_SHARED_BASE}/{new_top}/ ({copied}개)")
 
     # 2. 옛 경로 객체 삭제 (재-ingest 전 정리 → 증분 동기화가 옛 문서 벡터 제거)
     deleted = _delete_prefix(old_top)
-    print(f"[S3] 옛 경로 삭제: shared/{old_top}/ ({deleted}개)")
+    print(f"[S3] 옛 경로 삭제: {_SHARED_BASE}/{old_top}/ ({deleted}개)")
 
     # 3. DS 를 새 경로로 갱신 (ds_id 유지)
     _bedrock_agent.update_data_source(
@@ -427,7 +434,7 @@ def rename_folder(old: str, new: str) -> None:
         dataSourceConfiguration=_ds_s3_config(new_top),
         vectorIngestionConfiguration=_ds_vector_config(new_top),
     )
-    print(f"[Bedrock] Data Source 갱신: inclusionPrefix → shared/{new_top}/raw/")
+    print(f"[Bedrock] Data Source 갱신: inclusionPrefix → {_SHARED_BASE}/{new_top}/raw/")
 
     # 4. yaml 레지스트리 키 변경 (ds_id 동일)
     _rename_folder_in_yaml(old_top, new_top, ds_id)

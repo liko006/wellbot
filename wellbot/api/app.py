@@ -14,18 +14,24 @@ from wellbot.api.upload import router as upload_router
 from wellbot.api.download import router as download_router
 from wellbot.api.kb_upload import router as kb_upload_router
 from wellbot.api.kb_download import router as kb_download_router
+from wellbot.api.client_log import router as client_log_router
+from wellbot.api.report_checker_api import router as report_checker_router
 from wellbot.logger import install_asyncio_handler, log_context
+from wellbot.services.core.cpu_pool import shutdown as _cpu_pool_shutdown
+from wellbot.services.core.executor import ensure_io_executor
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """서버 이벤트 루프에 asyncio uncaught 예외 핸들러 설치.
+    """서버 이벤트 루프에 asyncio uncaught 예외 핸들러 + 스레드풀 설치.
 
     setup_logging() 은 앱 import 시점(루프 밖)에 실행되므로
-    asyncio 핸들러는 루프가 살아있는 startup 에서 설치 필요.
+    asyncio 핸들러·기본 executor 는 루프가 살아있는 startup 에서 설치 필요.
     """
     install_asyncio_handler()
+    ensure_io_executor()  # 블로킹 I/O 처리용 기본 스레드풀 확대
     yield
+    _cpu_pool_shutdown()  # 파싱 프로세스풀 정리
 
 
 api_app = FastAPI(title="WellBot API", docs_url=None, redoc_url=None, lifespan=_lifespan)
@@ -45,3 +51,5 @@ api_app.include_router(upload_router)
 api_app.include_router(download_router)
 api_app.include_router(kb_upload_router)
 api_app.include_router(kb_download_router)
+api_app.include_router(client_log_router)
+api_app.include_router(report_checker_router)

@@ -8,6 +8,7 @@ import reflex as rx
 from wellbot.components.admin.agent_tab import agent_tab
 from wellbot.components.admin.dept_tab import dept_tab
 from wellbot.components.admin.employee_tab import employee_tab
+from wellbot.components.admin.monitoring_tab import monitoring_tab
 from wellbot.state.admin_state import AdminState
 from wellbot.styles import COLORS
 
@@ -151,10 +152,12 @@ def _admin_content() -> rx.Component:
                 rx.tabs.trigger("부서 관리", value="dept"),
                 rx.tabs.trigger("사원 관리", value="employee"),
                 rx.tabs.trigger("에이전트 관리", value="agent"),
+                rx.tabs.trigger("모니터링", value="monitoring"),
             ),
             rx.tabs.content(dept_tab(), value="dept", padding_top="1em"),
             rx.tabs.content(employee_tab(), value="employee", padding_top="1em"),
             rx.tabs.content(agent_tab(), value="agent", padding_top="1em"),
+            rx.tabs.content(monitoring_tab(), value="monitoring", padding_top="1em"),
             value=AdminState.active_tab,
             on_change=AdminState.set_active_tab,
             width="100%",

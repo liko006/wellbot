@@ -9,9 +9,12 @@
 """
 
 from wellbot.services.ai.bedrock.converse import astream_chat, stream_chat
-from wellbot.services.ai.bedrock.image import image_format
+from wellbot.services.ai.bedrock.image import fit_image_for_bedrock, image_format
 from wellbot.services.ai.bedrock.title import generate_title
-from wellbot.services.ai.bedrock.tool_loop import astream_chat_with_tools
+from wellbot.services.ai.bedrock.tool_loop import (
+    astream_chat_with_tools,
+    read_budget_for,
+)
 
 # build_messages, stream_one_turn, safe_next, stream_one_turn_iter, get_client 는
 # 패키지 내부 헬퍼이므로 공개 API 에 포함하지 않음.
@@ -19,7 +22,9 @@ from wellbot.services.ai.bedrock.tool_loop import astream_chat_with_tools
 __all__ = [
     "astream_chat",
     "astream_chat_with_tools",
+    "fit_image_for_bedrock",
     "generate_title",
     "image_format",
+    "read_budget_for",
     "stream_chat",
 ]

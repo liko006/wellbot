@@ -50,8 +50,10 @@ CHUNKER_TYPE    = os.environ.get("CHUNKER_TYPE", "recursive")       # "fixed" | 
 INTERMEDIATE_BUCKET = os.environ["INTERMEDIATE_BUCKET"]
 CHUNK_SIZE      = int(os.environ.get("CHUNK_SIZE", "1500"))
 CHUNK_OVERLAP   = int(os.environ.get("CHUNK_OVERLAP", "200"))
-ROWS_PER_CHUNK  = int(os.environ.get("ROWS_PER_CHUNK", "15"))             # 기본값 (csv/xlsx/docx 표/pptx 표)
+ROWS_PER_CHUNK  = int(os.environ.get("ROWS_PER_CHUNK", "15"))             # 표 청크 granularity 상한 (csv/xlsx/docx 표/pptx 표)
 PDF_TABLE_ROWS_PER_CHUNK = int(os.environ.get("PDF_TABLE_ROWS_PER_CHUNK", "5"))  # PDF 표 전용 (정밀 검색용)
+# 표 청크 문자 상한 — rows_per_chunk 와 함께 '먼저 걸리는 쪽'에서 청크를 끊는다 (문자 상한=토큰 안전, 행 상한=검색 granularity).
+TABLE_CHUNK_CHARS = int(os.environ.get("TABLE_CHUNK_CHARS", "5000"))
 MD_CHUNK_SIZE   = int(os.environ.get("MD_CHUNK_SIZE", "2000"))
 JSON_CHUNK_SIZE = int(os.environ.get("JSON_CHUNK_SIZE", "1200"))
 
@@ -59,7 +61,8 @@ JSON_CHUNK_SIZE = int(os.environ.get("JSON_CHUNK_SIZE", "1200"))
 logger.info(
     f"[Config] chunker={CHUNKER_TYPE}, chunk_size={CHUNK_SIZE}, "
     f"overlap={CHUNK_OVERLAP}, rows_per_chunk={ROWS_PER_CHUNK}, "
-    f"pdf_table_rows_per_chunk={PDF_TABLE_ROWS_PER_CHUNK}"
+    f"pdf_table_rows_per_chunk={PDF_TABLE_ROWS_PER_CHUNK}, "
+    f"table_chunk_chars={TABLE_CHUNK_CHARS}"
 )
 
 
@@ -276,11 +279,15 @@ def _chunk_table_rows(
     extra_meta: Optional[Dict] = None,
 ) -> List[Chunk]:
     """
-    헤더 + 행 조합으로 텍스트 변환 후 청킹
-    rows_per_chunk 미지정 시 환경변수 기본값 사용
+    헤더 + 행 조합으로 텍스트 변환 후 청킹.
+
+    행을 하나씩 누적하다가 **(행 수 rpc 도달) 또는 (누적 문자 수가 TABLE_CHUNK_CHARS 초과)**
+    중 먼저 걸리는 지점에서 한 청크로 끊는다. 문자 상한은 넓은/긴 행이 묶여 임베딩 모델
+    토큰 한도(Titan v2 = 8192)를 넘는 것을 막는 안전망(행 수만으로는 폭을 못 막음),
+    rows_per_chunk 는 검색 granularity 상한.
 
     docx/pptx 의 병합 셀, 불규칙 테이블 등으로 헤더 < 데이터 행 길이가 되는
-    경우를 방어: 부족한 헤더는 'col{N}' 으로 자동 보강
+    경우를 방어: 부족한 헤더는 'col{N}' 으로 자동 보강.
     """
     rpc = rows_per_chunk or ROWS_PER_CHUNK
 
@@ -290,26 +297,60 @@ def _chunk_table_rows(
         f"col{i}" for i in range(len(headers), max_cols)
     ]
 
-    chunks = []
-    for start in range(0, len(rows), rpc):
-        batch = rows[start:start + rpc]
-        rows_text = "\n".join(
-            " | ".join(
-                f"{headers_ext[i]}: {cell}" for i, cell in enumerate(row)
-            )
-            for row in batch
+    def _row_text(row: List[str]) -> str:
+        return " | ".join(
+            f"{headers_ext[i]}: {cell}" for i, cell in enumerate(row)
         )
-        if rows_text.strip():
-            meta = {
-                "source":    source,
-                "doc_type":  doc_type,
-                "row_start": start,
-                "row_end":   min(start + rpc, len(rows)) - 1,
-                "columns":   headers_ext,
-            }
-            if extra_meta:
-                meta.update(extra_meta)
-            chunks.append(Chunk(text=rows_text, metadata=meta))
+
+    chunks: List[Chunk] = []
+    batch: List[str] = []
+    batch_start = 0
+    cur_chars = 0
+
+    def _emit(text: str, row_start: int, row_end: int) -> None:
+        if not text.strip():
+            return
+        meta = {
+            "source":    source,
+            "doc_type":  doc_type,
+            "row_start": row_start,
+            "row_end":   row_end,
+            "columns":   headers_ext,
+        }
+        if extra_meta:
+            meta.update(extra_meta)
+        chunks.append(Chunk(text=text, metadata=meta))
+
+    def _flush(end_idx: int) -> None:
+        nonlocal batch, cur_chars
+        if batch:
+            _emit("\n".join(batch), batch_start, end_idx - 1)
+        batch = []
+        cur_chars = 0
+
+    for i, row in enumerate(rows):
+        rt = _row_text(row)
+        # 단일 행이 문자 상한을 초과(넓은 표·긴 셀)하면 그 행을 문자 단위로 쪼갠다.
+        # 과거엔 이런 행을 통째로 한 청크로 내보내 Titan v2 8192 토큰 한도를 넘겨
+        # xlsx 인제스트가 FAILED 되었다 — '단일 행 미분할'이 근본 원인이었다.
+        if len(rt) > TABLE_CHUNK_CHARS:
+            if batch:
+                _flush(i)
+            for j in range(0, len(rt), TABLE_CHUNK_CHARS):
+                _emit(rt[j:j + TABLE_CHUNK_CHARS], i, i)
+            batch_start = i + 1
+            continue
+        # 행 수/문자 상한 중 먼저 걸리는 쪽에서 청크를 끊는다.
+        if batch and (len(batch) >= rpc or cur_chars + len(rt) + 1 > TABLE_CHUNK_CHARS):
+            _flush(i)
+            batch_start = i
+        if not batch:
+            batch_start = i
+        batch.append(rt)
+        cur_chars += len(rt) + 1
+
+    if batch:
+        _flush(len(rows))
     return chunks
 
 

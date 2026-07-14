@@ -1,5 +1,6 @@
 """Admin CRUD 서비스 - 부서, 사원, 에이전트"""
 
+import logging
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -9,10 +10,13 @@ from wellbot.constants import KST
 
 import bcrypt
 
+from wellbot.logger import log_context
 from wellbot.models.agent import Agent
 from wellbot.models.dept import Dept
 from wellbot.models.employee import Employee
 from wellbot.services.core.database import get_session
+
+log = logging.getLogger(__name__)
 
 
 def _to_dict_model(row: Any) -> dict:
@@ -157,6 +161,24 @@ def update_employee(emp_no: str, **kwargs: Any) -> dict:
         d = _to_dict_model(emp)
         d.pop("ecr_pwd", None)
         return d
+
+
+def approve_employee(emp_no: str) -> dict:
+    """가입 대기(PENDING) 사원을 승인(ACTIVE)하고 로그인 실패/잠금 상태 초기화."""
+    log_context.bind(emp_no=emp_no)
+    result = update_employee(
+        emp_no, acnt_sts_nm="ACTIVE", lgn_flr_tscnt=0, lock_dsbn_dtm=None
+    )
+    log.info("admin approved employee: emp_no=%s", emp_no)
+    return result
+
+
+def unlock_employee(emp_no: str) -> dict:
+    """로그인 실패 누적/잠금을 해제 (계정 상태는 유지)."""
+    log_context.bind(emp_no=emp_no)
+    result = update_employee(emp_no, lgn_flr_tscnt=0, lock_dsbn_dtm=None)
+    log.info("admin unlocked employee: emp_no=%s", emp_no)
+    return result
 
 
 def delete_employee(emp_no: str) -> bool:
