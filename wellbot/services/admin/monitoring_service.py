@@ -38,12 +38,15 @@ WINDOW_SECONDS: dict[str, float | None] = {
 
 # Bedrock 모델별 추정 단가 (USD / 1M tokens). 대략치이며 운영 단가로 교체 가능.
 _MODEL_RATES: dict[str, tuple[float, float]] = {
+    "Claude Opus 4.8": (15.0, 75.0),
+    "Claude Opus 4.7": (15.0, 75.0),
     "Claude Opus 4.6": (15.0, 75.0),
     "Claude Sonnet 4.5": (3.0, 15.0),
     "Amazon Nova Pro": (0.8, 3.2),
     "Amazon Nova Lite": (0.06, 0.24),
 }
-_DEFAULT_RATE = (3.0, 15.0)
+# 단가 미등록 모델은 추정하지 않고 "단가미정"으로 노출 (Sonnet 단가로 뭉뚱그리지 않음)
+_DEFAULT_RATE = None
 
 # 실패 카테고리 메타: 내부키 → (표시명, radix color_scheme, accent hex)
 _CAT_META: dict[str, tuple[str, str, str]] = {
@@ -183,12 +186,16 @@ def _percentile(values: list[float], q: float) -> float:
     return float(s[f] + (s[c] - s[f]) * (k - f))
 
 
-def _rate(model: str) -> tuple[float, float]:
+def _rate(model: str) -> tuple[float, float] | None:
     return _MODEL_RATES.get(model, _DEFAULT_RATE)
 
 
-def _cost(model: str, in_tok: int, out_tok: int) -> float:
-    r_in, r_out = _rate(model)
+def _cost(model: str, in_tok: int, out_tok: int) -> float | None:
+    """모델 단가 기반 추정 비용(USD). 단가 미등록 모델은 None(=단가미정)."""
+    rate = _rate(model)
+    if rate is None:
+        return None
+    r_in, r_out = rate
     return (in_tok / 1_000_000) * r_in + (out_tok / 1_000_000) * r_out
 
 
@@ -332,10 +339,12 @@ def _overview(events: list[dict]) -> dict:
 
     in_tok = sum(_gi(e, "input_tokens") for e in responses)
     out_tok = sum(_gi(e, "output_tokens") for e in responses)
-    cost = sum(
+    costs = [
         _cost(e.get("model", ""), _gi(e, "input_tokens"), _gi(e, "output_tokens"))
         for e in responses
-    )
+    ]
+    cost = sum(c for c in costs if c is not None)
+    unpriced = sum(1 for c in costs if c is None)
 
     errors = sum(1 for e in events if e.get("level") in ("ERROR", "CRITICAL"))
     warns = sum(1 for e in events if e.get("level") == "WARNING")
@@ -353,7 +362,12 @@ def _overview(events: list[dict]) -> dict:
         _card("응답 지연 p50", _ms(_percentile(elapsed, 0.5)), f"p95 {_ms(_percentile(elapsed, 0.95))}", _ACCENT["neutral"]),
         _card("TTFB p95", _ms(_percentile(ttfb, 0.95)), "첫 토큰까지", _ACCENT["neutral"]),
         _card("토큰 사용", _num(in_tok + out_tok), f"in {_num(in_tok)} / out {_num(out_tok)}", _ACCENT["purple"]),
-        _card("추정 비용", _usd(cost), "모델 단가 추정치", _ACCENT["purple"]),
+        _card(
+            "추정 비용",
+            _usd(cost),
+            "모델 단가 추정치" if not unpriced else f"단가미정 {unpriced}건 제외",
+            _ACCENT["purple"],
+        ),
         _card(
             "에러/경고",
             f"{_num(errors)} / {_num(warns)}",
@@ -561,8 +575,8 @@ def _models(events: list[dict]) -> dict:
                 "in_tok": _num(m["in"]),
                 "out_tok": _num(m["out"]),
                 "p95": _ms(_percentile(m["ms"], 0.95)),
-                "cost": _usd(cost),
-                "_sort": cost,
+                "cost": _usd(cost) if cost is not None else "단가미정",
+                "_sort": cost if cost is not None else -1.0,
             }
         )
     model_rows.sort(key=lambda r: r["_sort"], reverse=True)
