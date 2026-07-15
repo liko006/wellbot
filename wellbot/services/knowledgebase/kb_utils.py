@@ -428,12 +428,21 @@ def pdf_via_upstage_enabled() -> bool:
     return bool(PDF_VIA_UPSTAGE)
 
 
-def _convert_via_upstage(file_bytes: bytes, filename: str, out_suffix: str) -> tuple[bytes, str]:
+def _convert_via_upstage(
+    file_bytes: bytes,
+    filename: str,
+    out_suffix: str,
+    with_page_markers: bool = False,
+) -> tuple[bytes, str]:
     """파일을 Upstage Document Parse 로 markdown 변환 (xlsx/pdf 공용).
 
     변환된 markdown 은 Lambda 의 parse_md 가 청킹한다.
     반환: (markdown_bytes, f"{stem}{out_suffix}")
     Upstage 호출 실패/빈 결과 시 예외 전파 (호출자가 폴백 처리).
+
+    with_page_markers=True (PDF 전용) 이면 parsed.pages 로 페이지별 블록 앞에
+    `<!--page=N-->` 마커를 삽입한 md 를 만든다 → Lambda parse_md 가 청크 page 메타로 태깅.
+    pages 가 비면 parsed.text 로 폴백(마커 없음, 현행 동작).
     """
     # 모듈 레벨 import 사이드이펙트 방지를 위해 지연 import
     from wellbot.services.files.file_parser import UpstageParser
@@ -446,7 +455,10 @@ def _convert_via_upstage(file_bytes: bytes, filename: str, out_suffix: str) -> t
         tmp_path.write_bytes(file_bytes)
         parsed = UpstageParser().parse(tmp_path)
 
-    md = parsed.text or ""
+    if with_page_markers and parsed.pages:
+        md = "\n".join(f"<!--page={pg}-->\n{block}" for pg, block in parsed.pages)
+    else:
+        md = parsed.text or ""
     if not md.strip():
         raise ValueError("Upstage 변환 결과가 비어 있습니다")
     stem = Path(filename).stem
@@ -461,8 +473,9 @@ def convert_xlsx_to_markdown(file_bytes: bytes, filename: str) -> tuple[bytes, s
 
 def convert_pdf_to_markdown(file_bytes: bytes, filename: str) -> tuple[bytes, str]:
     """PDF 를 Upstage 로 markdown 변환 (이미지/스캔 내용까지 OCR+레이아웃 해석).
-    예: report.pdf → report_pdf.md. 실패 시 예외 전파(호출자가 원본 PDF 색인 폴백)."""
-    return _convert_via_upstage(file_bytes, filename, "_pdf.md")
+    예: report.pdf → report_pdf.md. 실패 시 예외 전파(호출자가 원본 PDF 색인 폴백).
+    페이지 마커(`<!--page=N-->`)를 삽입해 출처 page 표시가 가능하도록 한다."""
+    return _convert_via_upstage(file_bytes, filename, "_pdf.md", with_page_markers=True)
 
 
 # ──────────────────────────────────────────────

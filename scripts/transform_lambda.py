@@ -383,9 +383,12 @@ def parse_txt(data: bytes, source: str) -> List[Chunk]:
     return _chunk_text(text, source, "txt")
 
 
-def parse_md(data: bytes, source: str) -> List[Chunk]:
-    """헤더 기준 섹션 분리 후 청킹 (chromadb_chunking.MarkdownChunker 동일 로직)"""
-    content  = data.decode("utf-8", errors="replace")
+_PAGE_MARKER_RE = re.compile(r"<!--page=(\d+)-->")
+
+
+def _parse_md_sections(content: str, source: str) -> List[Chunk]:
+    """헤더 기준 섹션 분리 후 청킹 (chromadb_chunking.MarkdownChunker 동일 로직).
+    페이지 마커가 있으면 텍스트에 포함된 채 유지 → parse_md 후처리에서 소비."""
     # h1·h2 에서만 섹션 분리(h3 는 섹션 안에 흡수) → 섹션이 커져 청크가 과도하게 짧아지는 것 완화.
     # (recursive 청킹은 섹션 '안에서만' size 까지 채우므로 헤더를 잘게 끊으면 짧은 청크가 양산됨)
     sections = re.split(r"(?=\n#{1,2} )", content)
@@ -404,6 +407,34 @@ def parse_md(data: bytes, source: str) -> List[Chunk]:
         }):
             chunks.append(c)
     return chunks
+
+
+def parse_md(data: bytes, source: str) -> List[Chunk]:
+    """헤더 기준 섹션 분리 후 청킹.
+
+    `<!--page=N-->` 마커(Upstage PDF 변환 경로에서 삽입)가 있으면, 청크를 문서 순서대로
+    후처리해 **시작 페이지**를 page 메타로 태깅하고 마커를 제거한다. 병합 허용 —
+    청크가 페이지 경계를 넘으면 시작 페이지로 태깅(짧은 청크 파편화 방지). 마커가 없는
+    md(_xlsx.md·일반 md)는 markers 가 비어 page 미태깅 = 현행과 100% 동일 동작.
+    """
+    content = data.decode("utf-8", errors="replace")
+    chunks  = _parse_md_sections(content, source)
+
+    # 청크를 문서 순서대로 순회하며 시작 페이지 태깅 + 마커 제거
+    current_page = None
+    for c in chunks:
+        markers = [int(m) for m in _PAGE_MARKER_RE.findall(c.text)]
+        lead = _PAGE_MARKER_RE.match(c.text.lstrip())   # 청크가 마커로 시작하는가
+        # 경계 걸친 청크(선두 마커 없음)는 직전 청크에서 이월된 current_page 를 시작 페이지로.
+        start_page = int(lead.group(1)) if lead else current_page
+        if markers:
+            current_page = markers[-1]        # 청크 내 마지막 마커를 다음 청크로 이월
+        elif start_page is not None:
+            current_page = start_page
+        if start_page is not None:
+            c.metadata["page"] = start_page
+        c.text = _PAGE_MARKER_RE.sub("", c.text).strip()   # 마커 제거(임베딩/표시 오염 방지)
+    return [c for c in chunks if c.text]
 
 
 def parse_json(data: bytes, source: str) -> List[Chunk]:
