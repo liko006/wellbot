@@ -104,6 +104,9 @@ SEARCH_TOP_K: int = 5
 # ── KB (Knowledge Base) ──
 KB_SEARCH_TOP_K: int = 10            # KB Retrieve 결과 수 (각 KB 별 + 최종 병합)
 KB_MIN_SCORE: float = 0.4            # 이 미만 점수의 청크는 무관 결과로 간주하여 제외
+# 공용 KB 권위 재랭킹: raw score 가 이 값 이상일 때만 폴더 authority 배수를 적용
+# (min_score 0.4 보다 높아야 게이트가 의미 있음). 모델 score 분포 의존값이라 배포 무관 → 상수 단일 소스.
+KB_AUTHORITY_FLOOR: float = 0.55
 # LLM 답변에 다음 표현이 포함되면 KB 출처를 표시하지 않음
 # (저점수 청크가 retrieve 되었지만 LLM 이 활용하지 못해 '정보 없음'으로 답한 케이스)
 KB_NOT_FOUND_PATTERNS: tuple[str, ...] = (

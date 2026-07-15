@@ -77,29 +77,27 @@ class PendingFile(BaseModel):
     size_display: str
 
 
-class KbSharedFile(BaseModel):
-    """회사 KB 문서 목록 표시용 파일 정보 (폴더 안에 들어감)."""
+class KbTreeRow(BaseModel):
+    """회사(공용) KB 문서 목록 트리의 **평탄화된 한 행** (폴더 또는 파일). N단계 지원.
 
-    file_name: str
-    uploaded_at: str
-    expires_at: str
+    Reflex `rx.foreach` 는 임의 깊이 재귀 불가 → 트리를 depth 붙은 평탄 행 리스트로 만들어
+    단일 foreach + depth 들여쓰기로 렌더한다(깊이 무관). 가시성은 조상 폴더가 모두 펼쳐졌는지로
+    ChatState.visible_shared_rows 가 계산.
 
-
-class KbSharedSubfolder(BaseModel):
-    """회사 KB 대분류 아래 소분류 단위 그룹.
-
-    sub_name 이 빈 문자열이면 대분류 raw/ 바로 밑(소분류 없는) 파일 묶음.
+    - depth: 조상 폴더 수 (0=최상위 대분류). indent(=padding_left)는 depth 로 미리 계산.
+    - path: 대분류부터의 전체 논리 경로 (예: "사규", "사규/인사", "사규/인사/취업규칙.pdf").
+            폴더 펼침 키(expanded_kb_folders)이자 조상 판정 기준.
+    - name: 마지막 세그먼트(표시명). is_folder: 폴더 여부.
+    - uploaded_at/expires_at: 파일 행에서만 유효.
     """
 
-    sub_name: str = ""
-    files: list[KbSharedFile] = []
-
-
-class KbSharedFolder(BaseModel):
-    """회사 KB 대분류 단위 그룹. 소분류(subfolders)로 2단계 트리 구성."""
-
-    folder_type: str
-    subfolders: list[KbSharedSubfolder] = []
+    depth: int = 0
+    path: str = ""
+    name: str = ""
+    is_folder: bool = True
+    indent: str = "0em"
+    uploaded_at: str = ""
+    expires_at: str = ""
 
 
 _MIME_LABELS: dict[str, str] = {

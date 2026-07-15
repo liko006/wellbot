@@ -15,9 +15,7 @@ import reflex as rx
 
 from wellbot.components.chat.file_icon import file_icon_by_name
 from wellbot.state.chat_models import (
-    KbSharedFile,
-    KbSharedFolder,
-    KbSharedSubfolder,
+    KbTreeRow,
     PendingFile,
 )
 from wellbot.state.chat_state import ChatState
@@ -273,58 +271,8 @@ def _kb_doc_row(doc: rx.Var) -> rx.Component:
     )
 
 
-def _kb_shared_file_row(doc: KbSharedFile, padding_left: str = "1em") -> rx.Component:
-    """회사 KB 의 파일 행 (폴더 안에 들여쓰기로 표시).
-
-    padding_left 로 들여쓰기 깊이 조절: 대분류 직속=1em, 소분류 하위=2.5em.
-    """
-    return rx.hstack(
-        # 토글 박스 자리 비움 (들여쓰기 효과)
-        rx.box(width="20px", flex_shrink="0"),
-        # 파일 아이콘 + 파일명
-        rx.hstack(
-            file_icon_by_name(doc.file_name),
-            rx.text(
-                doc.file_name,
-                size="1",
-                color=COLORS["text_primary"],
-                overflow="hidden",
-                text_overflow="ellipsis",
-                white_space="nowrap",
-            ),
-            align="center",
-            gap="0.4em",
-            flex="1",
-            min_width="0",
-            overflow="hidden",
-        ),
-        rx.text(
-            doc.uploaded_at,
-            size="1",
-            color=COLORS["text_secondary"],
-            flex_shrink="0",
-            width="80px",
-            text_align="center",
-        ),
-        rx.text(
-            doc.expires_at,
-            size="1",
-            color=COLORS["text_secondary"],
-            flex_shrink="0",
-            width="80px",
-            text_align="center",
-        ),
-        width="100%",
-        align="center",
-        gap="0.5em",
-        padding_y="0.3em",
-        padding_left=padding_left,
-        border_bottom=f"1px solid {COLORS['border']}",
-    )
-
-
 def _kb_toggle_box(key) -> rx.Component:
-    """+/- 펼침 토글 박스. key 는 대분류(folder_type) 또는 '대분류/소분류' 복합키."""
+    """+/- 펼침 토글 박스. key 는 폴더의 전체 경로(path; 예: '사규', '사규/인사')."""
     is_expanded = ChatState.expanded_kb_folders.contains(key)
     return rx.box(
         rx.icon(
@@ -346,107 +294,88 @@ def _kb_toggle_box(key) -> rx.Component:
     )
 
 
-def _kb_subfolder_row(folder_type, sub: KbSharedSubfolder) -> rx.Component:
-    """회사 KB 소분류 행 + 펼침 시 하위 파일 목록 (대분류 안에 한 단계 들여씀)."""
-    composite_key = folder_type + "/" + sub.sub_name
-    is_expanded = ChatState.expanded_kb_folders.contains(composite_key)
-    return rx.vstack(
+def _kb_tree_folder(row: KbTreeRow) -> rx.Component:
+    """회사 KB 폴더 행 (N단계). 토글 박스 + 폴더 아이콘/이름, depth 만큼 들여씀."""
+    return rx.hstack(
+        _kb_toggle_box(row.path),
         rx.hstack(
-            _kb_toggle_box(composite_key),
-            rx.hstack(
-                rx.icon("folder", size=13, color=COLORS["text_secondary"]),
-                rx.text(
-                    sub.sub_name,
-                    size="1",
-                    color=COLORS["text_primary"],
-                    overflow="hidden",
-                    text_overflow="ellipsis",
-                    white_space="nowrap",
-                ),
-                align="center",
-                gap="0.4em",
-                flex="1",
-                min_width="0",
-                cursor="default",
-                user_select="none",
-                on_double_click=ChatState.toggle_kb_folder(composite_key),
+            rx.icon("folder", size=14, color=COLORS["text_secondary"]),
+            rx.text(
+                row.name,
+                size="1",
+                color=COLORS["text_primary"],
+                weight="medium",
+                overflow="hidden",
+                text_overflow="ellipsis",
+                white_space="nowrap",
             ),
-            rx.box(width="80px", flex_shrink="0"),
-            rx.box(width="80px", flex_shrink="0"),
-            width="100%",
             align="center",
-            gap="0.5em",
-            padding_y="0.3em",
-            padding_left="1em",
-            border_bottom=f"1px solid {COLORS['border']}",
+            gap="0.4em",
+            flex="1",
+            min_width="0",
+            cursor="default",
+            user_select="none",
+            on_double_click=ChatState.toggle_kb_folder(row.path),
         ),
-        rx.cond(
-            is_expanded,
-            rx.foreach(sub.files, lambda d: _kb_shared_file_row(d, padding_left="2.5em")),
+        rx.box(width="80px", flex_shrink="0"),
+        rx.box(width="80px", flex_shrink="0"),
+        width="100%",
+        align="center",
+        gap="0.5em",
+        padding_y="0.3em",
+        padding_left=row.indent,
+        border_bottom=f"1px solid {COLORS['border']}",
+    )
+
+
+def _kb_tree_file(row: KbTreeRow) -> rx.Component:
+    """회사 KB 파일 행 (N단계). 토글 자리 비움 + 파일 아이콘/이름 + 날짜, depth 만큼 들여씀."""
+    return rx.hstack(
+        rx.box(width="20px", flex_shrink="0"),   # 토글 자리 비움(정렬 유지)
+        rx.hstack(
+            file_icon_by_name(row.name),
+            rx.text(
+                row.name,
+                size="1",
+                color=COLORS["text_primary"],
+                overflow="hidden",
+                text_overflow="ellipsis",
+                white_space="nowrap",
+            ),
+            align="center",
+            gap="0.4em",
+            flex="1",
+            min_width="0",
+            overflow="hidden",
+        ),
+        rx.text(
+            row.uploaded_at,
+            size="1",
+            color=COLORS["text_secondary"],
+            flex_shrink="0",
+            width="80px",
+            text_align="center",
+        ),
+        rx.text(
+            row.expires_at,
+            size="1",
+            color=COLORS["text_secondary"],
+            flex_shrink="0",
+            width="80px",
+            text_align="center",
         ),
         width="100%",
-        spacing="0",
-        align_items="start",
+        align="center",
+        gap="0.5em",
+        padding_y="0.3em",
+        padding_left=row.indent,
+        border_bottom=f"1px solid {COLORS['border']}",
     )
 
 
-def _kb_subgroup(folder_type, sub: KbSharedSubfolder) -> rx.Component:
-    """소분류 그룹 렌더. sub_name 이 빈 문자열이면 대분류 직속 파일로 바로 표시."""
-    return rx.cond(
-        sub.sub_name == "",
-        rx.foreach(sub.files, _kb_shared_file_row),  # 대분류 raw/ 바로 밑 파일 (1em)
-        _kb_subfolder_row(folder_type, sub),
-    )
-
-
-def _kb_folder_row(folder: KbSharedFolder) -> rx.Component:
-    """회사 KB 대분류 행 + 펼침 시 소분류/파일 트리."""
-    is_expanded = ChatState.expanded_kb_folders.contains(folder.folder_type)
-    return rx.vstack(
-        # 대분류 헤더
-        rx.hstack(
-            _kb_toggle_box(folder.folder_type),
-            # 폴더 아이콘 + 대분류명 (더블클릭으로도 토글)
-            rx.hstack(
-                rx.icon("folder", size=14, color=COLORS["text_secondary"]),
-                rx.text(
-                    folder.folder_type,
-                    size="1",
-                    color=COLORS["text_primary"],
-                    weight="medium",
-                    overflow="hidden",
-                    text_overflow="ellipsis",
-                    white_space="nowrap",
-                ),
-                align="center",
-                gap="0.4em",
-                flex="1",
-                min_width="0",
-                cursor="default",
-                user_select="none",
-                on_double_click=ChatState.toggle_kb_folder(folder.folder_type),
-            ),
-            # 날짜 컬럼 자리 비움 (폴더 단위에는 의미 없음)
-            rx.box(width="80px", flex_shrink="0"),
-            rx.box(width="80px", flex_shrink="0"),
-            width="100%",
-            align="center",
-            gap="0.5em",
-            padding_y="0.3em",
-            border_bottom=f"1px solid {COLORS['border']}",
-        ),
-        # 펼침 시 소분류/파일 트리
-        rx.cond(
-            is_expanded,
-            rx.foreach(
-                folder.subfolders,
-                lambda sf: _kb_subgroup(folder.folder_type, sf),
-            ),
-        ),
-        width="100%",
-        spacing="0",
-        align_items="start",
-    )
+def _kb_tree_row(row: KbTreeRow) -> rx.Component:
+    """평탄화된 공용 KB 트리의 한 행 렌더 (폴더/파일 분기). N단계 = 단일 foreach + depth 들여쓰기."""
+    return rx.cond(row.is_folder, _kb_tree_folder(row), _kb_tree_file(row))
 
 
 def kb_docs_panel() -> rx.Component:
@@ -516,9 +445,9 @@ def kb_docs_panel() -> rx.Component:
                             ),
                             rx.cond(
                                 ChatState.kb_doc_list_tab == "shared",
-                                # 회사 탭: 폴더(문서종류) 단위 그룹 뷰
+                                # 회사 탭: N단계 폴더 트리 (평탄화 행 단일 foreach + depth 들여쓰기)
                                 rx.vstack(
-                                    rx.foreach(ChatState.kb_folder_list, _kb_folder_row),
+                                    rx.foreach(ChatState.visible_shared_rows, _kb_tree_row),
                                     spacing="0",
                                     width="100%",
                                     max_height="150px",

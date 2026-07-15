@@ -67,9 +67,7 @@ from wellbot.state.chat_helpers.upload_script import build_upload_script
 from wellbot.state.chat_models import (
     AttachmentInfo,
     Conversation,
-    KbSharedFile,
-    KbSharedFolder,
-    KbSharedSubfolder,
+    KbTreeRow,
     Message,
     ModelInfo,
     PendingFile,
@@ -136,8 +134,8 @@ class ChatState(rx.State):
     selected_kb_docs: list[str] = []             # 다중 선택된 파일명 (개인/팀 KB 삭제용)
     kb_delete_status: str = "idle"               # idle | processing | ready | error
     kb_delete_error: str = ""
-    kb_folder_list: list[KbSharedFolder] = []    # 회사(공용) KB 탭용 그룹 뷰
-    expanded_kb_folders: list[str] = []          # 회사 KB 탭에서 펼쳐진 folder_type 목록
+    kb_shared_tree: list[KbTreeRow] = []         # 회사(공용) KB 탭용 평탄화 트리(N단계)
+    expanded_kb_folders: list[str] = []          # 펼쳐진 폴더 경로 목록(path 키; N단계)
     # KB 검색 결과 출처 (스트리밍 중 누적 → 메시지에 첨부)
     _streaming_kb_sources: list[dict] = []
 
@@ -521,8 +519,24 @@ class ChatState(rx.State):
     def kb_docs_empty(self) -> bool:
         """현재 탭에서 문서가 비어 있는지 여부 (UI 의 '업로드된 문서가 없습니다' 분기용)"""
         if self.kb_doc_list_tab == "shared":
-            return len(self.kb_folder_list) == 0
+            return len(self.kb_shared_tree) == 0
         return len(self.kb_doc_list) == 0
+
+    @rx.var
+    def visible_shared_rows(self) -> list[KbTreeRow]:
+        """공용 트리에서 **조상 폴더가 모두 펼쳐진** 행만 반환 (N단계 접힘/펼침).
+
+        Reflex 는 임의 깊이 재귀 렌더가 안 되므로, 평탄 트리(kb_shared_tree)를
+        expanded_kb_folders 기준으로 필터해 단일 foreach 로 그린다. 최상위(대분류, 조상 없음)는
+        항상 표시; 하위 행은 자기 path 의 모든 상위 경로가 펼쳐졌을 때만 표시.
+        """
+        expanded = set(self.expanded_kb_folders)
+        out: list[KbTreeRow] = []
+        for row in self.kb_shared_tree:
+            segs = row.path.split("/")
+            if all("/".join(segs[:i]) in expanded for i in range(1, len(segs))):
+                out.append(row)
+        return out
 
     @rx.var
     def kb_delete_button_label(self) -> str:
@@ -1041,7 +1055,7 @@ class ChatState(rx.State):
 
         self.kb_doc_list_loading = True
         self.kb_doc_list = []
-        self.kb_folder_list = []
+        self.kb_shared_tree = []
         yield
 
         emp_no = self._emp_no
@@ -1058,7 +1072,7 @@ class ChatState(rx.State):
                 shared_cfg = get_kb_config().get("shared_kb", {})
                 shared_bucket = shared_cfg.get("s3_bucket", "")
                 if not shared_bucket:
-                    self.kb_folder_list = []
+                    self.kb_shared_tree = []
                     return
 
                 base = shared_base()
@@ -1066,66 +1080,58 @@ class ChatState(rx.State):
                     None,
                     lambda: storage_service.list_objects_with_meta(f"{base}/", shared_bucket),
                 )
-                # 대분류 → 소분류 → 파일목록 으로 그룹핑.
-                # raw/ = 인덱싱 대상(원본 + 변환본). originals/ = 인덱싱 제외 원본
-                # (xlsx→Upstage 변환 시 원본 xlsx 보관 위치). 변환본(_xlsx.md 등)은
-                # list_objects_with_meta 가 이미 제외하므로 raw/+originals/ 를 합치면
-                # 원본이 정확히 1번 노출된다. 같은 (대분류,소분류,파일)은 중복 제거.
-                folder_map: dict[str, dict[str, list[dict]]] = {}
-                seen_shared: set[tuple[str, str, str]] = set()
+                # 전체 경로를 "대분류/[서브.../]파일" 논리 경로로 정규화해 **N단계 트리** 구성.
+                # (raw/originals 마커 제거; 폴더는 도메인 표시용, 깊이 무관.) raw+originals 중복은
+                # 논리 경로 dedup 으로 1회만 노출. 변환본(_pdf.md 등)은 list_objects 가 이미 제외.
+                tree: dict = {"dirs": {}, "files": {}}
+                seen_shared: set[str] = set()
                 for obj in items:
-                    key = obj["key"]
-                    parts = key.split("/")
-                    # shared{env}/{대분류}/{raw|originals}/{...} 형태만 채택
+                    parts = obj["key"].split("/")
+                    # shared{env}/{대분류}/{raw|originals}/{...}/{파일} 형태만 채택
                     if (
                         len(parts) < 4
                         or parts[0] != base
                         or parts[2] not in ("raw", "originals")
                     ):
                         continue
-                    top = parts[1]
-                    rest = parts[3:]
-                    # rest 가 1개면 소분류 없음, 2개 이상이면 첫 segment 가 소분류
-                    if len(rest) >= 2:
-                        sub = rest[0]
-                        filename = "/".join(rest[1:])
-                    else:
-                        sub = ""
-                        filename = rest[0]
-                    if (top, sub, filename) in seen_shared:
+                    segs = [parts[1]] + parts[3:]   # raw/originals 제거한 논리 경로 세그먼트
+                    logical = "/".join(segs)
+                    if logical in seen_shared:
                         continue
-                    seen_shared.add((top, sub, filename))
+                    seen_shared.add(logical)
                     lm = obj["last_modified"]
                     if lm.tzinfo is None:
                         lm = lm.replace(tzinfo=_tz.utc)
-                    folder_map.setdefault(top, {}).setdefault(sub, []).append({
-                        "file_name": filename,
-                        "uploaded_at": lm.strftime("%Y-%m-%d"),
-                        "expires_at": "-",
-                    })
+                    node = tree
+                    for seg in segs[:-1]:
+                        node = node["dirs"].setdefault(seg, {"dirs": {}, "files": {}})
+                    node["files"][segs[-1]] = lm.strftime("%Y-%m-%d")
 
-                # 대분류 가나다순, 소분류 가나다순("" 은 맨 앞 = 대분류 직속 파일).
-                # 파일은 업로드일 내림차순 + 파일명 오름차순 (stable sort 2단계).
-                self.kb_folder_list = [
-                    KbSharedFolder(
-                        folder_type=top,
-                        subfolders=[
-                            KbSharedSubfolder(
-                                sub_name=sub,
-                                files=[
-                                    KbSharedFile(**f)
-                                    for f in sorted(
-                                        sorted(files, key=lambda d: d["file_name"]),
-                                        key=lambda d: d["uploaded_at"],
-                                        reverse=True,
-                                    )
-                                ],
-                            )
-                            for sub, files in sorted(subs.items())
-                        ],
-                    )
-                    for top, subs in sorted(folder_map.items())
-                ]
+                # DFS 평탄화: 각 노드에서 파일(업로드일↓ + 이름↑) 먼저, 그다음 하위 폴더(이름순).
+                # depth = 조상 폴더 수(0=대분류). indent(padding_left)는 depth 로 미리 계산.
+                rows: list[KbTreeRow] = []
+
+                def _walk(node: dict, prefix: str, depth: int) -> None:
+                    indent = f"{depth * 1.25}em"   # 1.25=이진수 정확값 → 1.25/2.5/3.75em (부동소수 오차 없음)
+                    for fname in sorted(
+                        sorted(node["files"]),
+                        key=lambda n: node["files"][n],
+                        reverse=True,
+                    ):
+                        fpath = f"{prefix}/{fname}" if prefix else fname
+                        rows.append(KbTreeRow(
+                            depth=depth, path=fpath, name=fname, is_folder=False,
+                            indent=indent, uploaded_at=node["files"][fname], expires_at="-",
+                        ))
+                    for dname in sorted(node["dirs"]):
+                        dpath = f"{prefix}/{dname}" if prefix else dname
+                        rows.append(KbTreeRow(
+                            depth=depth, path=dpath, name=dname, is_folder=True, indent=indent,
+                        ))
+                        _walk(node["dirs"][dname], dpath, depth + 1)
+
+                _walk(tree, "", 0)
+                self.kb_shared_tree = rows
                 return
 
             # personal / team: 본인(또는 팀) prefix 의 raw/ + originals/ 병합
