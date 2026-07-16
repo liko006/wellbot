@@ -190,6 +190,7 @@ def _merge_results(
     all_results: list[dict],
     top_k: int,
     min_score: float = KB_MIN_SCORE,
+    rank_offset: int = 0,
 ) -> list[dict[str, Any]]:
     """모든 KB 결과를 정렬 후 상위 top_k 개 반환.
 
@@ -199,6 +200,9 @@ def _merge_results(
     공용 KB 는 문서별 속성(config `shared_kb.docs`: 문서→{tier,dept}, +`authority_tiers` 사다리)로
     **정렬 순서만** 우대한다(soft; tier 기준). `item["score"]`(원본)은 그대로 유지 — UI·min_score·
     인용 매칭은 원본 기준. tier 미배정이면 배수 1.0 → 순수 score 정렬(현행과 동일). dept 는 표시 전용.
+
+    rank_offset: 한 턴에 kb_search 가 여러 번 호출되면 rank 가 매번 1 부터 겹쳐 인용
+    마커([N])가 여러 문서에 오귀속된다. 이전 호출들의 결과 수만큼 밀어 rank 를 전역 유니크하게 만든다.
     """
     filtered = [r for r in all_results if r.get("score", 0.0) >= min_score]
 
@@ -229,7 +233,7 @@ def _merge_results(
     scored.sort(key=lambda t: t[0], reverse=True)
     merged = [r for _, r in scored[:top_k]]
     for idx, item in enumerate(merged, 1):
-        item["rank"] = idx
+        item["rank"] = rank_offset + idx
     return merged
 
 
@@ -266,11 +270,15 @@ def retrieve(
     emp_no: str,
     kb_modes: list[str],    # ["shared", "team", "personal"]
     top_k: int = KB_SEARCH_TOP_K,
+    rank_offset: int = 0,
 ) -> dict[str, Any]:
     """
     kb_modes 에 포함된 KB 들을 각각 조회하고 결과를 병합하여 반환.
 
     각 KB 에서 top_k 개씩 조회 → score 기준 정렬 → 최종 top_k 개 반환.
+
+    rank_offset: 한 턴 내 다중 kb_search 호출 시 rank(=인용 마커 [N])를 이어붙여
+    호출 간 번호 충돌·오귀속을 막기 위한 시작 오프셋. context 문자열도 이 rank 로 생성된다.
 
     반환값:
     {
@@ -309,7 +317,7 @@ def retrieve(
             all_results.extend(results)
             searched["personal"] = True
 
-    merged = _merge_results(all_results, top_k)
+    merged = _merge_results(all_results, top_k, rank_offset=rank_offset)
     context = _format_context(merged)
 
     return {

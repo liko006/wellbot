@@ -1940,14 +1940,24 @@ class ChatState(rx.State):
                 # 이렇게 하면 offset 이어읽기 누적으로 인한 컨텍스트 초과가 원천 차단된다.
                 read_budget = read_budget_for(model.context_window, model.max_tokens)
 
+                # 턴 내 다중 kb_search 의 rank 오프셋. 각 호출 결과 수만큼 누적해
+                # 인용 마커([N])가 호출 간 겹쳐 여러 문서에 오귀속되는 것을 막는다(전역 유니크 rank).
+                kb_rank_offset = 0
+
                 def _tool_exec(name: str, tool_input: dict) -> dict:
                     # 검색 범위는 사용자의 UI 선택(kb_modes)으로 결정. kb_scope 는 LLM 에
                     # 노출하지 않고 여기서 주입 (툴 스키마에도 부재).
+                    nonlocal kb_rank_offset
                     if name == "kb_search":
                         tool_input = {**tool_input, "kb_scope": kb_modes}
-                    return tool_executor.execute_tool(
-                        name, tool_input, conv_id, emp_no, max_read_tokens=read_budget
+                    result = tool_executor.execute_tool(
+                        name, tool_input, conv_id, emp_no,
+                        max_read_tokens=read_budget, kb_rank_offset=kb_rank_offset,
                     )
+                    # 다음 kb_search 호출의 rank 가 이번 결과 뒤에서 시작하도록 오프셋 전진.
+                    if name == "kb_search":
+                        kb_rank_offset += result.get("_meta", {}).get("result_count", 0)
+                    return result
 
                 stream = astream_chat_with_tools(
                     api_messages,

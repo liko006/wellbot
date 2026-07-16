@@ -226,6 +226,7 @@ def execute_tool(
     smry_id: str,
     emp_no: str = "",
     max_read_tokens: int | None = None,
+    kb_rank_offset: int = 0,
 ) -> dict:
     """LLM 이 호출한 도구를 실제 실행하고 결과를 반환
 
@@ -243,7 +244,7 @@ def execute_tool(
         if tool_name == "read_attachment":
             return _run_read_attachment(tool_input, smry_id, max_read_tokens)
         if tool_name == "kb_search":
-            return _run_kb_search(tool_input, emp_no)
+            return _run_kb_search(tool_input, emp_no, rank_offset=kb_rank_offset)
         log.warning("알 수 없는 tool 호출: %s", tool_name)
         return {"text": f"알 수 없는 도구입니다: {tool_name}", "status": "error"}
     except Exception as exc:
@@ -406,8 +407,12 @@ def _run_read_attachment(
     }
 
 
-def _run_kb_search(tool_input: dict[str, Any], emp_no: str) -> dict:
-    """kb_search 실제 실행"""
+def _run_kb_search(tool_input: dict[str, Any], emp_no: str, rank_offset: int = 0) -> dict:
+    """kb_search 실제 실행.
+
+    rank_offset: 한 턴 내 이 호출 이전에 이미 부여된 rank 수. 인용 마커([N])가 호출 간
+    겹치지 않도록 rank 를 이어붙이는 시작점 (턴 전역 유니크 rank).
+    """
     query = (tool_input.get("query") or "").strip()
     if not query:
         return {"text": "query 파라미터가 비어있습니다.", "status": "error"}
@@ -416,7 +421,9 @@ def _run_kb_search(tool_input: dict[str, Any], emp_no: str) -> dict:
 
     top_k = _parse_top_k(tool_input.get("top_k"), KB_SEARCH_TOP_K, KB_SEARCH_TOP_K)
 
-    retrieve_result = kb_retrieve(query=query, emp_no=emp_no, kb_modes=kb_scope, top_k=top_k)
+    retrieve_result = kb_retrieve(
+        query=query, emp_no=emp_no, kb_modes=kb_scope, top_k=top_k, rank_offset=rank_offset
+    )
     results: list[dict] = retrieve_result.get("results", [])
     context: str = retrieve_result.get("context", "")
     sources_searched: dict = retrieve_result.get("sources_searched", {})
