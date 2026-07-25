@@ -26,6 +26,35 @@ def _verify_ownership(session, smry_id: str, emp_no: str) -> ChatSummary | None:
     return record
 
 
+def can_attach(smry_id: str, emp_no: str) -> bool:
+    """대화 저장 전 첨부 업로드를 허용해도 되는지 판정 (IDOR 방어).
+
+    첨부는 첫 메시지가 chtb_msg_d 에 저장되기 전에 올라갈 수 있어, 이 시점엔 chtb_smry_d
+    행이 아직 없다. '소유 대화'만 허용하면 정상 흐름이 막히고, 검증을 생략하면 타인 대화
+    ID 를 넣어 첨부를 끼워 넣을 수 있다(첨부 조회는 emp_no 가 아닌 대화 ID 기준). 그래서:
+
+      · 대화 행이 있으면  → 소유자만 허용
+      · 대화 행이 없으면  → 메시지도 없어야(=진짜 새 세션) 허용
+    """
+    if not smry_id:
+        return False
+    with get_session() as session:
+        owner = (
+            session.query(ChatSummary.emp_no)
+            .filter(ChatSummary.chtb_tlk_smry_id == smry_id)
+            .first()
+        )
+        if owner is not None:
+            return owner.emp_no == emp_no
+        has_messages = (
+            session.query(ChatMessage.chtb_tlk_id)
+            .filter(ChatMessage.chtb_tlk_smry_id == smry_id)
+            .first()
+            is not None
+        )
+    return not has_messages
+
+
 def list_conversations(emp_no: str) -> list[dict]:
     """사원의 대화 목록 조회 (최근 30개, 메시지 제외).
 

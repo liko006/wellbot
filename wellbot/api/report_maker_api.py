@@ -22,9 +22,11 @@ from typing import Literal
 
 from fastapi import APIRouter, Cookie, File, Form, HTTPException, UploadFile, status
 
+from wellbot.constants import FILE_MAX_PER_CONVERSATION
 from wellbot.logger import log_context
 from wellbot.services.auth import auth_service
 from wellbot.services.files import attachment_service, file_parser
+from wellbot.services.report_maker import db as rmdb
 from wellbot.services.report_maker import storage
 from wellbot.services.report_maker.config import get_config
 from wellbot.services.report_maker.parsing import magic_bytes_ok
@@ -94,8 +96,34 @@ async def upload_file(
     #   메시지(msg_id)에 매핑되어, 전송 시 append_message 가 같은 msg_id 로 저장하면 연결된다.
     #   RAG 파싱(process_attachment)은 하지 않는다(report_maker 는 텍스트를 인라인 추출).
     if kind == "topic":
-        if not session_id.strip():
+        sid = session_id.strip()
+        if not sid:
             return {"file_no": 0, "filename": file.filename, "error": "세션 정보가 필요합니다."}
+
+        # 소유권 게이트 — 클라이언트가 보낸 대화 ID 를 그대로 믿으면 타인 대화에 첨부를
+        # 끼워 넣을 수 있다(첨부 조회는 emp_no 가 아닌 대화 ID 기준).
+        if not rmdb.can_attach(sid, emp_no):
+            log.warning("report_maker 주제 첨부 대화 소유권 불일치 emp_no=%s smry_id=%s", emp_no, sid)
+            return {"file_no": 0, "filename": file.filename, "error": "잘못된 대화 참조입니다."}
+
+        # 대화당 첨부 개수 한도 — 메인 챗 업로드(api/upload.py)와 동일 기준 적용
+        try:
+            file_count, _ = attachment_service.count_conversation_attachments(
+                sid, pending_msg_id=msg_id.strip()
+            )
+        except Exception:
+            log.exception("report_maker 주제 첨부 개수 조회 실패")
+            return {"file_no": 0, "filename": file.filename, "error": "파일 저장에 실패했습니다."}
+        if file_count >= FILE_MAX_PER_CONVERSATION:
+            return {
+                "file_no": 0,
+                "filename": file.filename,
+                "error": (
+                    f"대화당 첨부 가능한 최대 파일 개수({FILE_MAX_PER_CONVERSATION})를 "
+                    "초과했습니다."
+                ),
+            }
+
         fd, tmp = tempfile.mkstemp(suffix=ext, prefix="rptmk_up_")
         os.close(fd)
         try:
@@ -103,7 +131,7 @@ async def upload_file(
                 f.write(data)
             file_no = attachment_service.register_attachment(
                 emp_no=emp_no,
-                smry_id=session_id.strip(),
+                smry_id=sid,
                 filename=file.filename or "file",
                 content_type=file_parser.guess_mime(file.filename or ""),
                 file_path=Path(tmp),

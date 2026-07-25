@@ -44,6 +44,7 @@ from wellbot.constants import (
 from wellbot.logger import log_context
 from wellbot.paths import wellbot_temp_dir
 from wellbot.services.auth import auth_service
+from wellbot.services.chat import chat_service
 from wellbot.services.files import attachment_service, file_parser
 
 log = logging.getLogger(__name__)
@@ -183,6 +184,15 @@ async def upload_attachment(
 
     # 이후 모든 로그에 emp/conv/msg 상관관계 표기
     log_context.bind(emp_no=emp_no, conversation_id=smry_id, message_id=msg_id or None)
+
+    # 2-2. 대화 소유권 게이트 — conversation_id 는 클라이언트 값이므로 그대로 믿으면
+    #      타인 대화에 첨부를 끼워 넣을 수 있다(첨부 조회는 대화 ID 기준).
+    if not chat_service.can_attach(smry_id, emp_no):
+        log.warning("첨부 업로드 대화 소유권 불일치 emp_no=%s smry_id=%s", emp_no, smry_id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="잘못된 대화 참조입니다.",
+        )
 
     # 3. 파일 확장자 검증
     filename, ext = _validate_file(file)
