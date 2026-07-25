@@ -10,7 +10,6 @@ import textwrap
 from datetime import datetime
 
 from wellbot.constants import KST
-from wellbot.services.files import attachment_service
 from wellbot.state.chat_models import mime_to_label
 
 _WEEKDAYS_KO = ("월", "화", "수", "목", "금", "토", "일")
@@ -33,20 +32,21 @@ def augment_system_with_datetime(base_prompt: str) -> str:
     return f"{block}\n\n{base_prompt}"
 
 
-def augment_system_with_attachments(base_prompt: str, conv_id: str) -> str:
+def augment_system_with_attachments(
+    base_prompt: str, conv_id: str, attachments: list
+) -> str:
     """system prompt 에 현재 대화의 첨부파일 메타 목록 추가.
 
     파일은 [#file_no] file_name 형식으로 노출하여, LLM 이
     search_attachment 호출 시 file_ids 로 정확 매칭하도록 유도.
+
+    첨부 목록(``attachments``)은 호출측에서 ``asyncio.to_thread`` 로 한 번만 조회해 넘긴다.
+    여기서 다시 DB 를 조회하면 Reflex 단일 이벤트 루프를 동기 호출로 블로킹하고 같은
+    쿼리를 중복 실행하게 되므로 재조회하지 않는다.
     """
-    if not conv_id:
+    if not conv_id or not attachments:
         return base_prompt
-    try:
-        atts = attachment_service.get_conversation_attachments(conv_id)
-    except Exception:
-        return base_prompt
-    if not atts:
-        return base_prompt
+    atts = attachments
 
     # 캐시 hit 가정. 실패 시 무시
     missing_set: set[str] = set()

@@ -1912,10 +1912,22 @@ class ChatState(rx.State):
             prompt = cfg.get_prompt(prompt_name)
             base_system = prompt.content if prompt else cfg.system_prompt
 
-            # 대화 전체 첨부파일 메타를 system prompt 에 추가
+            # 대화 전체 첨부 목록은 여기서 딱 한 번 조회해 아래 두 용도로 재사용한다
+            # (system prompt 주입 / search_attachment 활성화 판단). 동기 호출은 이벤트 루프를
+            # 막으므로 반드시 to_thread 경유.
+            conv_attachments: list = []
+            try:
+                conv_attachments = await asyncio.to_thread(
+                    attachment_service.get_conversation_attachments, conv_id
+                )
+            except Exception:
+                log.warning("대화 첨부 목록 조회 실패 conv_id=%s", conv_id, exc_info=True)
+
             # 현재 시각(KST) 주입 → 상대 날짜 표현 해석. 매 턴 최신값으로 갱신.
             system_prompt = augment_system_with_datetime(base_system)
-            system_prompt = augment_system_with_attachments(system_prompt, conv_id)
+            system_prompt = augment_system_with_attachments(
+                system_prompt, conv_id, conv_attachments
+            )
             # KB 활성화 시 검색 지침 + 인용 표기 규칙 추가
             if use_kb and kb_modes:
                 system_prompt = augment_system_with_kb(system_prompt, kb_modes)
@@ -1928,16 +1940,9 @@ class ChatState(rx.State):
             # 검색 가능한(텍스트) 첨부가 있을 때만 search_attachment 활성화.
             # token_count>0 = 텍스트 추출·청킹 완료. 이미지(0)·처리중(None)은 검색 대상이
             # 아니므로 제외 — 노출하면 LLM 이 빈 검색을 반복(폴백까지 소진)한다.
-            has_searchable_attachments = False
-            try:
-                conv_attachments = await asyncio.to_thread(
-                    attachment_service.get_conversation_attachments, conv_id
-                )
-                has_searchable_attachments = any(
-                    (getattr(a, "token_count", None) or 0) > 0 for a in conv_attachments
-                )
-            except Exception:
-                log.warning("첨부 보유 여부 조회 실패 conv_id=%s", conv_id, exc_info=True)
+            has_searchable_attachments = any(
+                (getattr(a, "token_count", None) or 0) > 0 for a in conv_attachments
+            )
 
             tool_config = None
             if has_searchable_attachments or use_kb:
