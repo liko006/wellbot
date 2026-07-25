@@ -1065,6 +1065,29 @@ class ReportMakerState(rx.State):
     # ══════════════════════════════════════════════════════════
     # 메인 입력 처리
     # ══════════════════════════════════════════════════════════
+    def _clear_loading(self, message: str = "") -> None:
+        """남아 있는 로딩 스피너 버블을 정리한다 (고아 스피너 방지).
+
+        각 phase 는 `is_loading=True` 자리표시자를 append 한 뒤 결과로 교체하지만, 그 사이
+        예외가 나면 교체 지점을 건너뛰어 스피너가 채팅에 영구 잔존한다. 마지막 스피너는
+        message 로 교체하고(message 가 비면 제거), 그 앞의 스피너는 모두 제거한다.
+
+        반드시 `async with self:` 안에서 호출한다.
+        """
+        idxs = [i for i, m in enumerate(self.messages) if m.is_loading]
+        if not idxs:
+            if message:
+                self.messages.append(ReportMessage(content=message))
+            return
+        if message:
+            self.messages[idxs[-1]] = ReportMessage(content=message)
+            drop = set(idxs[:-1])
+        else:
+            drop = set(idxs)
+        if drop:
+            # 리스트 재할당으로 Reflex 더티트래킹을 확실히 트리거
+            self.messages = [m for i, m in enumerate(self.messages) if i not in drop]
+
     @rx.event(background=True)
     async def send_message(self, form_data: dict):
         # 메인 챗과 동일 패턴: background task 로 실행해 스트리밍 flush 마다
@@ -1075,6 +1098,10 @@ class ReportMakerState(rx.State):
             typed = (form_data.get("message") or "").strip()
             if not typed or self.is_streaming:
                 return
+            # 가드를 통과한 즉시 같은 락 안에서 잠근다. _route 는 to_thread(_classify_intent)
+            # 구간에서 락을 놓으므로, 여기서 잠그지 않으면 두 번째 제출이 가드를 통과해
+            # 메시지가 중복 append 되고 flow_stage 가 어긋난다.
+            self.is_streaming = True
             # 첨부 추출 텍스트는 LLM 입력에만 합치고, 말풍선엔 사용자가 친 글 + 파일칩만 표시.
             # 첨부가 있으면 사전발급 msg_id 를 메시지에 부여해 첨부(ChatMessageAttachment)와 연결.
             llm_text = typed
@@ -1099,10 +1126,13 @@ class ReportMakerState(rx.State):
             log.exception("메시지 처리 실패")
             async with self:
                 self.is_streaming = False
-                self.messages.append(
-                    ReportMessage(content="처리 중 오류가 발생했습니다. 다시 시도해주세요.")
-                )
+                # 새 버블을 붙이지 말고 남은 스피너를 오류 문구로 교체 (고아 스피너 방지)
+                self._clear_loading("처리 중 오류가 발생했습니다. 다시 시도해주세요.")
         finally:
+            # 어떤 경로로 끝나도 잠금은 반드시 해제한다(위에서 선점했으므로 누락 시 입력 영구 잠김).
+            async with self:
+                self.is_streaming = False
+                self._clear_loading()   # 정상 종료했는데 남은 스피너가 있으면 제거
             await self._persist_turn()
 
     async def _route(self, user_input: str):

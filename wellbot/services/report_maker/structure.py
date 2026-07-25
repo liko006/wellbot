@@ -108,8 +108,10 @@ def remaining_questions(questions, user_answer) -> list:
     )
     res = bedrock.call_json(prompt, 10000)
     rem = (res or {}).get("remaining", [])
-    # 안전장치: LLM이 엉뚱한 걸 반환하면 원본 질문 집합 내로 제한
-    return [q for q in questions if q in rem] or [q for q in rem if q in questions] or rem
+    # 안전장치: 반드시 원본 질문 집합 안으로 제한한다. 폴백으로 rem 을 그대로 돌려주면
+    # LLM 이 만들어낸 문장(환각)이 그대로 사용자에게 재질문되므로 폴백을 두지 않는다.
+    # 매칭이 하나도 안 되면 '남은 질문 없음'으로 본다(과잉 질문보다 안전한 방향).
+    return [q for q in questions if q in rem]
 
 
 
