@@ -179,7 +179,7 @@ def _collapsed_nav() -> rx.Component:
         _collapsed_icon(
             "layers-plus",
             rx.redirect("/ai-services"),
-            "AI 서비스",
+            "AI 업무 특화 서비스",
         ),
         spacing="1",
         align="center",
@@ -492,7 +492,7 @@ def sidebar() -> rx.Component:
                         rx.separator(color_scheme="gray", size="4", margin_y="0.25em"),
                         _nav_item(
                             "layers-plus",
-                            "AI 서비스",
+                            "AI 업무 특화 서비스",
                             rx.redirect("/ai-services"),
                         ),
                         padding_x="0.5em",

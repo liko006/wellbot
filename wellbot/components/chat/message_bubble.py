@@ -145,6 +145,11 @@ def _ai_message_actions(message: Message) -> rx.Component:
             on_click=rx.set_clipboard(message.content),  # type: ignore
             tooltip="응답 복사",
         ),
+        _action_icon(
+            "file-text",
+            on_click=ChatState.start_report_from_message(message.content),
+            tooltip="보고서 만들기",
+        ),
         gap="0.25em",
         padding_top="0.25em",
     )

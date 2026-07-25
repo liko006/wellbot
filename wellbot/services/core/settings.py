@@ -8,11 +8,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from string import Template
 
 import yaml
 
-from wellbot.constants import REPORT_GENERATOR_URL
 from wellbot.paths import (
     AI_SERVICES_YAML,
     GREETINGS_YAML,
@@ -20,10 +18,6 @@ from wellbot.paths import (
     PROMPTS_DIR,
     PROMPTS_YAML,
 )
-
-# AI 서비스 카탈로그 route 에서 치환 가능한 변수 (config/ai_services.yaml 의 ${...}).
-# 외부 시스템 URL 처럼 환경별로 달라지는 값을 yaml 에 하드코딩하지 않기 위함.
-_ROUTE_VARS = {"REPORT_GENERATOR_URL": REPORT_GENERATOR_URL}
 
 log = logging.getLogger(__name__)
 
@@ -276,15 +270,7 @@ def get_ai_services() -> tuple[AIServiceConfig, ...]:
             with open(AI_SERVICES_YAML, encoding="utf-8") as f:
                 raw = yaml.safe_load(f) or {}
             items = raw.get("ai_services", [])
-            _ai_services = tuple(
-                AIServiceConfig(**{
-                    **item,
-                    "route": Template(item.get("route", "")).safe_substitute(
-                        _ROUTE_VARS
-                    ),
-                })
-                for item in items
-            )
+            _ai_services = tuple(AIServiceConfig(**item) for item in items)
         except Exception:
             log.warning("AI 서비스 카탈로그 로드 실패", exc_info=True)
             _ai_services = ()

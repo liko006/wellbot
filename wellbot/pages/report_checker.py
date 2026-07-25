@@ -676,7 +676,7 @@ def report_checker_page() -> rx.Component:
                             rx.icon("arrow-left", size=18, color=COLORS["text_secondary"]),
                             href="/ai-services",
                         ),
-                        rx.heading("보고서 오류 검출", size="7", color=COLORS["text_primary"]),
+                        rx.heading("보고서 오류 탐지", size="7", color=COLORS["text_primary"]),
                         align="center",
                         spacing="3",
                     ),

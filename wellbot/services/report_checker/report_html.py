@@ -169,7 +169,7 @@ def generate_html(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>보고서 오류 검출 결과</title>
+<title>보고서 오류 탐지 결과</title>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:#f0f2f8;color:#1a202c;font-size:14px}}
@@ -221,7 +221,7 @@ footer{{text-align:center;padding:24px;color:#a0aec0;font-size:.78rem}}
 </head>
 <body>
 <header>
-  <h1>📄 보고서 오류 검출 결과</h1>
+  <h1>📄 보고서 오류 탐지 결과</h1>
   <p>파일: <strong>{src}</strong> &nbsp;·&nbsp; 모델: {model}</p>
 </header>
 

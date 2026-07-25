@@ -106,7 +106,7 @@ def ai_services_page() -> rx.Component:
             rx.vstack(
                 rx.vstack(
                     rx.heading(
-                        "AI 서비스",
+                        "AI 업무 특화 서비스",
                         size="7",
                         color=COLORS["text_primary"],
                     ),

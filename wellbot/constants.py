@@ -6,13 +6,6 @@ from zoneinfo import ZoneInfo
 # ── 타임존 ──
 KST = ZoneInfo("Asia/Seoul")
 
-# ── AI 서비스 ──
-# 보고서 생성 외부 시스템 URL. 환경별로 달라질 수 있어 환경변수로 주입.
-# TODO: 실제 보고서 생성 시스템 주소로 교체 (현재는 placeholder).
-REPORT_GENERATOR_URL: str = os.environ.get(
-    "REPORT_GENERATOR_URL", "https://example.com/report-generator"
-)
-
 # ── 인증/세션 ──
 TOKEN_EXPIRE_HOURS: int = 6
 TOKEN_EXPIRE_SECONDS: int = TOKEN_EXPIRE_HOURS * 3600  # 쿠키 max_age 환산값

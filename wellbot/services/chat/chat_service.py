@@ -125,6 +125,31 @@ def get_conversation_messages(
         return messages, has_more
 
 
+def get_message_content(smry_id: str, emp_no: str, seq: int) -> str | None:
+    """대화 내 단일 메시지의 본문 조회 (소유권 검증 포함).
+
+    보고서 생성 핸드오프용 — 채팅에서 고른 AI 메시지 1건을 report_maker 로 넘길 때
+    사용한다. 소유자가 아니거나(IDOR 방지) 해당 seq 메시지가 없으면 None 을 반환한다.
+    system 메시지는 제외한다.
+    """
+    with get_session() as session:
+        if not _verify_ownership(session, smry_id, emp_no):
+            return None
+
+        row = (
+            session.query(ChatMessage)
+            .filter(
+                ChatMessage.chtb_tlk_smry_id == smry_id,
+                ChatMessage.chtb_tlk_seq == seq,
+                ChatMessage.msg_role_nm != "system",
+            )
+            .first()
+        )
+        if row is None:
+            return None
+        return row.chtb_msg_cntt or ""
+
+
 def save_conversation(
     emp_no: str,
     conv_id: str,

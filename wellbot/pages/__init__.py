@@ -6,6 +6,7 @@ from .index import index_page
 from .login import login_page
 from .register import register_page
 from .report_checker import report_checker_page
+from .report_maker import report_maker_page, report_maker_style_page
 
 __all__ = [
     "admin_page",
@@ -14,4 +15,6 @@ __all__ = [
     "login_page",
     "register_page",
     "report_checker_page",
+    "report_maker_page",
+    "report_maker_style_page",
 ]

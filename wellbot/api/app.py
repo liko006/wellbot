@@ -16,6 +16,7 @@ from wellbot.api.kb_upload import router as kb_upload_router
 from wellbot.api.kb_download import router as kb_download_router
 from wellbot.api.client_log import router as client_log_router
 from wellbot.api.report_checker_api import router as report_checker_router
+from wellbot.api.report_maker_api import router as report_maker_router
 from wellbot.logger import install_asyncio_handler, log_context
 from wellbot.services.core.cpu_pool import shutdown as _cpu_pool_shutdown
 from wellbot.services.core.executor import ensure_io_executor
@@ -53,3 +54,4 @@ api_app.include_router(kb_upload_router)
 api_app.include_router(kb_download_router)
 api_app.include_router(client_log_router)
 api_app.include_router(report_checker_router)
+api_app.include_router(report_maker_router)

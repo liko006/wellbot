@@ -454,7 +454,7 @@ def _subtabs() -> rx.Component:
             rx.tabs.trigger("실패 피드", value="failures"),
             rx.tabs.trigger("파일 인제스트", value="ingest"),
             rx.tabs.trigger("모델·RAG", value="models"),
-            rx.tabs.trigger("AI 서비스", value="ai"),
+            rx.tabs.trigger("AI 업무 특화 서비스", value="ai"),
             rx.tabs.trigger("인증·보안", value="auth"),
         ),
         rx.tabs.content(_failures_view(), value="failures", padding_top="1em"),
