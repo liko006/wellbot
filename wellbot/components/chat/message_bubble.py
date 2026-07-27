@@ -18,7 +18,7 @@ from wellbot.styles import (
 
 
 def _source_chip(doc: rx.Var) -> rx.Component:
-    """출처 문서 칩 — 클릭 시 presigned URL 다운로드. 긴 제목은 hover 시 툴팁으로 전체 표시."""
+    """출처 문서 칩 — 긴 제목은 hover 시 툴팁으로 전체 표시."""
     chip = rx.el.button(
         file_icon_by_name(doc["title"]),
         rx.text(
