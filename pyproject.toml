@@ -43,3 +43,13 @@ dependencies = [
 required-environments = [
     "sys_platform == 'win32' and platform_machine == 'AMD64'",
 ]
+
+# 개발/테스트 전용 의존성 (런타임 미포함). `uv sync` 시 기본 설치, 배포는 `uv sync --no-dev`.
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+# .venv 하위 서드파티(numpy 등) 테스트 수집을 막고 tests/ 만 대상으로 한정
+testpaths = ["tests"]
