@@ -27,7 +27,8 @@ def analyze_topic(topic: str, loaded_style="", is_report=False) -> dict:
         "[문서 스타일 — 기존 문서 기반, 최우선 반영]\n" + loaded_style + "\n"
         "★ 이 보고는 사용자의 기존 문서를 기반으로 한다. 위 [문서 스타일]의 전개방식·논리 흐름·선호 구성·분량 성향을 "
         "storyline·storyline_blocks·recommended_pages·page_options 추천에 최우선으로 반영한다. "
-        "(예: 전개방식이 '시간순+검증 흐름'이면 그 흐름으로 storyline을 짜고, 선호 구성이 단일 슬라이드면 분량을 그에 맞춰 추천한다.)\n\n"
+        "(예: 전개방식이 '시간순+검증 흐름'이면 그 흐름으로 storyline을 짜고, 선호 구성이 단일 슬라이드면 분량을 그에 맞춰 추천한다.)\n"
+        "★★ 단, [문서 스타일]은 형식·전개 지침일 뿐이다. 그 안의 구체 주제·사실·수치·조직명·사례는 이 보고 내용이 아니므로 purpose·key_message·storyline_blocks 등 분석 결과에 가져오지 않는다. 실제 내용은 오직 [입력]에서만 도출한다.\n\n"
     ) if (is_report and loaded_style.strip()) else ""
     prompt = (
         "사용자의 보고 요청을 분석하세요.\n\n"
