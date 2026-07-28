@@ -471,7 +471,14 @@ class ReportMakerState(rx.State):
         self.gate_asked_questions = []
         self.outline_reasked = False
         self.edit_instructions = []
+        # 주제 첨부/시드 슬롯은 네 값을 항상 함께 초기화한다(칩·텍스트·번호·매핑ID).
+        # 하나라도 남기면 칩(pending_topic_file)만 남고 텍스트(_uploaded_topic_text)가 비어
+        # 전송 시 병합 블록이 건너뛰어져 '칩이 안 사라지고 내용도 안 넘어가는' 데스싱크가 난다.
+        # (seed 흐름은 리셋 직후 _apply_pending_seed 가 다시 채우므로 안전하다.)
         self._uploaded_topic_text = ""
+        self.pending_topic_file = ""
+        self.pending_topic_file_no = 0
+        self._pending_msg_id = ""
         self._persisted_count = 0
 
     # 재진입 시 이어서 작업할 진행 상태(flow_state) 스냅샷.
@@ -1152,9 +1159,10 @@ class ReportMakerState(rx.State):
             file_name = ""
             file_no = 0
             msg_id = ""
-            if self._uploaded_topic_text or self.pending_topic_file_no:
+            if self._uploaded_topic_text or self.pending_topic_file_no or self.pending_topic_file:
                 # seed/추출 텍스트가 있으면 그것을 주제로, 지시문이 있으면 [추가지시]로 덧붙인다.
                 # 지시문 없이 seed 만 보내는 경우엔 seed 자체가 주제가 된다(더는 버리지 않음).
+                # (칩만 남은 잔여 상태도 이 블록에서 반드시 정리해 스틱키 칩을 없앤다.)
                 if self._uploaded_topic_text:
                     llm_text = (
                         f"{self._uploaded_topic_text}\n[추가지시]\n{typed}"
