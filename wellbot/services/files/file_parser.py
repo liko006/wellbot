@@ -77,12 +77,15 @@ class ParsedDocument:
         page_count: 페이지/시트/슬라이드 수 (해당 시)
         mime: 판별된 MIME 타입
         metadata: 추가 메타 (파서가 채움)
+        pages: (전역 페이지번호, 페이지 markdown) 리스트. Upstage 파싱 시에만 채워지며,
+            KB 변환 경로가 페이지 마커를 심는 용도. 기본 빈 리스트 → text/첨부엔 무영향.
     """
 
     text: str
     page_count: int = 0
     mime: str = ""
     metadata: dict = field(default_factory=dict)
+    pages: list = field(default_factory=list)  # list[tuple[int, str]]
 
 
 # ── Protocol ──
@@ -309,11 +312,15 @@ class UpstageParser:
         """PDF 분할 파싱 후 merge"""
         parts = split_pdf_for_upstage(pdf_path)
         texts: list[str] = []
+        all_pages: list[tuple[int, str]] = []
         total_pages = 0
         try:
             for part_path in parts:
                 part_result = self._call_api(part_path)
                 texts.append(part_result.text)
+                # part 내부 로컬 페이지번호에 이전 parts 누적치를 더해 전역 페이지로 보정.
+                for pg, block in part_result.pages:
+                    all_pages.append((pg + total_pages, block))
                 total_pages += _count_pdf_pages(part_path)
         finally:
             for p in parts:
@@ -328,6 +335,7 @@ class UpstageParser:
             page_count=total_pages,
             mime="application/pdf",
             metadata={"split_parts": len(parts)},
+            pages=all_pages,
         )
 
     def _call_api(self, file_path: Path) -> ParsedDocument:
@@ -416,24 +424,33 @@ class UpstageParser:
         # markdown 우선 → text fallback
         content = payload.get("content", {})
         text = content.get("markdown") or content.get("text") or ""
+        elements = payload.get("elements", []) or []
+
+        # elements 를 한 번만 순회하며 (1) 페이지별 markdown 과 (2) text fallback 을 함께 확보.
+        # 페이지 데이터는 KB 색인 경로의 페이지 마커 삽입에만 쓰이고 .text/첨부 동작엔 무영향.
+        by_page: dict[int, list[str]] = {}
+        element_texts: list[str] = []
+        for el in elements:
+            el_md = (el.get("content") or {}).get("markdown") or (el.get("content") or {}).get("text") or ""
+            if not el_md:
+                continue
+            element_texts.append(el_md)
+            pg = el.get("page")
+            if pg is not None:
+                by_page.setdefault(int(pg), []).append(el_md)
+        page_blocks = [(pg, "\n".join(by_page[pg])) for pg in sorted(by_page)]
         if not text:
-            elements = payload.get("elements", []) or []
-            parts: list[str] = []
-            for el in elements:
-                el_text = (el.get("content") or {}).get("markdown") or ""
-                el_text = el_text or (el.get("content") or {}).get("text") or ""
-                if el_text:
-                    parts.append(el_text)
-            text = "\n".join(parts)
+            text = "\n".join(element_texts)
 
         usage = payload.get("usage", {}) or {}
-        pages = int(usage.get("pages", 0))
+        page_count = int(usage.get("pages", 0))
 
         return ParsedDocument(
             text=text,
-            page_count=pages,
+            page_count=page_count,
             mime=_guess_mime(file_path),
             metadata={"upstage_model": payload.get("model", "")},
+            pages=page_blocks,
         )
 
 
