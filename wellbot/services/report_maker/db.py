@@ -28,6 +28,11 @@ from wellbot.services.report_maker.config import get_config
 
 log = logging.getLogger(__name__)
 
+# 진행 상태(flow_state) 스냅샷을 담는 숨은 메시지 role. 대화 조회에서 제외되며,
+# 대화당 한 행만 유지(upsert)해 재진입 시 stage/pending 등을 복원한다(record_usage 와
+# 동일한 '숨은 role 행' 패턴). chtb_msg_cntt 에 상태 dict 를 JSON 으로 저장한다.
+_FLOW_STATE_ROLE = "flow_state"
+
 
 def _agnt_id() -> str:
     """DB 태깅·조회에 쓰는 에이전트 식별자 (yaml agent_id, 미설정 시 기본값 RPT_DRFT_GEN)."""
@@ -110,7 +115,8 @@ def list_conversations(emp_no: str) -> list[dict]:
 def get_conversation_messages(smry_id: str, emp_no: str) -> list[dict]:
     """대화 메시지(시간순). 소유권 검증 + AGNT_ID 태깅 메시지만.
 
-    role='usage' 행(보조 LLM 호출 토큰 집계용)은 대화가 아니므로 제외한다.
+    role='usage'(토큰 집계용)·role='flow_state'(진행 상태 스냅샷) 행은 대화가 아니므로
+    제외한다.
     """
     with get_session() as session:
         if not _verify_ownership(session, smry_id, emp_no):
@@ -120,7 +126,7 @@ def get_conversation_messages(smry_id: str, emp_no: str) -> list[dict]:
             .filter(
                 ChatMessage.chtb_tlk_smry_id == smry_id,
                 ChatMessage.agnt_id == _agnt_id(),
-                ChatMessage.msg_role_nm != "usage",
+                ChatMessage.msg_role_nm.notin_(("usage", _FLOW_STATE_ROLE)),
             )
             .order_by(
                 ChatMessage.chtb_tlk_seq.asc(),
@@ -263,6 +269,76 @@ def record_usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )
+
+
+def save_flow_state(smry_id: str, emp_no: str, state: dict) -> None:
+    """대화의 진행 상태(flow_state)를 숨은 role='flow_state' 행에 upsert.
+
+    대화당 한 행만 유지한다(매 턴 append 하면 행이 누적되므로 기존 행을 덮어쓴다).
+    스키마 변경 없이 기존 chtb_msg_cntt(text) 를 재사용한다. 소유권은 헤더로 검증하고,
+    seq 는 조회에서 제외되는 행이라 정렬에 영향이 없으므로 0 으로 고정한다.
+    best-effort — smry_id/emp_no 가 없으면 저장하지 않는다.
+    """
+    if not smry_id or not emp_no:
+        return
+    payload = json.dumps(state or {}, ensure_ascii=False, default=str)
+    now = datetime.now(KST)
+    with get_session() as session:
+        if not _verify_ownership(session, smry_id, emp_no):
+            return
+        row = (
+            session.query(ChatMessage)
+            .filter(
+                ChatMessage.chtb_tlk_smry_id == smry_id,
+                ChatMessage.agnt_id == _agnt_id(),
+                ChatMessage.msg_role_nm == _FLOW_STATE_ROLE,
+            )
+            .first()
+        )
+        if row:
+            row.chtb_msg_cntt = payload
+            row.upd_dtm = now
+            row.uppr_id = emp_no[:20]
+        else:
+            session.add(
+                ChatMessage(
+                    chtb_tlk_smry_id=smry_id,
+                    chtb_tlk_id=uuid.uuid4().hex[:50],
+                    chtb_tlk_seq=0,
+                    agnt_id=_agnt_id(),
+                    msg_role_nm=_FLOW_STATE_ROLE,
+                    chtb_msg_cntt=payload,
+                    rgsr_id=emp_no[:20],
+                    rgst_dtm=now,
+                    uppr_id=emp_no[:20],
+                    upd_dtm=now,
+                )
+            )
+
+
+def load_flow_state(smry_id: str, emp_no: str) -> dict:
+    """대화의 진행 상태(flow_state) 스냅샷 복원. 없거나 파싱 실패 시 빈 dict."""
+    if not smry_id or not emp_no:
+        return {}
+    with get_session() as session:
+        if not _verify_ownership(session, smry_id, emp_no):
+            return {}
+        row = (
+            session.query(ChatMessage.chtb_msg_cntt)
+            .filter(
+                ChatMessage.chtb_tlk_smry_id == smry_id,
+                ChatMessage.agnt_id == _agnt_id(),
+                ChatMessage.msg_role_nm == _FLOW_STATE_ROLE,
+            )
+            .first()
+        )
+    if not row or not row.chtb_msg_cntt:
+        return {}
+    try:
+        data = json.loads(row.chtb_msg_cntt)
+        return data if isinstance(data, dict) else {}
+    except (ValueError, TypeError):
+        return {}
 
 
 def delete_conversation(smry_id: str, emp_no: str) -> None:
