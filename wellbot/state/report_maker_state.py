@@ -474,6 +474,30 @@ class ReportMakerState(rx.State):
         self._uploaded_topic_text = ""
         self._persisted_count = 0
 
+    # 재진입 시 이어서 작업할 진행 상태(flow_state) 스냅샷.
+    # messages/outline 은 메시지 테이블에서 별도 복원되므로 제외한다(중복·불일치 방지).
+    # 새 진행 상태 변수를 추가하면 여기 + _restore_state 둘 다 갱신한다.
+    _FLOW_FIELDS = (
+        "flow_stage", "pending_topic", "flow_analysis", "report_type",
+        "report_type_name", "report_mode", "report_storyline",
+        "report_storyline_blocks", "deepdive_targets", "page_count",
+        "recommended_pages", "page_options", "proposed_structure",
+        "pending_questions", "struct_gate_total", "gate_asked_questions",
+        "outline_reasked", "edit_instructions",
+    )
+
+    def _collect_state(self) -> dict:
+        """DB 영속용 진행 상태 묶음(flow_state). _persist_turn 에서 저장한다."""
+        return {f: getattr(self, f) for f in self._FLOW_FIELDS}
+
+    def _restore_state(self, st: dict) -> None:
+        """저장된 진행 상태 복원. 키가 없으면 현재값(=_reset_conversation 기본값) 유지."""
+        if not st:
+            return
+        for f in self._FLOW_FIELDS:
+            if f in st and st[f] is not None:
+                setattr(self, f, st[f])
+
     @rx.event
     async def start_new_chat(self):
         self._reset_conversation()
@@ -547,8 +571,12 @@ class ReportMakerState(rx.State):
             if is_outline:
                 last_outline = r["content"]
         self.messages = msgs
-        self.outline = last_outline  # 편집 이어가기 복원 (flow_state 는 비영속)
+        self.outline = last_outline  # 편집 이어가기 복원(아웃라인 원문은 메시지에서)
         self._persisted_count = len(msgs)
+        # 진행 상태(stage/pending 등) 복원 — 정보 게이트 대기 중 재진입 시 흐름 이어가기.
+        # 아웃라인은 메시지에서 이미 복원했으므로 flow_state 는 flow 진행 필드만 담는다.
+        flow_state = await asyncio.to_thread(db.load_flow_state, session_id, self._emp_no)
+        self._restore_state(flow_state)
         # 대화가 속한 보고서 유형으로 정렬(스타일 포함). 유형이 삭제/미상이면 현재 유형 유지.
         return await self._align_template_to_conversation(session_id)
 
@@ -590,11 +618,13 @@ class ReportMakerState(rx.State):
             await self._load_conversation_list()
 
     async def _persist_turn(self):
-        """이번 턴에서 확정된 새 메시지를 DB 에 append (flow_state 는 저장 안 함).
+        """이번 턴에서 확정된 새 메시지 + 진행 상태(flow_state)를 DB 에 저장한다.
 
         background task(send_message)에서 호출되므로 state 접근은 async with self
         안에서만 하고, blocking DB 호출은 락 밖에서 실행한다. 대화 목록 갱신은
         foreground 전용 _load_conversation_list(중첩 락 위험) 대신 여기서 직접 반영한다.
+        flow_state 는 재진입 시 stage/pending 을 복원해 정보 게이트 흐름을 이어가기 위해
+        숨은 role 행에 upsert 한다(스키마 변경 없음).
         """
         async with self:
             if not self.messages:
@@ -603,6 +633,7 @@ class ReportMakerState(rx.State):
             session_id = self.session_id
             template_id = self.template_id
             persisted_before = self._persisted_count
+            flow_state = self._collect_state()
             title = next(
                 (m.content[:30] for m in self.messages if m.role == "user"), "새 보고서"
             )
@@ -637,6 +668,13 @@ class ReportMakerState(rx.State):
                 "보고서 대화 저장 실패 emp_no=%s session=%s (%d/%d 저장됨)",
                 emp_no, session_id, saved, len(pending),
             )
+
+        # 진행 상태 스냅샷 저장(best-effort) — 실패해도 메시지 영속엔 영향 없음.
+        # 헤더가 있어야 소유권 검증을 통과하므로 save_conversation 이후에 저장한다.
+        try:
+            await asyncio.to_thread(db.save_flow_state, session_id, emp_no, flow_state)
+        except Exception:
+            log.exception("flow_state 저장 실패 emp_no=%s session=%s", emp_no, session_id)
 
         try:
             rows = await asyncio.to_thread(db.list_conversations, emp_no)
