@@ -1134,7 +1134,13 @@ class ReportMakerState(rx.State):
         self._bind_log()   # 턴 단위 로그 상관관계(emp/conv/req) 바인딩
         async with self:
             typed = (form_data.get("message") or "").strip()
-            if not typed or self.is_streaming:
+            # 대화에서 가져온 내용(seed)·첨부 추출 텍스트가 있으면 지시문이 비어도 전송을 허용한다.
+            # (지시 없이 보내면 그 내용 자체를 주제로 보고서를 작성 — '보고서 만들기' 핸드오프
+            #  직후 사용자가 곧장 전송하는 흐름을 막지 않기 위함.) 단, 첨부 파일이 붙어 있어도
+            #  추출 텍스트가 비어 있으면(예: 텍스트 없는 이미지) 실제 내용이 없으므로 전송을 막는다
+            #  — 빈 주제가 LLM 분석까지 흘러가지 않도록 한다.
+            has_content = bool(typed or self._uploaded_topic_text.strip())
+            if self.is_streaming or not has_content:
                 return
             # 가드를 통과한 즉시 같은 락 안에서 잠근다. _route 는 to_thread(_classify_intent)
             # 구간에서 락을 놓으므로, 여기서 잠그지 않으면 두 번째 제출이 가드를 통과해
@@ -1147,7 +1153,15 @@ class ReportMakerState(rx.State):
             file_no = 0
             msg_id = ""
             if self._uploaded_topic_text or self.pending_topic_file_no:
-                llm_text = f"{self._uploaded_topic_text}\n[추가지시]\n{typed}" if self._uploaded_topic_text else typed
+                # seed/추출 텍스트가 있으면 그것을 주제로, 지시문이 있으면 [추가지시]로 덧붙인다.
+                # 지시문 없이 seed 만 보내는 경우엔 seed 자체가 주제가 된다(더는 버리지 않음).
+                if self._uploaded_topic_text:
+                    llm_text = (
+                        f"{self._uploaded_topic_text}\n[추가지시]\n{typed}"
+                        if typed else self._uploaded_topic_text
+                    )
+                else:
+                    llm_text = typed
                 file_name = self.pending_topic_file
                 file_no = self.pending_topic_file_no
                 msg_id = self._pending_msg_id
@@ -1155,8 +1169,11 @@ class ReportMakerState(rx.State):
                 self.pending_topic_file = ""
                 self.pending_topic_file_no = 0
                 self._pending_msg_id = ""
+            # 지시문 없이 seed/첨부 내용만 보낸 경우 빈 말풍선이 되지 않도록 안내 문구를 표시한다.
+            # (위 has_content 가드로 typed 가 비면 반드시 추출 텍스트가 있으므로 폴백이 안전하다.)
+            display = typed or "가져온 내용으로 보고서 작성"
             self.messages.append(ReportMessage(
-                role="user", content=typed, file_name=file_name, file_no=file_no, msg_id=msg_id,
+                role="user", content=display, file_name=file_name, file_no=file_no, msg_id=msg_id,
             ))
         try:
             await self._route(llm_text)
