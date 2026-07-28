@@ -216,3 +216,6 @@ __marimo__/
 
 # Prd
 config/notice.md
+
+# 내부 인수인계 문서 — GitHub 미공개, 로컬 전용
+docs/handover.md
