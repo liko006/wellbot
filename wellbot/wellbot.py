@@ -30,10 +30,9 @@ from wellbot.pages import (
 )
 from wellbot.state import AdminState, AuthState, ChatState
 from wellbot.state.report_maker_state import ReportMakerState
-from wellbot.styles import GLOBAL_STYLE, THEME
+from wellbot.styles import GLOBAL_STYLE
 
 app = rx.App(
-    theme=THEME,
     style=GLOBAL_STYLE,
     api_transformer=api_app,
 )
