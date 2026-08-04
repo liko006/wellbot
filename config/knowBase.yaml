@@ -10,7 +10,7 @@ personal_kb:
   ingest_poll_timeout: 600         # Ingestion 대기 최대 시간 (초)
 
 shared_kb:
-  kb_id: ""                        # 공용 Bedrock KB ID (환경변수 KB_ID로도 설정 가능)
+  kb_id: "0DN7283JVE"              # 공용 Bedrock KB ID (환경변수 KB_ID로도 설정 가능)
   embedding_model: "amazon.titan-embed-text-v2:0"
   poll_interval: 5                 # Ingestion 상태 확인 주기 (초)
   poll_timeout: 1800               # Ingestion 대기 최대 시간 (초) — 공용 KB는 대용량 가정
@@ -18,19 +18,66 @@ shared_kb:
   # 폴더는 도메인(표시용)일 뿐 권위와 무관 — 순위·부서가 도메인을 가로지르므로 문서 단위로 관리.
   # (1) 티어 사다리: 티어 번호(0=최우선) → 정렬 배수. 단조감소. floor 는 constants.KB_AUTHORITY_FLOOR.
   authority_tiers:
-  #   0: 1.5
-  #   1: 1.35
-  #   2: 1.2
-  #   3: 1.1
+    0: 1.5
+    1: 1.35
+    2: 1.2
+    3: 1.1
   # (2) 문서별 속성(문서-major): "도메인/[서브/]파일명" → {tier, dept, ...}. raw/originals 마커는 키에 안 씀.
   #     한 문서=한 entry(속성 추가 시 그 줄에 키만 추가). tier=권위 티어(사다리 참조),
   #     dept=담당 부서(컨텍스트 (담당:X) 노출→규정 답변서 그 부서 안내). 미지정 속성은 중립(tier 1.0/부서 미표시).
   docs:
-  #   "발주/발주규정.pdf": { tier: 0, dept: "구매팀" }
-  #   "인사/취업규칙.pdf": { tier: 1, dept: "인사팀" }
-  #   "발주/2024/구매지침.pdf": { tier: 2 }
+    "사규/경영기본규정/SAP-경영기본규정-I-정관.pdf" : {tier: 0, dept: "법무팀"}
+    "사규/경영기본규정/SAP-경영기본규정-II-이사회운영규정.pdf" : {tier: 0, dept: "법무팀"}
+    "사규/경영기본규정/SAP-경영기본규정-III-준법통제기준.pdf" : {tier: 0, dept: "법무팀"}
+    "사규/경영기본규정/SAP-경영기본규정-IV-감사규정.pdf" : {tier: 0, dept: "윤리경영팀"}
+    "사규/경영기본규정/SAP-경영기본규정-V-윤리규범.pdf" : {tier: 0, dept: "윤리경영팀"}
+    "사규/규정/경영기획/SAP-규정-A100-사규관리규정.pdf" : {tier: 1, dept: "법무팀"}
+    "사규/규정/경영기획/SAP-규정-A200-위임전결규정.xlsx" : {tier: 1, dept: "법무팀"}
+    "사규/규정/경영기획/SAP-규정-A300-예산전결규정.xlsx" : {tier: 1, dept: "경영분석팀"}
+    "사규/규정/경영기획/SAP-규정-A400-개인정보보호규정.pdf" : {tier: 1, dept: "정보보호담당"}
+    "사규/규정/경영기획/SAP-규정-A500-IT서비스규정.pdf" : {tier: 1, dept: "AI운영팀"}
+    "사규/규정/경영기획/SAP-규정-A600-투자사업관리규정.pdf" : {tier: 1, dept: "재무팀"}
+    "사규/규정/경영기획/SAP-규정-A700-투자심의위원회규정.pdf" : {tier: 2, dept: "재무팀"}
+    "사규/규정/경영기획/SAP-규정-A800-공정거래자율준수프로그램운영규정.pdf" : {tier: 1, dept: "법무팀"}
+    "사규/규정/경영기획/SAP-규정-A900-SK인텔릭스BP사와의공정거래를위한실천규정.pdf" : {tier: 1, dept: "법무팀"}
+    "사규/규정/인사노무/SAP-규정-C100-취업규정(규칙).pdf" : {tier: 1, dept: "HR기획운영팀"}
+    "사규/규정/인사노무/SAP-규정-C200-급여규정.pdf" : {tier: 2, dept: "HR기획운영팀"}
+    "사규/규정/인사노무/SAP-규정-C500-국내외여비지급규정.pdf" : {tier: 2, dept: "HR기획운영팀"}
+    "사규/규정/인사노무/SAP-규정-C600-학자금지급규정.pdf" : {tier: 2, dept: "HR기획운영팀"}
+    "사규/규정/재무/SAP-규정-D100-회계관리규정.pdf" : {tier: 1, dept: "회계팀"}
+    "사규/규정/재무/SAP-규정-D200-내부회계관리규정.pdf" : {tier: 1, dept: "회계팀"}
+    "사규/규정/재무/SAP-규정-D300-원가관리규정.pdf" : {tier: 1, dept: "생산관리팀"}
+    "사규/규정/재무/SAP-규정-D400-수입대금결제규정.pdf" : {tier: 1, dept: "회계팀"}
+    "사규/규정/재무/SAP-규정-D500-자금관리규정.pdf" : {tier: 1, dept: "회계팀"}
+    "사규/규정/구매자재/SAP-규정-G100-구매업무규정.pdf" : {tier: 1, dept: "생산관리팀"}
+    "사규/규정/구매자재/SAP-규정-G200-자재관리규정.pdf" : {tier: 1, dept: "SCM팀"}
+    "사규/규정/구매자재/SAP-규정-G300-일반구매업무규정.pdf" : {tier: 1, dept: "재무팀"}
+    "사규/규정/개발/SAP-규정-H100-개발업무규정.pdf" : {tier: 1, dept: "개발기획팀"}
+    "사규/규정/생산/SAP-규정-J100-생산관리규정.pdf" : {tier: 1, dept: "SCM팀"}
+    "사규/규정/생산/SAP-규정-J200-설비관리규정.pdf" : {tier: 1, dept: "생산기술팀"}
+    "사규/규정/생산/SAP-규정-J300-물류관리규정.pdf" : {tier: 1, dept: "SCM팀"}
+    "사규/규정/해외업무/SAP-규정-K200-수입업무규정.pdf" : {tier: 1, dept: "생산구매팀"}
+    "사규/규정/SHE/SAP-규정-L100-환경관리규정.pdf" : {tier: 1, dept: "SHE운영팀"}
+    "사규/규정/SHE/SAP-규정-L200-유해물질관리규정.pdf" : {tier: 1, dept: "SHE운영팀"}
+    "사규/규정/SHE/SAP-규정-L300-안전보건관리규정(화성캠퍼스사업장).pdf" : {tier: 2, dept: "SHE기획팀"}
+    "사규/규정/SHE/SAP-규정-L400-안전보건관리규정(본사사업장).pdf" : {tier: 2, dept: "SHE기획팀"}
+    "사규/규정/정보보호/SAP-규정-N100-정보보호기본규정.pdf" : {tier: 2, dept: "정보보호담당"}
+    "사규/규정/정보보호/SAP-규정-N110-정보보호조직운영규정.pdf" : {tier: 3, dept: "정보보호담당"}
+    "사규/규정/정보보호/SAP-규정-N120-인사보안안규정.pdf" : {tier: 2, dept: "정보보호담당"}
+    "사규/규정/정보보호/SAP-규정-N130-외주보안관리규정.pdf" : {tier: 1, dept: "정보보호담당"}
+    "사규/규정/정보보호/SAP-규정-N140-정보보호교육규정.pdf" : {tier: 3, dept: "정보보호담당"}
+    "사규/규정/정보보호/SAP-규정-N150-물리적보안규정.pdf" : {tier: 3, dept: "정보보호담당"}
+    "사규/규정/정보보호/SAP-규정-N160-정보자산관리규정.pdf" : {tier: 3, dept: "정보보호담당"}
+    "사규/규정/정보보호/SAP-규정-N170-정보시스템보안규정.pdf" : {tier: 1, dept: "정보보호담당"}
+    "사규/규정/정보보호/SAP-규정-N180-PC보안규정.pdf" : {tier: 1, dept: "정보보호담당"}
+    "사규/규정/정보보호/SAP-규정-N190-보안감사규정.pdf" : {tier: 3, dept: "정보보호담당"}
+    "사규/규정/정보보호/SAP-규정-N200-IT업무연속성관리규정.pdf" : {tier: 1, dept: "정보보호담당"}
+    "사규/규정/정보보호/SAP-규정-N210-침해사고대응규정.pdf" : {tier: 3, dept: "정보보호담당"}
+    "사규/규정/CS/SAP-규정-M300-반품관리규정.pdf" : {tier: 1, dept: "CS대응팀"}
+
   # 폴더별 Data Source ID 매핑 (add-folder 실행 시 자동 추가)
   folders:
+    사규: "OGGPZMJXWM"
   #   policy: "ds-xxxxxxxxxx"
   #   manual: "ds-xxxxxxxxxx"
   #   notice: "ds-xxxxxxxxxx"
