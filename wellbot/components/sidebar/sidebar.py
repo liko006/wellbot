@@ -175,11 +175,18 @@ def _collapsed_nav() -> rx.Component:
             UIState.open_search,
             "채팅 검색",
         ),
-        rx.separator(color_scheme="gray", size="4", margin_y="0.25em"),
-        _collapsed_icon(
-            "layers-plus",
-            rx.redirect("/ai-services"),
-            "AI 업무 특화 서비스",
+        # 이용 가능한 AI 서비스가 없으면 구분선까지 통째로 숨긴다
+        rx.cond(
+            AuthState.has_ai_service_access,
+            rx.fragment(
+                rx.separator(color_scheme="gray", size="4", margin_y="0.25em"),
+                _collapsed_icon(
+                    "layers-plus",
+                    rx.redirect("/ai-services"),
+                    "AI 업무 특화 서비스",
+                ),
+            ),
+            rx.fragment(),
         ),
         spacing="1",
         align="center",
@@ -489,11 +496,20 @@ def sidebar() -> rx.Component:
                             "채팅 검색",
                             UIState.open_search,
                         ),
-                        rx.separator(color_scheme="gray", size="4", margin_y="0.25em"),
-                        _nav_item(
-                            "layers-plus",
-                            "AI 업무 특화 서비스",
-                            rx.redirect("/ai-services"),
+                        # 이용 가능한 AI 서비스가 없으면 구분선까지 통째로 숨긴다
+                        rx.cond(
+                            AuthState.has_ai_service_access,
+                            rx.fragment(
+                                rx.separator(
+                                    color_scheme="gray", size="4", margin_y="0.25em"
+                                ),
+                                _nav_item(
+                                    "layers-plus",
+                                    "AI 업무 특화 서비스",
+                                    rx.redirect("/ai-services"),
+                                ),
+                            ),
+                            rx.fragment(),
                         ),
                         padding_x="0.5em",
                         width="100%",

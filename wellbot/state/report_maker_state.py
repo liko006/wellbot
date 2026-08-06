@@ -33,6 +33,7 @@ from pydantic import BaseModel
 from wellbot.constants import STREAM_FLUSH_INTERVAL_SEC
 from wellbot.logger import log_context
 from wellbot.services.ai.bedrock.converse import adrain_generator
+from wellbot.services.auth import policy_service
 from wellbot.services.files import attachment_service
 from wellbot.state.chat_helpers.download_script import build_download_script
 from wellbot.services.report_maker import (
@@ -106,6 +107,9 @@ class ConvSummary(BaseModel):
 class ReportMakerState(rx.State):
     # ── 신원 (백엔드 전용) ──
     _emp_no: str = ""
+    # 접근 권한 판정용 소속 부서코드. on_load 에서 인증 세션으로부터 캐시한다
+    # (background 이벤트에서 AuthState 를 다시 뒤지지 않기 위함 — 비어 있으면 차단됨)
+    _dept_cd: str = ""
 
     # ── 템플릿(보고서 유형) ──
     template_id: str = ""
@@ -225,6 +229,7 @@ class ReportMakerState(rx.State):
         """
         auth = await self.get_state(AuthState)
         self._emp_no = auth.current_emp_no
+        self._dept_cd = auth.current_dept_cd
         if not self._emp_no:
             yield rx.redirect("/login")
             return
@@ -727,6 +732,17 @@ class ReportMakerState(rx.State):
         """
         self._bind_log()
         async with self:
+            # 권한 재확인 — 페이지 게이트를 거치지 않고 이벤트만 직접 던지는 경로 차단
+            # (LLM 을 호출하는 지점). 신원은 on_load 가 인증 세션에서 캐시한 값을 쓴다.
+            if not policy_service.can_use_service(
+                self._emp_no, self._dept_cd, policy_service.SVC_REPORT_GENERATOR,
+            ):
+                log.warning(
+                    "report_maker style extraction denied",
+                    extra={"emp_no": self._emp_no, "dept_cd": self._dept_cd},
+                )
+                self.style_upload_status = "이 서비스에 대한 접근 권한이 없습니다."
+                return
             emp_no, template = self._emp_no, self.template_id
             pending = [d["key"] for d in self.style_docs
                        if not d.get("extracted") and storage.owns_key(d["key"], emp_no, template)]
@@ -939,6 +955,7 @@ class ReportMakerState(rx.State):
         """
         auth = await self.get_state(AuthState)
         self._emp_no = auth.current_emp_no
+        self._dept_cd = auth.current_dept_cd
         if not self._emp_no:
             return rx.redirect("/login")
         if not self.template_id:
@@ -1037,6 +1054,16 @@ class ReportMakerState(rx.State):
         self._bind_log()
         if not (0 <= idx < len(self.messages)):
             return
+        # 권한 재확인 — 과거 대화를 복원(open_conversation)하면 게이트를 통과하지 않은
+        # 사용자도 아웃라인을 손에 넣을 수 있으므로, LLM 호출 직전에 다시 막는다.
+        if not policy_service.can_use_service(
+            self._emp_no, self._dept_cd, policy_service.SVC_REPORT_GENERATOR,
+        ):
+            log.warning(
+                "report_maker outline style save denied",
+                extra={"emp_no": self._emp_no, "dept_cd": self._dept_cd},
+            )
+            return
         content = self.messages[idx].content
         self.is_streaming = True
         yield
@@ -1065,6 +1092,16 @@ class ReportMakerState(rx.State):
         self._bind_log()
         async with self:
             if not (0 <= idx < len(self.messages)):
+                return
+            # 권한 재확인 — 슬라이드 렌더는 LLM 이 덱 전체를 생성한다. 복원된 과거
+            # 아웃라인으로도 호출 가능하므로 캐시 조회 전에 막는다.
+            if not policy_service.can_use_service(
+                self._emp_no, self._dept_cd, policy_service.SVC_REPORT_GENERATOR,
+            ):
+                log.warning(
+                    "report_maker slide render denied",
+                    extra={"emp_no": self._emp_no, "dept_cd": self._dept_cd},
+                )
                 return
             md = self.messages[idx].content
             src_hash = hashlib.sha1(md.encode("utf-8")).hexdigest()
@@ -1140,6 +1177,18 @@ class ReportMakerState(rx.State):
         # 응답이 끝날 때까지 락을 잡아 중간 갱신이 화면에 반영되지 않는다.
         self._bind_log()   # 턴 단위 로그 상관관계(emp/conv/req) 바인딩
         async with self:
+            # 권한 재확인 — 페이지 게이트를 거치지 않고 이벤트만 직접 던지는 경로 차단
+            # (토큰이 실제로 나가는 지점). 신원은 on_load 가 인증 세션에서 캐시한 값이라
+            # 클라이언트가 바꿀 수 없고, 값이 비면 판정은 차단으로 떨어진다.
+            # 정상 경로에서는 페이지 진입 자체가 막히므로 별도 안내 없이 무시한다.
+            if not policy_service.can_use_service(
+                self._emp_no, self._dept_cd, policy_service.SVC_REPORT_GENERATOR,
+            ):
+                log.warning(
+                    "report_maker send denied",
+                    extra={"emp_no": self._emp_no, "dept_cd": self._dept_cd},
+                )
+                return
             typed = (form_data.get("message") or "").strip()
             # 대화에서 가져온 내용(seed)·첨부 추출 텍스트가 있으면 지시문이 비어도 전송을 허용한다.
             # (지시 없이 보내면 그 내용 자체를 주제로 보고서를 작성 — '보고서 만들기' 핸드오프

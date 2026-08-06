@@ -3,6 +3,9 @@
 rx.Cookie 기반 세션 토큰 + DB 검증으로 로그인 상태를 유지.
 """
 
+import logging
+from collections.abc import AsyncGenerator
+
 import reflex as rx
 
 from wellbot.constants import (
@@ -11,7 +14,9 @@ from wellbot.constants import (
     TOKEN_EXPIRE_SECONDS,
 )
 from wellbot.paths import NOTICE_MD
-from wellbot.services.auth import auth_service
+from wellbot.services.auth import auth_service, policy_service
+
+log = logging.getLogger(__name__)
 
 
 class AuthState(rx.State):
@@ -134,6 +139,58 @@ class AuthState(rx.State):
 
         self._set_user_info(user)
         return None
+
+    # ── AI 서비스 접근 권한 (WB-SEC-004 1패스) ──
+
+    @rx.var
+    def allowed_service_ids(self) -> list[str]:
+        """현재 사용자가 접근 가능한 AI 서비스 id 목록 (카드·사이드바 노출 판단용)."""
+        if not self.is_authenticated or not self.current_emp_no:
+            return []
+        return policy_service.allowed_service_ids(self.current_emp_no, self.current_dept_cd)
+
+    @rx.var
+    def has_ai_service_access(self) -> bool:
+        """사용 가능한 AI 서비스가 하나라도 있는지."""
+        return len(self.allowed_service_ids) > 0
+
+    @rx.event
+    async def check_service_access(
+        self, service_id: str = "",
+    ) -> AsyncGenerator[rx.event.EventSpec, None]:
+        """AI 서비스 페이지 접근 권한 확인. on_load 에서 check_auth 뒤에 실행한다.
+
+        service_id 가 비면 카탈로그(/ai-services) 진입 — 사용 가능한 서비스가 하나도
+        없을 때만 차단한다. 미인증은 앞선 check_auth 가 이미 /login 으로 보내므로
+        여기서는 아무것도 하지 않는다(리다이렉트 중복 방지).
+
+        UI(카드 숨김)는 우회 가능하므로 이 페이지 게이트와 API·이벤트 서버 검증이
+        실제 경계다.
+        """
+        if not self.is_authenticated or not self.current_emp_no:
+            return
+
+        if service_id:
+            ok = policy_service.can_use_service(
+                self.current_emp_no, self.current_dept_cd, service_id
+            )
+        else:
+            ok = bool(
+                policy_service.allowed_service_ids(self.current_emp_no, self.current_dept_cd)
+            )
+        if ok:
+            return
+
+        log.warning(
+            "ai service page access denied",
+            extra={
+                "emp_no": self.current_emp_no,
+                "dept_cd": self.current_dept_cd,
+                "service_id": service_id or "catalog",
+            },
+        )
+        yield rx.toast.error("접근 권한이 없는 서비스입니다.")
+        yield rx.redirect("/")
 
     def _load_notice(self) -> None:
         """config/notice.md 파일을 읽어 공지사항 로드"""
