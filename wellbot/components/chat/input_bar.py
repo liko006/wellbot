@@ -584,11 +584,24 @@ def input_bar() -> rx.Component:
                         # 첨부 파일 칩 영역
                         attachment_chip_list(),
                         # 텍스트 입력 영역
+                        #
+                        # 언컨트롤드(value/on_change 없음) — 컨트롤드로 두면 키 입력마다
+                        # WebSocket 왕복 + state 델타가 발생해 긴 대화에서 타자 랙의 주원인이
+                        # 된다. 입력값은 전송 시 폼 데이터(name="message")로만 서버에 간다.
+                        # 비우기: 전송 후는 form 의 reset_on_submit, 대화 전환·새 대화는
+                        # key 가 바뀌며 remount 되는 것으로 처리한다(아래 key 참조).
                         rx.text_area(
-                            value=ChatState.current_input,
+                            name="message",
+                            # 대화가 바뀌면 입력창을 새로 마운트해 이전 대화의 초안이
+                            # 남지 않게 한다(언컨트롤드라 state 로는 비울 수 없다).
+                            key=ChatState.current_conversation_id,
                             placeholder="WellBot에게 질문하세요!",
-                            on_change=ChatState.set_input,
-                            enter_key_submit=True,
+                            # 전송 불가 상태(스트리밍 중·첨부 분석 중)에서는 Enter 제출을
+                            # 막는다. 막지 않으면 제출은 서버가 거절하는데 reset_on_submit
+                            # 이 먼저 입력창을 비워 쳐둔 글이 사라진다(버튼은 disabled 라
+                            # 같은 문제가 없다). 이유는 화면에 이미 표시된다 — 스트리밍 중엔
+                            # 중지 버튼, 첨부 분석 중엔 입력창 위 안내 pill.
+                            enter_key_submit=ChatState.can_send,
                             auto_height=True,
                             variant="soft",
                             style={
@@ -672,6 +685,7 @@ def input_bar() -> rx.Component:
                         padding="0.75em 1em",
                     ),
                     on_submit=ChatState.send_message,
+                    reset_on_submit=True,
                 ),
                 bg=COLORS["input_bg"],
                 border_radius=SPACING["border_radius"],
@@ -681,6 +695,20 @@ def input_bar() -> rx.Component:
                 margin_x="auto",
                 _focus_within={
                     "border_color": COLORS["accent_hover"],
+                },
+                style={
+                    # 입력이 비었을 때의 전송 버튼 비활성 표현. 빈 입력 판정을 서버가 아닌
+                    # 브라우저에 맡긴다(:placeholder-shown = 입력이 비어 있음) — state 로
+                    # 판정하면 키 입력마다 왕복이 생겨 언컨트롤드 전환의 이득이 사라진다.
+                    # pointer-events 로 클릭까지 막아 기존 disabled 와 동작을 맞춘다.
+                    # (:has 미지원 브라우저에서는 버튼이 활성으로 보이지만, 빈 입력 전송은
+                    #  서버가 무시하므로 안전한 방향으로 degrade 된다.)
+                    "&:has(textarea:placeholder-shown) button[type='submit']": {
+                        "background": COLORS["tool_btn_bg"],
+                        "color": COLORS["text_secondary"],
+                        "cursor": "not-allowed",
+                        "pointer_events": "none",
+                    },
                 },
             ),
                 # 하단 안내 텍스트
