@@ -83,7 +83,8 @@ class ChatState(rx.State):
 
     conversations: list[Conversation] = []
     current_conversation_id: str = ""
-    current_input: str = ""
+    # 입력창 값은 state 에 두지 않는다(언컨트롤드) — 키 입력마다의 왕복을 없애기 위함.
+    # 전송 시 폼 데이터로만 전달되고, 비우기는 reset_on_submit·key remount 가 담당한다.
     is_loading: bool = False
     is_thinking: bool = False
     streaming_content: str = ""
@@ -277,17 +278,20 @@ class ChatState(rx.State):
 
     @rx.var
     def can_send(self) -> bool:
-        """현재 입력 상태가 전송 가능한지 여부.
+        """전송 가능한 서버 상태인지 여부. 전송 버튼 활성화와 Enter 제출을 함께 제어한다.
 
         처리 중인 첨부파일이 있거나 로딩 중이면 전송 차단.
+
+        입력이 비었는지는 **여기서 판정하지 않는다** — 입력창이 언컨트롤드라 값이 서버에
+        없고, 값을 받으려면 키 입력마다 왕복이 생긴다. 빈 입력의 버튼 비활성 표현은
+        input_bar 의 CSS(:placeholder-shown)가, 빈 입력 전송 차단은 send_message 의
+        가드가 담당한다.
         """
         if self._get_current_index() is None:
             return False
         if self.is_loading:
             return False
-        if self.has_processing_attachments:
-            return False
-        return self.current_input.strip() != ""
+        return not self.has_processing_attachments
 
     @rx.var
     def sorted_conversations(self) -> list[Conversation]:
@@ -796,7 +800,6 @@ class ChatState(rx.State):
         conv = new_conversation()
         self.conversations = [conv, *self.conversations]
         self.current_conversation_id = conv.id
-        self.current_input = ""
         self.conversation_attachments = []
         self._reset_kb_panels()
         self._refresh_greeting()
@@ -809,7 +812,6 @@ class ChatState(rx.State):
         """
         leaving_other_page = self.router.url.path != "/"
         self.current_conversation_id = conv_id
-        self.current_input = ""
         self.search_query = ""
         self._reset_kb_panels()
         idx = self._get_current_index()
@@ -884,10 +886,6 @@ class ChatState(rx.State):
                 new_conv = new_conversation()
                 self.conversations = [new_conv, *self.conversations]
                 self.current_conversation_id = new_conv.id
-
-    def set_input(self, value: str) -> None:
-        """입력 필드 값 설정"""
-        self.current_input = value
 
     def set_search_query(self, value: str) -> None:
         """대화 검색어 설정"""
@@ -1751,10 +1749,14 @@ class ChatState(rx.State):
             request_id=log_context.new_request_id(),
         )
         # 1. 사용자 메시지 추가 및 상태 초기화
+        #    입력값은 state 가 아니라 폼 데이터에서 읽는다 — 입력창이 언컨트롤드라
+        #    제출 시점의 DOM 값이 유일한 원본이다(마지막 타이핑까지 항상 포함된다).
         blocked_processing = False
+        text = ((form_data or {}).get("message") or "").strip()
+        if not text:
+            return
         async with self:
-            text = self.current_input.strip()
-            if not text or self.is_loading:
+            if self.is_loading:
                 return
             # 첨부파일 처리 중 Enter 키 제출 차단 — 버튼 disabled 우회 방지
             if self.has_processing_attachments:
@@ -1808,7 +1810,6 @@ class ChatState(rx.State):
                     title += "..."
 
             self._update_conversation(idx, title=title, messages=updated_messages)
-            self.current_input = ""
             # pending 첨부 → conversation_attachments 로 이동
             if self.pending_attachments:
                 self.conversation_attachments = [
