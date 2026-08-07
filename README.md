@@ -91,6 +91,7 @@ reflex run
 | `S3_BUCKET_NAME` | 첨부·KB 파일 버킷 |
 | `S3_KEY_PREFIX` | S3 키 prefix (선택) |
 | `KB_*` | 공용/개인 KB 인프라 (Intermediate·Vector 버킷, Lambda, Role, KB ID) |
+| `AI_SVC_ALLOW_DEPT_*` / `AI_SVC_ALLOW_EMP_*` | AI 서비스별 접근 허용 부서·사번 (미설정 = 전원 허용) |
 | `UPSTAGE_API_KEY` | Document Parse (선택) |
 | `REPORT_MAKER_MEMORY_ID` | report_maker AgentCore 메모리 (선택) |
 | `LOG_ENV` / `LOG_LEVEL` | 로깅 프리셋·레벨 |

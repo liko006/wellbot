@@ -23,7 +23,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from wellbot.logger import log_context
-from wellbot.services.auth import auth_service
+from wellbot.services.auth import auth_service, policy_service
 from wellbot.services.files import storage_service
 from wellbot.services.report_checker import storage
 from wellbot.services.report_checker.config import get_config
@@ -33,13 +33,13 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/api/report_checker/upload")
-async def upload_report(
-    file: UploadFile = File(...),
-    wellbot_auth: str | None = Cookie(default=None),
-):
-    """PDF 원본을 S3 에 적재하고 job_id 반환."""
-    # 1. 인증 — 세션 쿠키에서 emp_no 도출
+def _require_emp_no(wellbot_auth: str | None) -> str:
+    """세션 쿠키에서 emp_no 도출 + 서비스 접근 권한 확인. 실패 시 401/403.
+
+    페이지 on_load 게이트는 URL·API 직접 호출로 우회되므로 여기가 실제 경계다.
+    업로드와 결과 다운로드 모두 같은 기준을 적용한다(권한 없는 사용자는 이 서비스의
+    엔드포인트를 쓰지 않는다). 소유권 검증은 이와 별개로 각 엔드포인트에서 수행한다.
+    """
     if not wellbot_auth:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "로그인이 필요합니다.")
     user = auth_service.validate_session_token(wellbot_auth)
@@ -48,6 +48,28 @@ async def upload_report(
             status.HTTP_401_UNAUTHORIZED, "세션이 만료되었습니다. 다시 로그인해주세요."
         )
     emp_no = user["emp_no"]
+    dept_cd = user.get("pstn_dept_cd") or ""
+    if not policy_service.can_use_service(
+        emp_no, dept_cd, policy_service.SVC_REPORT_CHECKER,
+    ):
+        log.warning(
+            "report_checker api access denied",
+            extra={"emp_no": emp_no, "dept_cd": dept_cd},
+        )
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "이 서비스에 대한 접근 권한이 없습니다."
+        )
+    return emp_no
+
+
+@router.post("/api/report_checker/upload")
+async def upload_report(
+    file: UploadFile = File(...),
+    wellbot_auth: str | None = Cookie(default=None),
+):
+    """PDF 원본을 S3 에 적재하고 job_id 반환."""
+    # 1. 인증·권한
+    emp_no = _require_emp_no(wellbot_auth)
     log_context.bind(emp_no=emp_no)
 
     cfg = get_config()
@@ -99,14 +121,7 @@ async def download_report(
     (build_content_disposition_header) 로 인코딩해 한글 파일명을 안전하게 내려준다.
     emp_no 는 세션 쿠키에서 도출하므로 사용자는 본인 잡 결과에만 접근한다.
     """
-    if not wellbot_auth:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "로그인이 필요합니다.")
-    user = auth_service.validate_session_token(wellbot_auth)
-    if not user:
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED, "세션이 만료되었습니다. 다시 로그인해주세요."
-        )
-    emp_no = user["emp_no"]
+    emp_no = _require_emp_no(wellbot_auth)
 
     if not req.job_id or not storage.result_exists(emp_no, req.job_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "결과 파일을 찾을 수 없습니다.")

@@ -24,7 +24,7 @@ from fastapi import APIRouter, Cookie, File, Form, HTTPException, UploadFile, st
 
 from wellbot.constants import FILE_MAX_PER_CONVERSATION
 from wellbot.logger import log_context
-from wellbot.services.auth import auth_service
+from wellbot.services.auth import auth_service, policy_service
 from wellbot.services.files import attachment_service, file_parser
 from wellbot.services.report_maker import db as rmdb
 from wellbot.services.report_maker import storage
@@ -37,7 +37,10 @@ router = APIRouter()
 
 
 def _require_emp_no(wellbot_auth: str | None) -> str:
-    """세션 쿠키에서 emp_no 도출. 실패 시 401."""
+    """세션 쿠키에서 emp_no 도출 + 서비스 접근 권한 확인. 실패 시 401/403.
+
+    페이지 on_load 게이트는 URL·API 직접 호출로 우회되므로 여기가 실제 경계다.
+    """
     if not wellbot_auth:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "로그인이 필요합니다.")
     user = auth_service.validate_session_token(wellbot_auth)
@@ -45,7 +48,19 @@ def _require_emp_no(wellbot_auth: str | None) -> str:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED, "세션이 만료되었습니다. 다시 로그인해주세요."
         )
-    return user["emp_no"]
+    emp_no = user["emp_no"]
+    dept_cd = user.get("pstn_dept_cd") or ""
+    if not policy_service.can_use_service(
+        emp_no, dept_cd, policy_service.SVC_REPORT_GENERATOR,
+    ):
+        log.warning(
+            "report_maker api access denied",
+            extra={"emp_no": emp_no, "dept_cd": dept_cd},
+        )
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "이 서비스에 대한 접근 권한이 없습니다."
+        )
+    return emp_no
 
 
 @router.post("/api/report_maker/upload")

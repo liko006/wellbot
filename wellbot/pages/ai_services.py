@@ -8,6 +8,7 @@ import reflex as rx
 
 from wellbot.components.layout import chat_layout
 from wellbot.services.core.settings import AIServiceConfig, get_ai_services
+from wellbot.state.auth_state import AuthState
 from wellbot.styles import COLORS, SPACING
 
 
@@ -77,25 +78,41 @@ def _service_card(svc: AIServiceConfig) -> rx.Component:
     )
 
 
+def _empty_state(message: str) -> rx.Component:
+    """카드가 하나도 없을 때의 안내."""
+    return rx.center(
+        rx.text(message, size="2", color=COLORS["text_secondary"]),
+        width="100%",
+        padding_y="4em",
+    )
+
+
 def _service_grid() -> rx.Component:
-    """서비스 카드 그리드 (없으면 빈 상태)."""
+    """서비스 카드 그리드 (없으면 빈 상태).
+
+    접근 권한이 없는 서비스는 카드를 아예 렌더하지 않는다(숨김). 표시 여부는 UX 층일
+    뿐이고 실제 차단은 페이지 on_load 게이트와 API·이벤트 서버 검증이 담당한다.
+    """
     services = get_ai_services()
     if not services:
-        return rx.center(
-            rx.text(
-                "등록된 AI 서비스가 없습니다.",
-                size="2",
-                color=COLORS["text_secondary"],
-            ),
+        return _empty_state("등록된 AI 서비스가 없습니다.")
+    return rx.cond(
+        AuthState.has_ai_service_access,
+        rx.box(
+            *[
+                rx.cond(
+                    AuthState.allowed_service_ids.contains(s.id),
+                    _service_card(s),
+                    rx.fragment(),
+                )
+                for s in services
+            ],
+            display="grid",
+            grid_template_columns="repeat(auto-fill, minmax(280px, 1fr))",
+            gap="1em",
             width="100%",
-            padding_y="4em",
-        )
-    return rx.box(
-        *[_service_card(s) for s in services],
-        display="grid",
-        grid_template_columns="repeat(auto-fill, minmax(280px, 1fr))",
-        gap="1em",
-        width="100%",
+        ),
+        _empty_state("이용 가능한 AI 서비스가 없습니다."),
     )
 
 

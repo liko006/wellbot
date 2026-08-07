@@ -20,6 +20,7 @@ from pathlib import Path
 import reflex as rx
 
 from wellbot.logger import log_context
+from wellbot.services.auth import policy_service
 from wellbot.services.report_checker import db, storage
 from wellbot.services.report_checker.config import get_config
 from wellbot.services.report_checker.models import (
@@ -83,6 +84,9 @@ class ReportCheckerState(rx.State):
     job_id: str = ""
     source_file_name: str = ""
     _emp_no: str = ""   # 백엔드 전용 — 업로드 시 인증 세션에서 확보 (클라이언트 비노출)
+    # 접근 권한 판정용 소속 부서코드. _emp_no 와 같은 시점에 인증 세션에서 캐시한다
+    # (background 이벤트에서 AuthState 를 다시 뒤지지 않기 위함 — 비면 차단으로 떨어짐)
+    _dept_cd: str = ""
     typo_errors: list[dict] = []
     consistency_errors: list[dict] = []
     attention_errors: list[dict] = []
@@ -195,6 +199,7 @@ class ReportCheckerState(rx.State):
         # S3 키가 업로드 엔드포인트가 쓴 경로와 일치하도록 백엔드에 보관.
         auth = await self.get_state(AuthState)
         self._emp_no = auth.current_emp_no
+        self._dept_cd = auth.current_dept_cd
         self.job_id = result["job_id"]
         self.source_file_name = result.get("filename") or self.pending_file_name
         self.status = "analyzing"
@@ -254,6 +259,7 @@ class ReportCheckerState(rx.State):
         """S3 원본을 읽어 분석 실행. 진행률은 큐로 받아 UI 갱신."""
         async with self:
             emp_no = self._emp_no
+            dept_cd = self._dept_cd
             job_id = self.job_id
             source_name = self.source_file_name
             dictionary = self._parse_dictionary()
@@ -267,6 +273,21 @@ class ReportCheckerState(rx.State):
             async with self:
                 self.status = "error"
                 self.error_message = "세션 정보를 확인할 수 없습니다. 다시 로그인해주세요."
+            return
+
+        # 권한 재확인 — 업로드 API 를 거치지 않고 이 이벤트만 직접 던지는 경로 차단.
+        # (토큰이 실제로 나가는 지점이라 여기서 한 번 더 막는다. 신원은 업로드 응답
+        #  처리 시 인증 세션에서 캐시한 값이라 클라이언트가 바꿀 수 없다.)
+        if not policy_service.can_use_service(
+            emp_no, dept_cd, policy_service.SVC_REPORT_CHECKER,
+        ):
+            log.warning(
+                "report_checker analysis denied",
+                extra={"emp_no": emp_no, "dept_cd": dept_cd},
+            )
+            async with self:
+                self.status = "error"
+                self.error_message = "이 서비스에 대한 접근 권한이 없습니다."
             return
 
         loop = asyncio.get_running_loop()
