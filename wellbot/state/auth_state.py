@@ -1,8 +1,15 @@
 """인증 상태 관리 - AuthState.
 
 rx.Cookie 기반 세션 토큰 + DB 검증으로 로그인 상태를 유지.
+
+DB·bcrypt 를 호출하는 이벤트 핸들러는 모두 ``async def`` + ``asyncio.to_thread`` 다.
+Reflex 이벤트 핸들러는 앱 전체가 공유하는 이벤트 루프에서 실행되므로, 동기로 두면
+**한 사람의 로그인이 접속자 전원의 채팅 스트리밍을 멈춘다**(bcrypt 는 100~300ms CPU
+바운드, check_auth 는 모든 페이지 로드마다 DB 조회). 같은 사용자의 이벤트 순서는
+Reflex 가 보장하므로 오프로드해도 로직 순서는 그대로다.
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 
@@ -80,8 +87,14 @@ class AuthState(rx.State):
 
     # ── 로그인 ──
 
-    def handle_login(self, _form_data: dict | None = None) -> rx.event.EventSpec | None:
-        """로그인 처리"""
+    async def handle_login(
+        self, _form_data: dict | None = None
+    ) -> rx.event.EventSpec | None:
+        """로그인 처리.
+
+        bcrypt 검증(CPU 100~300ms)과 DB 조회를 스레드로 넘긴다 — 이벤트 루프에서
+        돌리면 로그인 한 건마다 접속자 전원이 그만큼 멈춘다.
+        """
         emp_no = self.login_emp_no.strip()
         password = self.login_password.strip()
 
@@ -90,14 +103,14 @@ class AuthState(rx.State):
             return None
 
         self.is_logging_in = True
-        result = auth_service.authenticate_user(emp_no, password)
+        result = await asyncio.to_thread(auth_service.authenticate_user, emp_no, password)
 
         if not result["success"]:
             self.login_error = result["error"]
             self.is_logging_in = False
             return None
 
-        token = auth_service.create_session_token(emp_no)
+        token = await asyncio.to_thread(auth_service.create_session_token, emp_no)
         self.auth_token = token
 
         if self.remember_me:
@@ -125,13 +138,19 @@ class AuthState(rx.State):
 
     # ── 인증 확인 (on_load) ──
 
-    def check_auth(self) -> rx.event.EventSpec | None:
-        """페이지 로드 시 인증 확인. 미인증이면 /login 으로 리다이렉트"""
+    async def check_auth(self) -> rx.event.EventSpec | None:
+        """페이지 로드 시 인증 확인. 미인증이면 /login 으로 리다이렉트.
+
+        **모든 사용자의 모든 페이지 로드마다** 실행되는 경로라 DB 조회를 반드시
+        스레드로 넘긴다(앱에서 가장 잦은 블로킹 지점).
+        """
         if not self.auth_token:
             self.is_authenticated = False
             return rx.redirect("/login")
 
-        user = auth_service.validate_session_token(self.auth_token)
+        user = await asyncio.to_thread(
+            auth_service.validate_session_token, self.auth_token
+        )
         if not user:
             self.auth_token = ""
             self.is_authenticated = False
@@ -192,16 +211,19 @@ class AuthState(rx.State):
         yield rx.toast.error("접근 권한이 없는 서비스입니다.")
         yield rx.redirect("/")
 
-    def _load_notice(self) -> None:
-        """config/notice.md 파일을 읽어 공지사항 로드"""
-        if NOTICE_MD.exists():
-            self.notice_html = NOTICE_MD.read_text(encoding="utf-8").strip()
-        else:
-            self.notice_html = ""
+    async def _load_notice(self) -> None:
+        """config/notice.md 파일을 읽어 공지사항 로드 (디스크 I/O 는 스레드로)"""
 
-    def check_login_page(self) -> rx.event.EventSpec | None:
+        def _read() -> str:
+            if NOTICE_MD.exists():
+                return NOTICE_MD.read_text(encoding="utf-8").strip()
+            return ""
+
+        self.notice_html = await asyncio.to_thread(_read)
+
+    async def check_login_page(self) -> rx.event.EventSpec | None:
         """로그인 페이지 로드 시 인증 확인. 이미 인증된 경우 / 로 리다이렉트"""
-        self._load_notice()
+        await self._load_notice()
 
         if self.remembered_emp_no:
             self.login_emp_no = self.remembered_emp_no
@@ -210,7 +232,9 @@ class AuthState(rx.State):
         if not self.auth_token:
             return None
 
-        user = auth_service.validate_session_token(self.auth_token)
+        user = await asyncio.to_thread(
+            auth_service.validate_session_token, self.auth_token
+        )
         if user:
             self._set_user_info(user)
             return rx.redirect("/")
@@ -220,10 +244,10 @@ class AuthState(rx.State):
 
     # ── 로그아웃 ──
 
-    def logout(self) -> rx.event.EventSpec:
+    async def logout(self) -> rx.event.EventSpec:
         """로그아웃. 토큰 폐기 + 쿠키 삭제"""
         if self.auth_token:
-            auth_service.invalidate_session_token(self.auth_token)
+            await asyncio.to_thread(auth_service.invalidate_session_token, self.auth_token)
 
         self.auth_token = ""
         self.is_authenticated = False
@@ -238,9 +262,9 @@ class AuthState(rx.State):
 
     _reg_dept_options: list[dict] = []
 
-    def load_dept_list(self) -> None:
+    async def load_dept_list(self) -> None:
         """회원가입 페이지 로드 시 부서 목록 조회"""
-        self._reg_dept_options = auth_service.list_dept_options()
+        self._reg_dept_options = await asyncio.to_thread(auth_service.list_dept_options)
 
     @rx.var
     def reg_dept_names(self) -> list[str]:
@@ -287,8 +311,8 @@ class AuthState(rx.State):
         self.reg_dept_cd = self._dept_name_to_code(dept_name)
         self.reg_error = ""
 
-    def handle_register(self, _form_data: dict | None = None) -> None:
-        """회원가입 처리"""
+    async def handle_register(self, _form_data: dict | None = None) -> None:
+        """회원가입 처리 (bcrypt 해싱 + DB 쓰기는 스레드로)"""
         emp_no = self.reg_emp_no.strip()
         password = self.reg_password
         confirm = self.reg_password_confirm
@@ -308,7 +332,9 @@ class AuthState(rx.State):
             return
 
         self.is_registering = True
-        result = auth_service.register_user(emp_no, password, user_nm, dept_cd)
+        result = await asyncio.to_thread(
+            auth_service.register_user, emp_no, password, user_nm, dept_cd
+        )
 
         if not result["success"]:
             self.reg_error = result["error"]
@@ -358,8 +384,8 @@ class AuthState(rx.State):
         self.chpw_confirm = value
         self.chpw_error = ""
 
-    def handle_change_password(self, _form_data: dict | None = None) -> None:
-        """비밀번호 변경 처리"""
+    async def handle_change_password(self, _form_data: dict | None = None) -> None:
+        """비밀번호 변경 처리 (bcrypt 검증+해싱, DB 쓰기는 스레드로)"""
         current = self.chpw_current
         new_pw = self.chpw_new
         confirm = self.chpw_confirm
@@ -381,7 +407,9 @@ class AuthState(rx.State):
             return
 
         self.is_changing_password = True
-        result = auth_service.change_password(self.current_emp_no, current, new_pw)
+        result = await asyncio.to_thread(
+            auth_service.change_password, self.current_emp_no, current, new_pw
+        )
 
         if not result["success"]:
             self.chpw_error = result["error"]

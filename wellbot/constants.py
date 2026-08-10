@@ -174,6 +174,28 @@ LLM_CONTEXT_MAX_TOKENS: int = int(os.environ.get("LLM_CONTEXT_MAX_TOKENS", "1200
 # 커서 기반 추가 로드 → 무한정 state 적재·WS 전송 방지.
 MESSAGE_PAGE_SIZE: int = int(os.environ.get("MESSAGE_PAGE_SIZE", "50"))
 
+# ── AWS(boto3) 커넥션 풀 / 타임아웃 ──
+# botocore 기본 풀은 10이라 STREAM_MAX_CONCURRENT(24)보다 작다 — 그대로 두면 동시
+# 스트리밍 11개째부터 커넥션을 기다린다. 풀 크기는 "동시에 열 수 있는 소켓 상한"일
+# 뿐 미리 만들어두지 않으므로, 여유를 둬도 비용이 거의 없다.
+AWS_MAX_POOL_CONNECTIONS: int = int(
+    os.environ.get("AWS_MAX_POOL_CONNECTIONS", str(STREAM_MAX_CONCURRENT + 8))
+)
+# 연결 수립 타임아웃 — 네트워크 이상 시 빠르게 실패시켜 스레드 점유를 줄인다.
+AWS_CONNECT_TIMEOUT_SEC: int = int(os.environ.get("AWS_CONNECT_TIMEOUT_SEC", "5"))
+# 비스트리밍 호출(임베딩·제목 생성·report 계열 단발 호출)의 응답 대기 상한.
+AWS_READ_TIMEOUT_SEC: int = int(os.environ.get("AWS_READ_TIMEOUT_SEC", "120"))
+# 스트리밍(ConverseStream)의 **이벤트 간 무전송 허용 시간**. thinking 구간처럼 토큰이
+# 한동안 안 오는 구간이 있어 기본 60초는 짧다. nginx proxy_read_timeout(600s)보다는
+# 작게 둬서 프록시가 끊기 전에 앱이 먼저 인지하도록 한다.
+AWS_STREAM_READ_TIMEOUT_SEC: int = int(
+    os.environ.get("AWS_STREAM_READ_TIMEOUT_SEC", "300")
+)
+# 재시도 횟수(총 시도 횟수) — throttling·5xx 같은 안전한 오류만 botocore 가 재시도한다.
+# botocore 기본(legacy 모드)이 5회이므로 5로 맞춘다. standard 모드 기본값 3을 쓰면
+# **스로틀링에서 기존보다 일찍 포기**하게 되어 동시 사용자가 늘 때 실패가 늘 수 있다.
+AWS_MAX_ATTEMPTS: int = int(os.environ.get("AWS_MAX_ATTEMPTS", "5"))
+
 # ── DB 커넥션 풀 ──
 # SQLAlchemy QueuePool 기본값(pool_size=5 + max_overflow=10 = 15)은
 # 다중 동시 사용자·스레드 오프로드 환경에 부족. 명시적으로 확대.

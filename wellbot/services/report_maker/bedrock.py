@@ -18,8 +18,8 @@ from functools import lru_cache
 from typing import Any
 
 import boto3
-from botocore.config import Config
 
+from wellbot.services.core.aws import standard_config
 from wellbot.services.report_maker.config import get_config
 
 log = logging.getLogger(__name__)
@@ -30,6 +30,8 @@ def _client(region: str, read_timeout: int) -> Any:
     """Bedrock Runtime 클라이언트 싱글턴.
 
     region 이 빈 문자열이면 AWS_REGION → AWS_DEFAULT_REGION → us-east-1 폴백.
+    read_timeout 은 report_maker.yaml 값을 유지하고(단발 호출이 길다), 커넥션 풀·
+    연결 타임아웃·재시도는 공통 설정을 따른다.
     """
     resolved = region or os.environ.get(
         "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
@@ -37,7 +39,7 @@ def _client(region: str, read_timeout: int) -> Any:
     return boto3.client(
         "bedrock-runtime",
         region_name=resolved,
-        config=Config(read_timeout=read_timeout),
+        config=standard_config(read_timeout=read_timeout),
     )
 
 

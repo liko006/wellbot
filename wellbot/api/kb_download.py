@@ -67,8 +67,9 @@ def _check_access(bucket: str, key: str, emp_no: str) -> None:
     )
 
 
+# 동기 핸들러(`def`) — 세션 검증(DB)·부서 조회·S3 접근이 블로킹이라 스레드풀에 위임.
 @router.post("/download_kb")
-async def download_kb_file(
+def download_kb_file(
     req: KbDownloadRequest,
     wellbot_auth: str | None = Cookie(default=None),
 ) -> StreamingResponse:

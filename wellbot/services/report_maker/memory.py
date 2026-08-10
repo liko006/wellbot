@@ -41,9 +41,16 @@ def _ac_client():
     저수준 boto3 클라이언트를 단일 진입점으로 쓴다(legacy 는 1.6.2 고수준 API 였음).
     """
     import boto3
+
+    from wellbot.services.core.aws import standard_config
+
     cfg = get_config()
     try:
-        return boto3.client("bedrock-agentcore", region_name=cfg.region or None)
+        return boto3.client(
+            "bedrock-agentcore",
+            region_name=cfg.region or None,
+            config=standard_config(),
+        )
     except Exception:
         log.exception("bedrock-agentcore 클라이언트 생성 실패")
         return None

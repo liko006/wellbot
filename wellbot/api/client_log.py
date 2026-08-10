@@ -32,8 +32,9 @@ class ClientLogEntry(BaseModel):
     url: str = ""         # 발생 페이지 URL
 
 
+# 동기 핸들러(`def`) — 세션 검증이 DB 조회라 오류 비콘이 몰릴 때 이벤트 루프를 잡는다.
 @router.post("/client_log")
-async def client_log(
+def client_log(
     entry: ClientLogEntry,
     wellbot_auth: str | None = Cookie(default=None),
 ) -> dict:

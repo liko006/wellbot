@@ -22,6 +22,7 @@ from urllib.parse import unquote
 
 import boto3
 
+from wellbot.services.core.aws import standard_config
 from wellbot.services.knowledgebase.config import get_kb_config
 from wellbot.services.knowledgebase.kb_utils import shared_base
 from wellbot.services.knowledgebase.personal_kb_manager import get_user_kb
@@ -46,7 +47,9 @@ def _shared_kb_id() -> str:
 @lru_cache(maxsize=1)
 def _get_client():
     """Bedrock Agent Runtime 클라이언트 (싱글턴)"""
-    return boto3.client("bedrock-agent-runtime", region_name=_region())
+    return boto3.client(
+        "bedrock-agent-runtime", region_name=_region(), config=standard_config()
+    )
 
 
 def _coerce_page(raw: Any) -> int | None:

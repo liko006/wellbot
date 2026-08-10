@@ -23,8 +23,11 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["download"])
 
 
+# 동기 핸들러(`def`) — 본문이 전부 블로킹 I/O(DB 조회·S3 HEAD)라 이벤트 루프를 잡으면
+# 채팅 스트리밍이 함께 멈춘다. FastAPI 가 스레드풀에 위임하게 한다.
+# (StreamingResponse 의 동기 제너레이터는 Starlette 이 별도 스레드로 소비하므로 무관.)
 @router.post("/download/{file_no}")
-async def download_file(
+def download_file(
     file_no: int,
     wellbot_auth: str | None = Cookie(default=None),
 ) -> StreamingResponse:

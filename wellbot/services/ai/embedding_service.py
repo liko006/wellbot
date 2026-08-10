@@ -39,6 +39,7 @@ from wellbot.constants import (
     EMBED_RETRY_BASE_DELAY,
     FAISS_CACHE_MAX_CONVERSATIONS,
 )
+from wellbot.services.core.aws import standard_config
 from wellbot.services.core.settings import get_config
 
 log = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ def _get_client():
         "AWS_REGION",
         os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
     )
-    return boto3.client("bedrock-runtime", region_name=region)
+    return boto3.client("bedrock-runtime", region_name=region, config=standard_config())
 
 
 def embed_text(text: str) -> np.ndarray:
