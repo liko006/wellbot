@@ -140,8 +140,12 @@ def _stream_to_tempfile(upload: UploadFile, max_bytes: int) -> tuple[Path, int]:
     return tmp_path, total
 
 
+# 동기 핸들러(`def`) — 본문이 전부 블로킹 I/O(DB·S3·파일 복사)다. `async def` 로 두면
+# 이 작업들이 Reflex 채팅 WebSocket 과 **같은 이벤트 루프**를 점유해, 업로드 한 건이
+# 접속자 전원의 스트리밍을 그 시간만큼 멈춘다. `def` 로 선언하면 FastAPI 가 스레드풀에
+# 위임하므로 루프가 자유로워진다(호출부·응답 형식은 그대로).
 @router.post("/upload")
-async def upload_attachment(
+def upload_attachment(
     background: BackgroundTasks,
     conversation_id: str = Form(...),
     message_id: str = Form(""),

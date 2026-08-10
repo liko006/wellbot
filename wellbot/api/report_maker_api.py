@@ -63,8 +63,10 @@ def _require_emp_no(wellbot_auth: str | None) -> str:
     return emp_no
 
 
+# 동기 핸들러(`def`) — 세션 검증(DB)·첨부 등록(S3+DB)·스타일 문서 적재가 전부 블로킹이라
+# 이벤트 루프에서 돌리면 채팅 스트리밍이 그 시간만큼 멈춘다. FastAPI 스레드풀에 위임.
 @router.post("/api/report_maker/upload")
-async def upload_file(
+def upload_file(
     file: UploadFile = File(...),
     template: str = Form(...),
     kind: Literal["style", "topic"] = Form("style"),
@@ -87,8 +89,8 @@ async def upload_file(
         allowed = ", ".join(cfg.allowed_extensions)
         return {"key": "", "filename": file.filename, "error": f"지원 형식: {allowed}"}
 
-    # 크기 검증
-    data = await file.read()
+    # 크기 검증 — 동기 핸들러이므로 UploadFile 의 async read 대신 내부 파일 객체를 읽는다.
+    data = file.file.read()
     size_mb = len(data) / (1024 * 1024)
     if size_mb > cfg.max_upload_mb:
         return {

@@ -29,6 +29,7 @@ import boto3
 import pandas as pd
 
 from wellbot.constants import FILE_PARSER_MODE, KB_MAX_DOCS, PDF_VIA_UPSTAGE
+from wellbot.services.core.aws import standard_config
 from wellbot.services.files import storage_service
 from wellbot.services.knowledgebase.config import get_kb_config
 
@@ -104,12 +105,12 @@ def _get_s3():
 
 @lru_cache(maxsize=1)
 def _get_bedrock_agent():
-    return boto3.client("bedrock-agent", region_name=_region())
+    return boto3.client("bedrock-agent", region_name=_region(), config=standard_config())
 
 
 @lru_cache(maxsize=1)
 def _get_s3vectors():
-    return boto3.client("s3vectors", region_name=_region())
+    return boto3.client("s3vectors", region_name=_region(), config=standard_config())
 
 # ──────────────────────────────────────────────
 # 상수

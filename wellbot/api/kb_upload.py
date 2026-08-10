@@ -46,8 +46,10 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# 동기 핸들러(`def`) — 세션 검증(DB)·S3 적재가 전부 블로킹이라 이벤트 루프에서 돌리면
+# 채팅 스트리밍이 업로드 시간만큼 멈춘다. FastAPI 스레드풀에 위임.
 @router.post("/api/upload_kb_files")
-async def upload_kb_files(
+def upload_kb_files(
     files: list[UploadFile] = File(...),
     upload_target: str = Form("personal"),
     wellbot_auth: str | None = Cookie(default=None),
@@ -100,9 +102,10 @@ async def upload_kb_files(
     # 원본 바이트를 읽어 staging/ 에만 적재(stage_raw_files) — 변환·분할·색인은
     # 백그라운드에서. 형식/크기·누적 상한은 stage_raw_files 가 적재 전에 선검증해
     # 상한 초과 시 S3 적재 없이 즉시 거부(고아 방지), 부분 적재 실패 시 롤백.
+    # 동기 핸들러이므로 UploadFile 의 async read 대신 내부 파일 객체를 직접 읽는다.
     file_tuples: list[tuple[bytes, str]] = []
     for file in files:
-        file_tuples.append((await file.read(), file.filename))
+        file_tuples.append((file.file.read(), file.filename))
 
     try:
         staged = stage_raw_files(bucket, prefix, file_tuples)

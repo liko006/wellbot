@@ -17,6 +17,7 @@ from typing import Any
 
 import boto3
 
+from wellbot.services.core.aws import standard_config
 from wellbot.services.report_checker.config import get_config
 
 log = logging.getLogger(__name__)
@@ -31,7 +32,9 @@ def _get_client(region: str) -> Any:
     resolved = region or os.environ.get(
         "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
     )
-    return boto3.client("bedrock-runtime", region_name=resolved)
+    return boto3.client(
+        "bedrock-runtime", region_name=resolved, config=standard_config()
+    )
 
 
 def call_model(prompt: str, system: str = "", usage=None) -> str:

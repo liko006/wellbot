@@ -19,6 +19,8 @@ from urllib.parse import quote
 import boto3
 from botocore.exceptions import ClientError
 
+from wellbot.services.core.aws import standard_config
+
 log = logging.getLogger(__name__)
 
 # ── 설정 ──
@@ -34,7 +36,7 @@ def _get_client():
     boto3 가 환경변수에서 자격증명 자동 로드.
     """
     region = os.environ.get("S3_REGION", os.environ.get("AWS_REGION", "ap-northeast-2"))
-    return boto3.client("s3", region_name=region)
+    return boto3.client("s3", region_name=region, config=standard_config())
 
 
 def get_client():

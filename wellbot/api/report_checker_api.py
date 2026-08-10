@@ -62,8 +62,9 @@ def _require_emp_no(wellbot_auth: str | None) -> str:
     return emp_no
 
 
+# 동기 핸들러(`def`) — 세션 검증(DB)·S3 적재가 블로킹이라 스레드풀에 위임(채팅 루프 보호).
 @router.post("/api/report_checker/upload")
-async def upload_report(
+def upload_report(
     file: UploadFile = File(...),
     wellbot_auth: str | None = Cookie(default=None),
 ):
@@ -81,7 +82,8 @@ async def upload_report(
         return {"job_id": "", "filename": file.filename, "error": f"지원 형식: {allowed}"}
 
     # 3. 크기 검증 (전체 바이트 읽기 — max_upload_mb 이내)
-    data = await file.read()
+    #    동기 핸들러이므로 UploadFile 의 async read 대신 내부 파일 객체를 읽는다.
+    data = file.file.read()
     size_mb = len(data) / (1024 * 1024)
     if size_mb > cfg.max_upload_mb:
         return {
@@ -109,8 +111,10 @@ class DownloadRequest(BaseModel):
     filename: str = ""
 
 
+# 동기 핸들러(`def`) — 세션 검증(DB)·S3 조회가 블로킹. 응답 본문 스트리밍은
+# Starlette 이 별도 스레드에서 소비하므로 영향 없음.
 @router.post("/api/report_checker/download")
-async def download_report(
+def download_report(
     req: DownloadRequest,
     wellbot_auth: str | None = Cookie(default=None),
 ) -> StreamingResponse:
