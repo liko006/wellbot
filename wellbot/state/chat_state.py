@@ -685,6 +685,39 @@ class ChatState(rx.State):
         self.selected_model = name
         self.thinking_enabled = False
 
+    def _restore_model_for_current(self) -> None:
+        """현재 대화가 마지막으로 사용한 모델로 피커를 되돌린다.
+
+        대화 도중 모델이 바뀌면 문체·추론 깊이가 눈에 띄게 어긋나고, 사용자가 모르는
+        사이에 단가가 수십 배 다른 모델로 넘어갈 수 있다(토큰 한도 강제 전이라 특히
+        실질적이다). 모델명은 메시지마다 이미 저장돼 있어 별도 저장소가 필요 없다.
+
+        새 대화(=AI 메시지 없음)에서는 직전 선택을 그대로 둔다.
+        """
+        idx = self._get_current_index()
+        if idx is None:
+            return
+        name = next(
+            (
+                m.model_name
+                for m in reversed(self.conversations[idx].messages)
+                if m.role == "assistant" and m.model_name
+            ),
+            "",
+        )
+        if not name or name == self.selected_model:
+            return
+        model = get_config().get_model(name)
+        if model is None:
+            # models.yaml 에서 제거된 구세대 모델 — 피커에 없는 값을 넣으면 표시가
+            # 깨지므로 현재 선택을 유지한다(전송 경로에도 동일한 폴백이 있다).
+            return
+        self.selected_model = name
+        # set_model 과 달리 thinking 을 무조건 끄지 않는다(사용자가 켠 설정을 대화 전환만으로
+        # 뒤집지 않기 위함). 다만 복원한 모델이 지원하지 않으면 켜둔 채로 둘 수 없다.
+        if not model.thinking:
+            self.thinking_enabled = False
+
     def toggle_thinking(self, checked: bool) -> None:
         """extended thinking 활성화/비활성화 토글"""
         self.thinking_enabled = checked
@@ -845,6 +878,8 @@ class ChatState(rx.State):
         idx = self._get_current_index()
         if idx is not None:
             self._load_messages_for(idx)
+        # 이 대화가 마지막으로 쓰던 모델로 피커 복원 (메시지 로드 뒤여야 한다)
+        self._restore_model_for_current()
         # 이 대화에 미전송 첨부가 있으면 DB 에서 현재 상태로 복원한다.
         # (메시지 로드 뒤에 수행 — conversation_attachments 가 채워진 뒤여야 한다)
         resume_poll = False
