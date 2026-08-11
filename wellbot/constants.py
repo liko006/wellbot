@@ -174,6 +174,17 @@ LLM_CONTEXT_MAX_TOKENS: int = int(os.environ.get("LLM_CONTEXT_MAX_TOKENS", "1200
 # 커서 기반 추가 로드 → 무한정 state 적재·WS 전송 방지.
 MESSAGE_PAGE_SIZE: int = int(os.environ.get("MESSAGE_PAGE_SIZE", "50"))
 
+# ── 첨부 처리 대기 ──
+# 첨부 처리(파싱·청킹·임베딩) 대기 상한(초). **업로드가 DB 에 안착한 뒤부터** 센다
+# (파일 선택·전송 시간은 포함하지 않는다 — 그 둘을 포함하면 사용자가 파일 탐색기에서
+# 뜸들인 시간만큼 처리 예산이 깎인다). 상한을 넘기면 화면에서만 '실패'로 표시해 입력
+# 잠금을 푼다. DB 는 건드리지 않으므로 백그라운드가 나중에 끝내면 다음 조회에서 정상으로
+# 돌아온다. 대형 PDF 의 Upstage 파싱까지 감안한 값.
+ATTACHMENT_PROCESS_TIMEOUT_SEC: int = 300
+# 업로드 완료 콜백을 기다리는 백스톱(초). 정상적으로는 JS 콜백이 즉시 단계를 넘기지만,
+# 탭 종료 등으로 콜백이 영영 오지 않을 때 폴링이 무한히 도는 것을 막는다.
+ATTACHMENT_UPLOAD_WAIT_MAX_SEC: int = 600
+
 # ── AWS(boto3) 커넥션 풀 / 타임아웃 ──
 # botocore 기본 풀은 10이라 STREAM_MAX_CONCURRENT(24)보다 작다 — 그대로 두면 동시
 # 스트리밍 11개째부터 커넥션을 기다린다. 풀 크기는 "동시에 열 수 있는 소켓 상한"일

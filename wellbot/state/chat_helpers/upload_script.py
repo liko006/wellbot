@@ -4,7 +4,14 @@ ChatState.trigger_upload 가 rx.call_script 로 실행할 JS 본문 생성.
 브라우저 측에서:
     1. <input type=file multiple> 으로 파일 선택
     2. fetch POST /api/upload 로 전송 (백엔드 직접/프록시 자동 판별)
-    3. 완료 알림은 Python 측 polling 으로 DB 에서 감지
+    3. **결과 요약을 반환** → ChatState.on_upload_settled 콜백으로 전달
+
+반환 규약(파일 선택·붙여넣기 공통, 모든 경로에서 반드시 값을 돌려준다):
+    {"uploaded": int, "cancelled": bool, "errors": [str, ...]}
+
+이 반환값이 없으면 Python 은 업로드가 언제 끝났는지 알 수 없어 **파일 선택 다이얼로그를
+띄워둔 시간까지 처리 대기 시간에 포함**하게 된다(그만큼 처리 예산이 깎여 완료 신호를
+놓친다). 취소도 값으로 알려야 폴링이 즉시 멈춘다.
 """
 
 from __future__ import annotations
@@ -61,17 +68,19 @@ def build_upload_script(
       input.click();
     }});
     document.body.removeChild(input);
-    if (!files.length) return;
+    if (!files.length) return {{uploaded: 0, cancelled: true, errors: []}};
 
     const maxPerMsg = {max_per_msg};
     const current = {current_count};
     if (files.length + current > maxPerMsg) {{
-      alert(`메시지당 최대 ${{maxPerMsg}}개까지 첨부 가능합니다.`);
-      return;
+      const msg = `메시지당 최대 ${{maxPerMsg}}개까지 첨부 가능합니다.`;
+      alert(msg);
+      return {{uploaded: 0, cancelled: true, errors: [msg]}};
     }}
 
     const maxBytes = {max_mb} * 1024 * 1024;
     const errors = [];
+    let uploaded = 0;
     for (const file of files) {{
       if (file.size > maxBytes) {{
         errors.push(`'${{file.name}}' 파일이 {max_mb}MB 를 초과합니다.`);
@@ -90,14 +99,19 @@ def build_upload_script(
         if (!resp.ok) {{
           const data = await resp.json().catch(() => ({{}}));
           errors.push(`'${{file.name}}': ${{data.detail || resp.status}}`);
+        }} else {{
+          uploaded += 1;
         }}
       }} catch (err) {{
         errors.push(`'${{file.name}}': ${{err && err.message ? err.message : err}}`);
       }}
     }}
     if (errors.length) alert(errors.join('\\n'));
+    // 한 건도 못 올렸으면 cancelled 로 알려 폴링을 즉시 끝낸다
+    return {{uploaded: uploaded, cancelled: uploaded === 0, errors: errors}};
   }} catch (err) {{
     console.error('[wellbot upload] ', err);
+    return {{uploaded: 0, cancelled: true, errors: [String(err)]}};
   }}
 }})();
 """
@@ -273,14 +287,16 @@ window._wellbotBackendBase = async function() {
 window.wellbotUploadPasted = async function(convId, msgId, maxMb, maxPerMsg, currentCount) {
     var files = window._pastedFiles || [];
     window._pastedFiles = [];
-    if (!files.length) return;
+    if (!files.length) return {uploaded: 0, cancelled: true, errors: []};
     if (files.length + currentCount > maxPerMsg) {
-        alert('메시지당 최대 ' + maxPerMsg + '개까지 첨부 가능합니다.');
-        return;
+        var limitMsg = '메시지당 최대 ' + maxPerMsg + '개까지 첨부 가능합니다.';
+        alert(limitMsg);
+        return {uploaded: 0, cancelled: true, errors: [limitMsg]};
     }
     var maxBytes = maxMb * 1024 * 1024;
     var backendBase = await window._wellbotBackendBase();
     var errors = [];
+    var uploaded = 0;
     for (var i = 0; i < files.length; i++) {
         var file = files[i];
         if (file.size > maxBytes) {
@@ -300,12 +316,15 @@ window.wellbotUploadPasted = async function(convId, msgId, maxMb, maxPerMsg, cur
             if (!resp.ok) {
                 var data = await resp.json().catch(function() { return {}; });
                 errors.push("'" + file.name + "': " + (data.detail || resp.status));
+            } else {
+                uploaded += 1;
             }
         } catch (err) {
             errors.push("'" + file.name + "': " + (err && err.message ? err.message : err));
         }
     }
     if (errors.length) alert(errors.join('\\n'));
+    return {uploaded: uploaded, cancelled: uploaded === 0, errors: errors};
 };
 
 // SPA 라우팅으로 스크립트가 재실행돼도 리스너 중복 등록 방지
