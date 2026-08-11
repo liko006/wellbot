@@ -10,12 +10,15 @@ import logging
 import random
 import time
 import uuid
+from collections.abc import AsyncGenerator
 
 import reflex as rx
 
 from wellbot.logger import log_context
 
 from wellbot.constants import (
+    ATTACHMENT_PROCESS_TIMEOUT_SEC,
+    ATTACHMENT_UPLOAD_WAIT_MAX_SEC,
     DEFAULT_CONVERSATION_TITLE,
     FILE_MAX_PER_MESSAGE,
     FILE_MAX_SIZE_MB,
@@ -114,6 +117,15 @@ class ChatState(rx.State):
 
     # 첨부파일-메시지 매핑용 msg_id. trigger_upload 에서 생성 후 send_message 에서 재사용
     _pending_msg_id: str = ""
+
+    # 업로드 JS 콜백이 도착한 시각(epoch). 0=아직 안 옴, -1=취소/전량 실패.
+    # 폴링이 "파일 선택·전송 대기"와 "서버 처리 대기"를 구분하는 기준점이다.
+    _upload_settled_at: float = 0.0
+
+    # file_no → 그 파일이 처음 'processing' 으로 관찰된 시각(epoch).
+    # 처리 상한 판정의 기준. 업로드가 DB 에 안착한 뒤부터 세므로 파일 선택·전송 시간이
+    # 처리 예산을 깎지 않는다.
+    _processing_since: dict[int, float] = {}
 
     # 보고서 만들기 핸드오프용. AI 메시지 1건의 본문을 report_maker 로 넘길 때 보관하고,
     # ReportMakerState.on_load 가 cross-state 로 읽어 소비한다. 스트리밍 직후 메시지는
@@ -654,6 +666,15 @@ class ChatState(rx.State):
         else:
             self._ensure_conversation()
 
+        # 처리 중이던 첨부가 있으면 DB 에서 현재 상태를 다시 읽는다.
+        # Reflex 상태는 새로고침으로 초기화되지 않으므로(같은 토큰으로 서버 상태에 재접속),
+        # 이 재동기화가 없으면 폴링이 놓친 '처리 중' 표시가 새로고침으로도 안 풀린다.
+        # 조건을 _pending_msg_id 로 한정하는 이유: 이 값이 없으면 조회가 대화 전체 첨부를
+        # 돌려주는데, 이 시점엔 conversation_attachments 가 아직 비어 있어 과거 첨부까지
+        # pending 으로 뜬다.
+        if self._pending_msg_id:
+            await asyncio.to_thread(self._sync_attachments_from_db)
+
     def set_model(self, name: str) -> None:
         """사용 모델 변경. thinking 은 모델 변경 시 비활성화"""
         self.selected_model = name
@@ -801,6 +822,7 @@ class ChatState(rx.State):
         self.conversations = [conv, *self.conversations]
         self.current_conversation_id = conv.id
         self.conversation_attachments = []
+        self._reset_pending_attachments()
         self._reset_kb_panels()
         self._refresh_greeting()
         return rx.redirect("/") if leaving_other_page else None
@@ -813,6 +835,7 @@ class ChatState(rx.State):
         leaving_other_page = self.router.url.path != "/"
         self.current_conversation_id = conv_id
         self.search_query = ""
+        self._reset_pending_attachments()
         self._reset_kb_panels()
         idx = self._get_current_index()
         if idx is not None:
@@ -875,6 +898,8 @@ class ChatState(rx.State):
                 log.warning("대화 삭제 실패 conv_id=%s", conv_id, exc_info=True)
         self.conversations = [c for c in self.conversations if c.id != conv_id]
         if conv_id == self.current_conversation_id:
+            # 현재 대화가 사라지므로 그 대화에 묶인 pending 첨부도 함께 정리
+            self._reset_pending_attachments()
             # 빈 미저장 대화가 있으면 그쪽으로 이동, 없으면 새로 생성
             empty = next(
                 (c for c in self.conversations if not c.messages and not c.is_persisted),
@@ -1575,6 +1600,20 @@ class ChatState(rx.State):
         """첨부 관련 오류 메시지 설정"""
         self.attachment_error = message
 
+    def _reset_pending_attachments(self) -> None:
+        """대화 경계에서 pending 첨부 상태를 초기화.
+
+        첨부는 업로드 시점의 대화(conv_id)·메시지(msg_id)에 이미 묶여 있으므로, 대화를
+        옮겨도 따라가면 안 된다. 초기화하지 않으면 ①A 대화에서 올린 첨부가 B 대화
+        메시지에 붙고(데이터 오염) ②처리 중 상태가 모든 대화를 따라다니며 입력을 막는다.
+        DB·S3 는 건드리지 않는다 — 원래 대화에서 그대로 유효하다.
+        """
+        self.pending_attachments = []
+        self._pending_msg_id = ""
+        self.attachment_error = ""
+        self._processing_since = {}
+        self._upload_settled_at = 0.0
+
     def remove_pending_attachment(self, file_no: int) -> None:
         """pending 목록에서 첨부파일 제거. DB 에서도 삭제"""
         if self._emp_no:
@@ -1614,44 +1653,136 @@ class ChatState(rx.State):
         if pending is not None:
             self.pending_attachments = pending
 
-    @rx.event(background=True)
-    async def poll_attachments(self) -> None:
-        """업로드 트리거 후 DB 를 폴링해 UI 갱신.
+    def _expire_stale_processing(self) -> list[str]:
+        """처리 상한을 넘긴 첨부를 **화면에서만** 실패로 표시하고 이름 목록을 반환.
 
-        모든 pending 파일이 ready 상태가 되면 조기 종료.
-        대용량 파일 처리를 고려해 최대 120초까지 폴링.
+        DB 는 건드리지 않는다 — 백그라운드 처리가 뒤늦게 끝나면 DB 는 정상(ready)이 되고
+        다음 조회(전송 직전 재조회 포함)에서 되돌아온다. 여기서 상태를 확정하는 목적은
+        "완료 신호를 놓쳤을 때 사용자가 영영 갇히지 않게" 하는 것뿐이다.
+
+        기준 시각은 그 파일이 **DB 에 processing 으로 처음 나타난 시점**이라, 파일 선택·
+        전송에 걸린 시간이 처리 예산을 깎지 않는다.
+        """
+        now = time.time()
+        processing = {a.file_no for a in self.pending_attachments if a.status == "processing"}
+        since = {fn: t for fn, t in self._processing_since.items() if fn in processing}
+        for file_no in processing:
+            since.setdefault(file_no, now)
+
+        expired = {
+            fn for fn, started in since.items()
+            if now - started > ATTACHMENT_PROCESS_TIMEOUT_SEC
+        }
+        if not expired:
+            self._processing_since = since
+            return []
+
+        self._processing_since = {fn: t for fn, t in since.items() if fn not in expired}
+        names = [a.name for a in self.pending_attachments if a.file_no in expired]
+        self.pending_attachments = [
+            a.copy(update={"status": "failed"}) if a.file_no in expired else a
+            for a in self.pending_attachments
+        ]
+        return names
+
+    @rx.event(background=True)
+    async def poll_attachments(self) -> AsyncGenerator[rx.event.EventSpec, None]:
+        """업로드 트리거 후 DB 를 폴링해 첨부 상태를 UI 에 반영.
+
+        2단계로 나뉜다.
+            1단계: 업로드 완료 콜백(on_upload_settled) 대기 — 사용자가 파일 탐색기에서
+                   고르는 시간과 전송 시간이 여기 포함된다. 취소면 즉시 종료.
+            2단계: 서버 처리 대기 — 각 파일이 DB 에 processing 으로 나타난 시점부터
+                   ATTACHMENT_PROCESS_TIMEOUT_SEC 까지. 초과분은 화면상 실패로 확정해
+                   입력 잠금을 푼다.
+
+        두 단계를 한 타이머로 묶으면(기존 구조) 파일 선택에 뜸들인 시간만큼 처리 예산이
+        깎여, 처리가 끝나기 전에 폴링이 죽고 UI 가 '처리 중'에 영구히 갇힌다.
         """
         start = time.time()
-        deadline = start + 120.0
-        # 트리거 시점의 기존 첨부 수. 이보다 늘어나야(=새 업로드가 DB 안착) 조기 종료 허용.
-        # (붙여넣은 이미지가 이미 ready 인 상태에서 파일추가 시, 새 파일이 아직 DB 에
-        #  없을 때 'all ready' 로 조기 종료돼 새 파일이 UI 에 안 뜨던 버그 방지)
-        start_count = len(self.pending_attachments)
-        settle_grace = 8.0  # 새 업로드가 안 올라오면(취소 등) 이 시간 후 종료 허용
+        upload_deadline = start + ATTACHMENT_UPLOAD_WAIT_MAX_SEC
+        # 콜백 도착 후 DB 행이 나타나기를 기다리는 유예(초). 업로드 응답과 커밋 사이의
+        # 짧은 간극을 흡수한다 — 이게 없으면 행이 뜨기 전에 '완료'로 오판해 칩이 안 뜬다.
+        row_grace = 30.0
         # 업로드 직후 칩이 빨리 뜨도록 처음엔 촘촘히 폴링하고 점차 백오프.
         # (이미지는 파싱을 건너뛰어 거의 즉시 ready 가 되므로 초기 응답성이 중요)
         interval = 0.3
-        while time.time() < deadline:
+        timed_out = False
+        while True:
+            reason = ""
             async with self:
                 self._sync_attachments_from_db()
-                # 새 업로드 안착(개수 증가) 또는 grace 경과 또는 기존 첨부 없음(빈 시작)일 때만
-                # 조기 종료 허용 — 인플라이트 업로드를 놓치지 않도록.
-                can_exit = (
-                    start_count == 0
-                    or len(self.pending_attachments) > start_count
-                    or (time.time() - start) >= settle_grace
+                # 상한 초과분만 화면상 실패로 확정한다. 파일마다 시계가 따로 돌기 때문에
+                # 한 파일이 만료돼도 **정상 처리 중인 나머지는 계속 기다린다**
+                # (여기서 루프를 끝내면 남은 파일이 감시자를 잃고 다시 갇힌다).
+                expired = self._expire_stale_processing()
+                settled = self._upload_settled_at
+                pending = self.pending_attachments
+                has_processing = any(a.status == "processing" for a in pending)
+
+                if settled < 0:
+                    reason = "upload_cancelled"
+                elif not pending and not self._pending_msg_id:
+                    # 전송 완료 등으로 대기 대상이 사라짐
+                    reason = "no_pending"
+                elif settled > 0:
+                    if pending and not has_processing:
+                        # 만료분은 위에서 failed 가 됐으므로 이 조건에 함께 걸린다
+                        reason = "process_timeout" if timed_out or expired else "ready"
+                    elif not pending and (time.time() - settled) > row_grace:
+                        # 업로드는 성공했다는데 행이 끝내 안 나타남(등록 실패 등)
+                        reason = "no_rows"
+                elif time.time() > upload_deadline:
+                    # 콜백이 오지 않음(탭 종료 등) — 무한 폴링 방지용 백스톱
+                    reason = "upload_wait_timeout"
+
+            if expired:
+                timed_out = True
+                log.warning("attachment processing timed out", extra={"files": expired})
+                label = f"'{expired[0]}'" if len(expired) == 1 else f"{len(expired)}개 첨부"
+                yield rx.toast.error(
+                    f"{label} 처리가 예상보다 오래 걸립니다. "
+                    "잠시 후 새로고침하면 결과를 확인할 수 있습니다.",
+                    duration=6000,
+                    position="bottom-center",
                 )
-                # 모든 pending 파일이 종료 상태(ready 또는 failed)면 폴링 종료.
-                # (실패도 종료 상태로 취급해야 실패 시 120초 데드라인까지 헛돌지 않음)
-                if can_exit and self.pending_attachments and all(
-                    a.status != "processing" for a in self.pending_attachments
-                ):
-                    break
-                # pending 이 비었으면(전송 완료 등) 종료
-                if not self.pending_attachments and not self._pending_msg_id:
-                    break
+            if reason:
+                break
             await asyncio.sleep(interval)
             interval = min(3.0, interval + 0.3)
+
+        log.info(
+            "attachment polling finished",
+            extra={"reason": reason, "elapsed_ms": int((time.time() - start) * 1000)},
+        )
+
+    @rx.event
+    async def on_upload_settled(self, result) -> None:
+        """업로드 JS 완료 콜백 — 폴링의 1단계(전송 대기)를 끝낸다.
+
+        결과 규약: {"uploaded": int, "cancelled": bool, "errors": [str, ...]}
+        한 건도 못 올렸으면(-1) 폴링이 즉시 멈춘다.
+        """
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except (ValueError, TypeError):
+                result = None
+        data = result if isinstance(result, dict) else {}
+        uploaded = int(data.get("uploaded") or 0)
+
+        if uploaded > 0:
+            self._upload_settled_at = time.time()
+            return
+
+        # 취소·전량 실패 — 이번 트리거로 올라온 파일이 없다.
+        self._upload_settled_at = -1.0
+        # 이전 업로드분이 남아 있으면 그 msg_id 는 살려둔다(그 첨부들이 묶여 있음).
+        if not self.pending_attachments:
+            self._pending_msg_id = ""
+        errors = data.get("errors") or []
+        if errors:
+            log.info("attachment upload reported errors", extra={"errors": errors[:3]})
 
     def _prepare_attachment_upload(self) -> tuple[str, str] | None:
         """첨부 업로드 공통 준비: 대화 영속화 + 한도 체크 + msg_id 발급.
@@ -1698,9 +1829,11 @@ class ChatState(rx.State):
             max_per_msg=FILE_MAX_PER_MESSAGE,
             current_count=len(self.pending_attachments),
         )
-        # JS 실행 + Python 폴링을 함께 반환
+        # 새 업로드 turn 시작 — 이전 turn 의 완료 신호를 폴링이 재사용하지 않도록 리셋
+        self._upload_settled_at = 0.0
+        # JS 실행(완료 시 on_upload_settled 콜백) + Python 폴링을 함께 반환
         return [
-            rx.call_script(script),
+            rx.call_script(script, callback=ChatState.on_upload_settled),
             ChatState.poll_attachments,
         ]
 
@@ -1727,8 +1860,9 @@ class ChatState(rx.State):
             f"'{conv_id}', '{msg_id}', {FILE_MAX_SIZE_MB}, "
             f"{FILE_MAX_PER_MESSAGE}, {len(self.pending_attachments)})"
         )
+        self._upload_settled_at = 0.0
         return [
-            rx.call_script(script),
+            rx.call_script(script, callback=ChatState.on_upload_settled),
             ChatState.poll_attachments,
         ]
 
