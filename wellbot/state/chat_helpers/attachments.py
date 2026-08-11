@@ -46,7 +46,13 @@ def fetch_pending_attachments(
     pending_msg_id: str,
     already_sent: set[int],
 ) -> list[AttachmentInfo] | None:
-    """업로드 직후 표시할 pending 첨부 목록을 DB 에서 조회.
+    """아직 전송하지 않은(pending) 첨부 목록을 DB 에서 조회.
+
+    ``pending_msg_id`` 가 있으면 그 msg_id 에 묶인 행이 곧 pending 이므로
+    ``already_sent`` 를 적용하지 않는다. 이 필터는 대화 첨부 전체를 훑는 경로
+    (msg_id 없음)에서 "이미 보낸 것"을 걷어내기 위한 것인데, msg_id 경로에까지 적용하면
+    **대화를 다시 열 때 pending 이 사라진다** — 대화 로드가 `conversation_attachments` 에
+    미전송분까지 담아오기 때문에 자기 자신에 의해 걸러진다.
 
     Returns:
         list: 새 pending_attachments 로 그대로 대입할 수 있는 목록
@@ -57,8 +63,8 @@ def fetch_pending_attachments(
     try:
         if pending_msg_id:
             rows = attachment_service.get_attachments_by_msg_id(pending_msg_id)
-        else:
-            rows = attachment_service.get_conversation_attachments(conv_id)
+            return rows_to_attachment_infos(rows)
+        rows = attachment_service.get_conversation_attachments(conv_id)
     except Exception:
         log.warning("첨부 조회 실패 conv_id=%s msg_id=%s", conv_id, pending_msg_id, exc_info=True)
         return None

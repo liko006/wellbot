@@ -118,6 +118,11 @@ class ChatState(rx.State):
     # 첨부파일-메시지 매핑용 msg_id. trigger_upload 에서 생성 후 send_message 에서 재사용
     _pending_msg_id: str = ""
 
+    # conv_id → 아직 전송하지 않은 첨부의 msg_id. 첨부는 업로드 시점의 대화에 묶이므로,
+    # 대화를 옮겼다 돌아오면 이 값으로 DB 에서 다시 읽어 칩을 복원한다(업로드·파싱은
+    # 화면과 무관하게 서버에서 계속 진행되므로 잃는 것은 '화면 정보'뿐이다).
+    _pending_msg_ids: dict[str, str] = {}
+
     # 업로드 JS 콜백이 도착한 시각(epoch). 0=아직 안 옴, -1=취소/전량 실패.
     # 폴링이 "파일 선택·전송 대기"와 "서버 처리 대기"를 구분하는 기준점이다.
     _upload_settled_at: float = 0.0
@@ -822,7 +827,7 @@ class ChatState(rx.State):
         self.conversations = [conv, *self.conversations]
         self.current_conversation_id = conv.id
         self.conversation_attachments = []
-        self._reset_pending_attachments()
+        self._switch_pending_attachments(conv.id)
         self._reset_kb_panels()
         self._refresh_greeting()
         return rx.redirect("/") if leaving_other_page else None
@@ -835,16 +840,30 @@ class ChatState(rx.State):
         leaving_other_page = self.router.url.path != "/"
         self.current_conversation_id = conv_id
         self.search_query = ""
-        self._reset_pending_attachments()
+        self._switch_pending_attachments(conv_id)
         self._reset_kb_panels()
         idx = self._get_current_index()
         if idx is not None:
             self._load_messages_for(idx)
+        # 이 대화에 미전송 첨부가 있으면 DB 에서 현재 상태로 복원한다.
+        # (메시지 로드 뒤에 수행 — conversation_attachments 가 채워진 뒤여야 한다)
+        resume_poll = False
+        if self._pending_msg_id:
+            self._sync_attachments_from_db()
+            resume_poll = any(
+                a.status == "processing" for a in self.pending_attachments
+            )
         if leaving_other_page:
             return rx.redirect("/")
-        return rx.call_script(
-            "if (window.__resetAutoScroll) { window.__resetAutoScroll(); }"
-        )
+        events: list = [
+            rx.call_script("if (window.__resetAutoScroll) { window.__resetAutoScroll(); }")
+        ]
+        if resume_poll:
+            # 아직 처리 중이면 이 대화 기준으로 폴링을 다시 건다(자리를 비운 사이
+            # 폴링이 끝났어도 돌아오면 완료 시점을 다시 감시한다).
+            self._upload_settled_at = time.time()
+            events.append(ChatState.poll_attachments)
+        return events
 
     async def load_older_messages(self) -> None:
         """현재 대화의 이전(더 오래된) 메시지 페이지를 커서 기반으로 추가 로드.
@@ -897,9 +916,10 @@ class ChatState(rx.State):
             except Exception:
                 log.warning("대화 삭제 실패 conv_id=%s", conv_id, exc_info=True)
         self.conversations = [c for c in self.conversations if c.id != conv_id]
+        self._clear_pending_msg_id(conv_id)   # 삭제된 대화의 미전송 첨부 기록도 폐기
         if conv_id == self.current_conversation_id:
-            # 현재 대화가 사라지므로 그 대화에 묶인 pending 첨부도 함께 정리
-            self._reset_pending_attachments()
+            # 현재 대화가 사라지므로 화면의 pending 첨부도 함께 정리
+            self._switch_pending_attachments("")
             # 빈 미저장 대화가 있으면 그쪽으로 이동, 없으면 새로 생성
             empty = next(
                 (c for c in self.conversations if not c.messages and not c.is_persisted),
@@ -1600,19 +1620,28 @@ class ChatState(rx.State):
         """첨부 관련 오류 메시지 설정"""
         self.attachment_error = message
 
-    def _reset_pending_attachments(self) -> None:
-        """대화 경계에서 pending 첨부 상태를 초기화.
+    def _switch_pending_attachments(self, conv_id: str) -> None:
+        """대화 경계에서 pending 첨부 화면 상태를 해당 대화의 것으로 교체.
 
-        첨부는 업로드 시점의 대화(conv_id)·메시지(msg_id)에 이미 묶여 있으므로, 대화를
-        옮겨도 따라가면 안 된다. 초기화하지 않으면 ①A 대화에서 올린 첨부가 B 대화
-        메시지에 붙고(데이터 오염) ②처리 중 상태가 모든 대화를 따라다니며 입력을 막는다.
-        DB·S3 는 건드리지 않는다 — 원래 대화에서 그대로 유효하다.
+        첨부는 업로드 시점의 대화(conv_id)·메시지(msg_id)에 묶여 있으므로 대화를 옮길 때
+        따라가면 안 된다(안 지우면 A 대화 첨부가 B 대화 메시지에 붙는 데이터 오염).
+        대신 **버리지 않고 대화별로 보관**했다가 돌아오면 DB 에서 다시 읽는다 — 업로드·
+        파싱은 화면과 무관하게 끝까지 진행되므로 복원할 수 있다.
+
+        DB·S3 는 건드리지 않는다. 실제 복원(조회)은 호출부가 메시지 로드 뒤에 수행한다.
         """
         self.pending_attachments = []
-        self._pending_msg_id = ""
         self.attachment_error = ""
         self._processing_since = {}
         self._upload_settled_at = 0.0
+        self._pending_msg_id = self._pending_msg_ids.get(conv_id, "")
+
+    def _clear_pending_msg_id(self, conv_id: str) -> None:
+        """해당 대화의 pending msg_id 기록 제거(전송 완료·대화 삭제)."""
+        if conv_id in self._pending_msg_ids:
+            self._pending_msg_ids = {
+                cid: mid for cid, mid in self._pending_msg_ids.items() if cid != conv_id
+            }
 
     def remove_pending_attachment(self, file_no: int) -> None:
         """pending 목록에서 첨부파일 제거. DB 에서도 삭제"""
@@ -1806,6 +1835,8 @@ class ChatState(rx.State):
         # 첨부파일-메시지 매핑용 msg_id 를 미리 생성 후 send_message 에서 재사용
         if not self._pending_msg_id:
             self._pending_msg_id = uuid.uuid4().hex[:50]
+        # 대화별로 기억해 두면 다른 대화에 다녀와도 이 대화의 첨부를 복원할 수 있다
+        self._pending_msg_ids = {**self._pending_msg_ids, conv_id: self._pending_msg_id}
         return conv_id, self._pending_msg_id
 
     def trigger_upload(self) -> rx.event.EventSpec | None:
@@ -1945,10 +1976,13 @@ class ChatState(rx.State):
 
             self._update_conversation(idx, title=title, messages=updated_messages)
             # pending 첨부 → conversation_attachments 로 이동
+            # (대화를 다시 열어 복원된 경우 conversation_attachments 에 이미 같은 행이
+            #  들어 있을 수 있으므로 file_no 로 중복을 걸러낸다)
             if self.pending_attachments:
+                known = {a.file_no for a in self.conversation_attachments}
                 self.conversation_attachments = [
                     *self.conversation_attachments,
-                    *self.pending_attachments,
+                    *[a for a in self.pending_attachments if a.file_no not in known],
                 ]
             self.pending_attachments = []
             self.attachment_error = ""
@@ -1971,6 +2005,7 @@ class ChatState(rx.State):
             # 첨부파일이 있으면 미리 생성한 msg_id 재사용, 없으면 빈 문자열
             pending_msg_id = self._pending_msg_id or ""
             self._pending_msg_id = ""  # 소비 후 초기화
+            self._clear_pending_msg_id(conv_id)  # 이 대화의 미전송 기록도 소비 완료
 
             # API 호출용 메시지 — 텍스트만 포함 (이미지는 image_blocks 로 별도 전달해 중복 방지).
             # 히스토리는 토큰 예산(LLM_CONTEXT_MAX_TOKENS)으로 제한해 긴 대화의
