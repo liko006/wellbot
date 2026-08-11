@@ -187,9 +187,11 @@ def message_area() -> rx.Component:
                         padding_y="0.5em",
                     ),
                 ),
+                # message_bubble 은 rx.memo 컴포넌트라 키워드 prop 으로 넘긴다
+                # (메모 컴포넌트는 위치 인자를 받지 않는다).
                 rx.foreach(
                     ChatState.current_messages,
-                    message_bubble,
+                    lambda message: message_bubble(message=message),
                 ),
                 rx.cond(ChatState.has_streaming, streaming_message()),
                 rx.cond(

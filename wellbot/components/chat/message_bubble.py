@@ -171,8 +171,21 @@ def ai_message(message: Message) -> rx.Component:
     )
 
 
+@rx.memo
 def message_bubble(message: Message) -> rx.Component:
-    """개별 메시지 - 역할에 따라 분기."""
+    """개별 메시지 - 역할에 따라 분기.
+
+    ``rx.memo`` 로 감싼 이유(성능): 스트리밍 텍스트(`streaming_content`)는 이 목록과 같은
+    vstack 안에서 0.08초마다 갱신되는데, 부모가 리렌더되면 React 는 자식 전체를 다시
+    그린다. 각 AI 버블의 `rx.markdown` 은 내용이 그대로여도 매번 다시 파싱하므로
+    (react-markdown 자체 메모 없음), 메시지 50개 대화에서는 **초당 600회 파싱**이 되어
+    스트리밍이 끊긴다. 메모로 prop 이 안 바뀐 버블을 건너뛰면 리렌더 비용이 대화 길이와
+    무관해진다(O(N) → O(1)).
+
+    주의: React.memo 는 **얕은 비교**다. prop 이 `Message` 객체 하나이므로, 클라이언트
+    상태가 델타마다 객체를 새로 만들면 메모가 안 먹는다. 효과가 없으면 role/content 등
+    원시값으로 펼쳐 전달하는 방식으로 바꾼다.
+    """
     return rx.cond(
         message.role == "user",
         user_message(message),
