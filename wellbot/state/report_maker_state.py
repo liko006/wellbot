@@ -1725,7 +1725,7 @@ class ReportMakerState(rx.State):
                 content=md_linebreaks(final)
                 + "\n\n---\n수정 요청사항을 입력하거나, 현재 스타일을 저장하세요.",
                 is_outline=True,
-                model_name=get_config().model_id,
+                model_name=get_config().model_name,
                 input_tokens=usage.get("input_tokens", 0),
                 output_tokens=usage.get("output_tokens", 0),
             )
@@ -1764,7 +1764,7 @@ class ReportMakerState(rx.State):
             self.messages[idx] = ReportMessage(
                 content=md_linebreaks(final) + f"\n\n수정 완료 (#{self.iteration})",
                 is_outline=True,
-                model_name=get_config().model_id,
+                model_name=get_config().model_name,
                 input_tokens=usage.get("input_tokens", 0),
                 output_tokens=usage.get("output_tokens", 0),
             )
@@ -1823,7 +1823,7 @@ class ReportMakerState(rx.State):
         async with self:
             self.messages[idx] = ReportMessage(
                 content=raw.strip() or "답변을 생성하지 못했습니다.",
-                model_name=get_config().model_id,
+                model_name=get_config().model_name,
                 input_tokens=usage.get("input_tokens", 0),
                 output_tokens=usage.get("output_tokens", 0),
             )

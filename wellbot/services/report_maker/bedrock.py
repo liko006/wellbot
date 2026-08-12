@@ -61,7 +61,9 @@ def _record_usage_safe(action: str, in_tok: int, out_tok: int) -> None:
         emp = emp if emp and emp != "-" else None
         conv = conv if conv and conv != "-" else None
         if emp and conv:
-            db.record_usage(conv, emp, action or "llm", in_tok, out_tok, get_config().model_id)
+            db.record_usage(
+                conv, emp, action or "llm", in_tok, out_tok, get_config().model_name
+            )
         else:
             log.info("LLM usage(미귀속) action=%s in=%s out=%s", action or "llm", in_tok, out_tok)
     except Exception:
