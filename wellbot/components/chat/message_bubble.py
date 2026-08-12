@@ -61,7 +61,7 @@ def _source_chip(doc: rx.Var) -> rx.Component:
     return rx.tooltip(chip, content=doc["title"])
 
 
-def _source_docs_section(message: Message) -> rx.Component:
+def _source_docs_section(message: rx.Var[Message]) -> rx.Component:
     """KB 출처 섹션 — AI 메시지 하단."""
     return rx.cond(
         message.source_docs.length() > 0,
@@ -90,7 +90,7 @@ def _source_docs_section(message: Message) -> rx.Component:
     )
 
 
-def user_message(message: Message) -> rx.Component:
+def user_message(message: rx.Var[Message]) -> rx.Component:
     """사용자 메시지 - 우측 정렬, 둥근 버블."""
     return rx.hstack(
         rx.spacer(),
@@ -137,7 +137,7 @@ def _action_icon(icon: str, on_click: object, tooltip: str = "") -> rx.Component
     )
 
 
-def _ai_message_actions(message: Message) -> rx.Component:
+def _ai_message_actions(message: rx.Var[Message]) -> rx.Component:
     """AI 메시지 하단 액션 버튼 바."""
     return rx.hstack(
         _action_icon(
@@ -155,7 +155,7 @@ def _ai_message_actions(message: Message) -> rx.Component:
     )
 
 
-def ai_message(message: Message) -> rx.Component:
+def ai_message(message: rx.Var[Message]) -> rx.Component:
     """AI 메시지 - 좌측 정렬, 마크다운 렌더링."""
     return rx.box(
         rx.markdown(
@@ -172,7 +172,7 @@ def ai_message(message: Message) -> rx.Component:
 
 
 @rx.memo
-def message_bubble(message: Message) -> rx.Component:
+def message_bubble(message: rx.Var[Message]) -> rx.Component:
     """개별 메시지 - 역할에 따라 분기.
 
     ``rx.memo`` 로 감싼 이유(성능): 스트리밍 텍스트(`streaming_content`)는 이 목록과 같은

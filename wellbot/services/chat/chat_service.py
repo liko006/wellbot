@@ -1,5 +1,6 @@
-"""채팅 서비스 - 대화 및 메시지 DB CRUD"""
+"""채팅 서비스 - 대화 및 메시지 DB CRUD (삭제 시 첨부 S3 파생물 정리 포함)"""
 
+import logging
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -11,6 +12,9 @@ from wellbot.constants import CONVERSATION_LIMIT, KST, MESSAGE_SEQ_MAX_RETRIES
 from wellbot.models.chat_message import ChatMessage
 from wellbot.models.chat_summary import ChatSummary
 from wellbot.services.core.database import get_session
+from wellbot.services.files import storage_service
+
+log = logging.getLogger(__name__)
 
 
 def _verify_ownership(session, smry_id: str, emp_no: str) -> ChatSummary | None:
@@ -286,9 +290,22 @@ def append_message(
 
 
 def delete_conversation(smry_id: str, emp_no: str) -> None:
-    """대화 및 관련 메시지·첨부파일 삭제 (소유권 검증 포함)"""
+    """대화 및 관련 메시지·첨부파일 삭제 (소유권 검증 포함).
+
+    DB 행과 함께 첨부의 **S3 파생물(원본·청크·인덱스)도 지운다.** 개별 첨부 삭제
+    (`attachment_service.delete_attachment`)는 이미 S3 를 지우는데 대화 삭제만 DB 만
+    지워서, 대화를 지울수록 S3 에 고아 객체가 쌓이던 비대칭을 없앤다.
+
+    삭제 대상은 **DB 에 기록된 prefix 뿐**이다(경로를 조합해 지우지 않는다). 이 값은
+    업로드 시 `build_prefix(emp_no, smry_id, file_no)` 로만 기록되므로 사용자 본인의
+    첨부 경로만 가리킨다 — 공용 KB 문서는 애초에 이 테이블에 행이 없어 대상이 될 수 없다.
+
+    S3 삭제는 DB 커밋 뒤 best-effort 로 수행한다(실패해도 대화 삭제 자체는 완료).
+    """
     from wellbot.models.attachment import Attachment
     from wellbot.models.chat_message_attachment import ChatMessageAttachment
+
+    s3_prefixes: list[str] = []
 
     with get_session() as session:
         if not _verify_ownership(session, smry_id, emp_no):
@@ -309,6 +326,16 @@ def delete_conversation(smry_id: str, emp_no: str) -> None:
                 .all()
             ]
 
+            if file_nos:
+                # 행 삭제 전에 S3 경로를 확보한다(삭제 후에는 조회 불가)
+                s3_prefixes = [
+                    row[0]
+                    for row in session.query(Attachment.atch_file_url_addr)
+                    .filter(Attachment.atch_file_no.in_(file_nos))
+                    .all()
+                    if row[0]
+                ]
+
             session.query(ChatMessageAttachment).filter(
                 ChatMessageAttachment.chtb_tlk_id.in_(msg_ids)
             ).delete(synchronize_session="fetch")
@@ -325,3 +352,19 @@ def delete_conversation(smry_id: str, emp_no: str) -> None:
         session.query(ChatSummary).filter(
             ChatSummary.chtb_tlk_smry_id == smry_id
         ).delete()
+
+    # DB 커밋 후 S3 정리 — 실패해도 대화 삭제는 이미 끝났으므로 로그만 남긴다
+    # (여기서 예외를 올리면 "삭제했는데 실패했다"는 모순된 상태가 사용자에게 보인다).
+    for prefix in s3_prefixes:
+        try:
+            deleted = storage_service.delete_prefix(prefix)
+            log.info(
+                "conversation attachment objects deleted",
+                extra={"smry_id": smry_id, "prefix": prefix, "deleted": deleted},
+            )
+        except Exception:
+            log.warning(
+                "conversation attachment S3 cleanup failed",
+                extra={"smry_id": smry_id, "prefix": prefix},
+                exc_info=True,
+            )
