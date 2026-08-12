@@ -39,6 +39,9 @@ class ReportMakerConfig:
 
     agent_id: str = AGNT_ID
     model_id: str = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    # DB·화면에 남길 사람이 읽는 모델명. model_id 와 반드시 쌍으로 유지한다.
+    # (models.yaml 역조회로 못 구한다 — 이 모델은 채팅 피커 목록에 없다.)
+    model_name: str = "Claude Sonnet 4.5"
     region: str = ""
     read_timeout_sec: int = 300
 
@@ -75,12 +78,18 @@ def _load() -> ReportMakerConfig:
         or raw.get("model_id")
         or ReportMakerConfig.model_id
     )
+    model_name = (
+        os.environ.get("REPORT_MAKER_MODEL_NAME")
+        or raw.get("model_name")
+        or ReportMakerConfig.model_name
+    )
     memory_id = os.environ.get("REPORT_MAKER_MEMORY_ID") or raw.get("memory_id", "") or ""
     region = os.environ.get("AWS_REGION") or raw.get("region", "") or ""
 
     return ReportMakerConfig(
         agent_id=raw.get("agent_id", ReportMakerConfig.agent_id),
         model_id=model_id,
+        model_name=model_name,
         region=region,
         read_timeout_sec=int(raw.get("read_timeout_sec", ReportMakerConfig.read_timeout_sec)),
         max_tokens_outline=int(raw.get("max_tokens_outline", ReportMakerConfig.max_tokens_outline)),

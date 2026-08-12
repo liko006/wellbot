@@ -376,7 +376,12 @@ class ChatState(rx.State):
     def trigger_label(self) -> str:
         """모델 선택 트리거 버튼 라벨"""
         label = self.selected_model
-        if self.thinking_enabled and self.model_supports_thinking:
+        # 끌 수 없는 모델(항상 사고)에서는 '확장'이 사용자의 선택이 아니므로 표기하지 않는다.
+        if (
+            self.thinking_enabled
+            and self.model_supports_thinking
+            and not self.model_thinking_locked
+        ):
             label += " 확장"
         return label
 
@@ -409,6 +414,16 @@ class ChatState(rx.State):
         """선택 모델이 adaptive thinking(effort 제어) 모델인지 여부"""
         m = self._selected_model_config()
         return bool(m and m.thinking_mode == "adaptive")
+
+    @rx.var
+    def model_thinking_locked(self) -> bool:
+        """선택 모델이 사고를 끄지 않는 모델인지 여부 (models.yaml thinking_always_on).
+
+        True 면 토글을 '켜진 채로' 비활성화한다 — 미지원(Nova)과 시각은 같지만
+        의미가 반대라, 체크 상태와 설명 문구로 구분한다.
+        """
+        m = self._selected_model_config()
+        return bool(m and m.thinking and m.thinking_always_on)
 
     @rx.var
     def model_has_top_p(self) -> bool:
@@ -481,7 +496,10 @@ class ChatState(rx.State):
 
     @rx.var
     def current_effort_index(self) -> int:
-        """유효 effort 의 슬라이더 인덱스 (0=low ~ 3=xhigh)"""
+        """유효 effort 의 슬라이더 인덱스 (0=low ~ 2=high).
+
+        프리셋 밖의 저장값(예: 과거의 xhigh)은 high 로 폴백한다.
+        """
         ov = parse_overrides(self.model_settings_raw).get(self.selected_model, {})
         m = self._selected_model_config()
         eff = str(ov.get("effort", m.effort if m else "high"))

@@ -25,6 +25,8 @@ class CheckerConfig:
 
     agent_id: str = "RPT_INTEG_CHK"
     model_id: str = "global.anthropic.claude-opus-4-8"
+    # DB·결과 HTML 에 남길 사람이 읽는 모델명. model_id 와 반드시 쌍으로 유지한다.
+    model_name: str = "Claude Opus 4.8"
     region: str = ""
     max_tokens: int = 8192
     temperature: float | None = None
@@ -53,6 +55,7 @@ def _load() -> CheckerConfig:
     return CheckerConfig(
         agent_id=raw.get("agent_id", CheckerConfig.agent_id),
         model_id=raw.get("model_id", CheckerConfig.model_id),
+        model_name=raw.get("model_name", CheckerConfig.model_name),
         region=raw.get("region", "") or "",
         max_tokens=int(raw.get("max_tokens", CheckerConfig.max_tokens)),
         temperature=raw.get("temperature", None),

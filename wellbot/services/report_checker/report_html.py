@@ -103,7 +103,7 @@ def generate_html(
     ac = len(result.attention_errors)
     ntc = len(result.notation_errors)
     src = _esc(source_file)
-    model = _esc(cfg.model_id)
+    model = _esc(cfg.model_name)
 
     empty_typo = '<p class="empty"><em>✓</em>오탈자가 발견되지 않았습니다.</p>'
     typo_table = f"""

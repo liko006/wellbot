@@ -11,6 +11,8 @@ agent_id: "RPT_INTEG_CHK"
 # ── 모델 ──
 # Bedrock Converse API 로 호출. inference profile id 를 사용한다.
 model_id: "global.anthropic.claude-opus-4-8"
+# DB·결과 HTML 에 남길 표시용 이름. model_id 와 쌍으로 유지할 것.
+model_name: "Claude Opus 4.8"
 # region 미지정 시 AWS_REGION → AWS_DEFAULT_REGION → us-east-1 순으로 폴백.
 region: ""
 max_tokens: 8192          # JSON 잘림 방지를 위해 원본(4096) 대비 상향

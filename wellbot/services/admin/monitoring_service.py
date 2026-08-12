@@ -37,10 +37,13 @@ WINDOW_SECONDS: dict[str, float | None] = {
 }
 
 # Bedrock 모델별 추정 단가 (USD / 1M tokens). 대략치이며 운영 단가로 교체 가능.
+# models.yaml 에서 제거된 모델도 남겨둔다 — 지난 기간 로그를 집계할 때 필요.
 _MODEL_RATES: dict[str, tuple[float, float]] = {
-    "Claude Opus 4.8": (15.0, 75.0),
-    "Claude Opus 4.7": (15.0, 75.0),
-    "Claude Opus 4.6": (15.0, 75.0),
+    "Claude Sonnet 5": (3.0, 15.0),
+    "Claude Opus 5": (5.0, 25.0),
+    "Claude Opus 4.8": (5.0, 25.0),
+    "Claude Opus 4.7": (5.0, 25.0),
+    "Claude Opus 4.6": (5.0, 25.0),
     "Claude Sonnet 4.5": (3.0, 15.0),
     "Amazon Nova Pro": (0.8, 3.2),
     "Amazon Nova Lite": (0.06, 0.24),

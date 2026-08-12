@@ -40,7 +40,14 @@ class ModelConfig:
     #                (Opus 4.6+/Sonnet 4.6+; Opus 4.7/4.8 은 manual 전송 시 400 에러)
     thinking_mode: str = "manual"
     thinking_budget: int = 0           # manual 모드 전용
-    effort: str = "high"               # adaptive 모드 thinking 깊이 (low|medium|high|xhigh|max)
+    # adaptive 모드 thinking 깊이. UI 노출은 low|medium|high 만 —
+    # xhigh·max 는 Opus 5/4.6 전용이라 Opus 4.7/4.8 에 보내면 에러.
+    effort: str = "high"
+    # 사고를 끄지 않는 모델 — API 가 못 끄거나(Sonnet 5), 끄지 않기로 한 정책(Opus 5).
+    # True 면 '확장 사고' 토글과 무관하게 항상 adaptive 경로를 탄다.
+    # False(기본)면 토글 OFF 시 thinking 필드를 보내지 않고, 그러면 사고하지 않는다
+    # (Opus 4.7/4.8 dev 실측 확인).
+    thinking_always_on: bool = False
     top_p: float | None = None
     # Opus 4.7/4.8·Sonnet 5·Fable 5 등 신형 모델은 temperature/top_p/top_k 샘플링
     # 파라미터를 폐기(deprecated)했으며, 전송 시 ConverseStream 이 ValidationException

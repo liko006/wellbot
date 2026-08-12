@@ -1,13 +1,14 @@
 # report_maker 서비스 설정
 #
 # 리소스 식별자(memory_id 등 환경별 값)는 환경변수로 오버라이드 가능:
-#   REPORT_MAKER_MODEL_ID, REPORT_MAKER_MEMORY_ID, AWS_REGION
+#   REPORT_MAKER_MODEL_ID, REPORT_MAKER_MODEL_NAME, REPORT_MAKER_MEMORY_ID, AWS_REGION
 # S3 버킷/prefix 는 앱 storage_service(환경변수 S3_KEY_PREFIX)를 재사용
 
 agent_id: "RPT_DRFT_GEN"
 
 # LLM
 model_id: "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+model_name: "Claude Sonnet 4.5" # DB·화면 표시용. model_id 와 쌍으로 유지할 것
 region: ""                      # 빈 값이면 기본 자격증명 체인/AWS_REGION 사용
 read_timeout_sec: 300
 

@@ -17,6 +17,7 @@ from wellbot.components.chat.kb_panels import (
     kb_upload_panel,
 )
 from wellbot.state.chat_helpers.model_params import (
+    EFFORT_PRESETS,
     MAX_TOKENS_PRESETS,
     THINKING_BUDGET_PRESETS,
 )
@@ -70,7 +71,12 @@ def _model_item(model: ModelInfo) -> rx.Component:
 
 
 def _thinking_toggle_row() -> rx.Component:
-    """확장 사고 토글 행. 미지원 모델에서는 비활성화 상태로 표시."""
+    """확장 사고 토글 행.
+
+    비활성 상태가 두 가지이며 의미가 반대다 — 체크 상태와 설명으로 구분한다.
+      · 미지원 모델(Nova)      : 꺼진 채 잠김
+      · 끌 수 없는 모델(Sonnet 5): 켜진 채 잠김
+    """
     return rx.hstack(
         rx.vstack(
             rx.text(
@@ -86,7 +92,11 @@ def _thinking_toggle_row() -> rx.Component:
             rx.text(
                 rx.cond(
                     ChatState.model_supports_thinking,
-                    "복잡한 작업을 위해 더 오래 사고",
+                    rx.cond(
+                        ChatState.model_thinking_locked,
+                        "항상 확장 사고",
+                        "복잡한 작업을 위해 더 오래 사고",
+                    ),
                     "확장 사고 미지원 모델",
                 ),
                 font_size="11px",
@@ -100,11 +110,12 @@ def _thinking_toggle_row() -> rx.Component:
         rx.switch(
             checked=rx.cond(
                 ChatState.model_supports_thinking,
-                ChatState.thinking_enabled,
+                ChatState.model_thinking_locked | ChatState.thinking_enabled,
                 False,
             ),
             on_change=ChatState.toggle_thinking,
-            disabled=~ChatState.model_supports_thinking,
+            disabled=(~ChatState.model_supports_thinking)
+            | ChatState.model_thinking_locked,
             size="1",
             flex_shrink="0",
         ),
@@ -404,7 +415,7 @@ def _model_settings_panel() -> rx.Component:
                         ChatState.current_temperature_display,
                     ),
                 ),
-                # Effort (adaptive 모델) — 4단계 눈금 슬라이더
+                # Effort (adaptive 모델) — 프리셋 눈금 슬라이더
                 rx.cond(
                     ChatState.model_is_adaptive,
                     _setting_row(
@@ -413,7 +424,7 @@ def _model_settings_panel() -> rx.Component:
                         rx.slider(
                             value=[ChatState.current_effort_index],
                             min=0,
-                            max=3,
+                            max=len(EFFORT_PRESETS) - 1,
                             step=1,
                             on_change=ChatState.set_model_effort_index,
                             size="1",

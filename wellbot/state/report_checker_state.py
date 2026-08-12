@@ -370,7 +370,7 @@ class ReportCheckerState(rx.State):
                 emp_no=emp_no,
                 agent_id=cfg.agent_id,
                 source_file=source_name,
-                model_name=cfg.model_id,
+                model_name=cfg.model_name,
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
                 total_tokens=usage.total_tokens,

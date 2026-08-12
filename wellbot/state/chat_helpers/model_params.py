@@ -19,11 +19,13 @@ TEMPERATURE_PRESETS = [
 TOP_P_PRESETS = ["0.5", "0.6", "0.7", "0.8", "0.9", "1.0"]
 MAX_TOKENS_PRESETS = ["8192", "16384", "32768", "65536"]
 THINKING_BUDGET_PRESETS = ["2048", "4096", "8192", "16384"]
-EFFORT_PRESETS = ["low", "medium", "high", "xhigh"]
-# effort 슬라이더 눈금 라벨 (0~3 인덱스 = EFFORT_PRESETS 순서)
-EFFORT_LABELS = {"low": "Low", "medium": "Medium", "high": "High", "xhigh": "Extra high"}
+# 모델별로 지원이 갈리므로 UI 에는 전 모델 공통인 3단만 노출한다.
+EFFORT_PRESETS = ["low", "medium", "high"]
+# effort 슬라이더 눈금 라벨 (0~2 인덱스 = EFFORT_PRESETS 순서)
+EFFORT_LABELS = {"low": "Low", "medium": "Medium", "high": "High"}
 
-# 현재 Claude 모델(최소 Sonnet 4.5 = 64k output)에 안전한 상한.
+# 앱 차원의 안전 상한. 현재 Claude 모델은 128k output 까지 지원하지만
+# 비용·지연을 감안해 그 아래로 묶는다.
 _MAX_TOKENS_CEILING = 65536
 _THINKING_BUDGET_MIN = 1024
 

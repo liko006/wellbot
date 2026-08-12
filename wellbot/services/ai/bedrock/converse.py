@@ -100,8 +100,12 @@ def stream_one_turn(
     #             — effort 는 반드시 별도 output_config 에. thinking 안에 넣으면 ValidationException.
     #             — Opus 4.7/4.8 은 manual(budget_tokens) 전송 시 400 이므로 반드시 이 경로.
     #   manual:   thinking:{type:enabled, budget_tokens} (레거시: Sonnet 4.5/Opus 4.5)
+    #
+    # thinking_always_on 모델(Sonnet 5·Opus 5)은 토글을 무시하고 항상 켠다. effort 를
+    # 안 실으면 모델 기본값(high)이 적용돼 통제를 잃으므로 반드시 adaptive 경로를 타야 한다.
+    # 그 외 모델은 토글 OFF 시 thinking 필드를 아예 보내지 않는다(= 사고하지 않음).
     thinking_active = False
-    if model.thinking and thinking_enabled:
+    if model.thinking and (thinking_enabled or model.thinking_always_on):
         if model.thinking_mode == "adaptive":
             adaptive_fields: dict[str, Any] = {"thinking": {"type": "adaptive"}}
             if model.effort:
