@@ -942,12 +942,18 @@ class ChatState(rx.State):
             has_more_older=has_more if older_msgs else False,
         )
 
-    def delete_conversation(self, conv_id: str) -> None:
-        """대화 삭제. DB 에 저장된 경우 DB 에서도 제거"""
+    async def delete_conversation(self, conv_id: str) -> None:
+        """대화 삭제. DB 에 저장된 경우 DB(+첨부 S3 파생물)에서도 제거.
+
+        삭제가 DB 4개 테이블 + 첨부 수만큼의 S3 호출로 무거워졌으므로 스레드로 넘긴다
+        (이벤트 루프에서 돌리면 삭제 한 번이 접속자 전원의 스트리밍을 멈춘다).
+        """
         conv = next((c for c in self.conversations if c.id == conv_id), None)
         if conv and conv.is_persisted:
             try:
-                chat_service.delete_conversation(conv_id, self._emp_no)
+                await asyncio.to_thread(
+                    chat_service.delete_conversation, conv_id, self._emp_no
+                )
             except Exception:
                 log.warning("대화 삭제 실패 conv_id=%s", conv_id, exc_info=True)
         self.conversations = [c for c in self.conversations if c.id != conv_id]
