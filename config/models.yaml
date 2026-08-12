@@ -1,27 +1,22 @@
 # max_tokens = thinking + response
+#
+# thinking_always_on — 사고를 끄지 않는 모델 (기본값: false)
+#   true  : '확장 사고' 토글이 켜진 채 잠기고, 토글과 무관하게 항상 사고한다
+#   false : 토글 OFF 면 thinking 을 보내지 않는다 = 사고하지 않음 (Opus 4.7/4.8)
 
 models:
-  - name: "Claude Sonnet 4.5"
-    description: "일상적인 작업에 가장 효율적"
+  - name: "Claude Sonnet 5"
+    description: "일상 작업에 가장 효율적인 최신 모델"
     provider: "bedrock"
-    model_id: "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-    context_window: 200000
-    max_tokens: 8192
-    temperature: 0.5
-    thinking: true
-    thinking_budget: 4096
-    supports_vision: true
-    supports_document: true
-
-  - name: "Claude Opus 4.6"
-    description: "복잡한 문서와 전문적인 분석 작업"
-    provider: "bedrock"
-    model_id: "global.anthropic.claude-opus-4-6-v1"
+    model_id: "global.anthropic.claude-sonnet-5"
     context_window: 1000000
-    max_tokens: 16384
+    max_tokens: 32768
     temperature: 0.4
+    supports_temperature: false
     thinking: true
-    thinking_budget: 8192  
+    thinking_mode: "adaptive"
+    thinking_always_on: true        # API 가 끄는 것을 지원하지 않는다
+    effort: "medium"
     supports_vision: true
     supports_document: true
 
@@ -31,8 +26,8 @@ models:
     model_id: "global.anthropic.claude-opus-4-7"
     context_window: 1000000
     max_tokens: 32768
-    temperature: 0.4         
-    supports_temperature: false 
+    temperature: 0.4
+    supports_temperature: false
     thinking: true
     thinking_mode: "adaptive"
     effort: "high"
@@ -40,15 +35,32 @@ models:
     supports_document: true
 
   - name: "Claude Opus 4.8"
-    description: "최신·최고 성능의 플래그십 모델"
+    description: "복잡한 문서와 전문적인 분석 작업"
     provider: "bedrock"
     model_id: "global.anthropic.claude-opus-4-8"
     context_window: 1000000
     max_tokens: 32768
-    temperature: 0.4         
-    supports_temperature: false 
+    temperature: 0.4
+    supports_temperature: false
     thinking: true
     thinking_mode: "adaptive"
+    effort: "high"
+    supports_vision: true
+    supports_document: true
+
+  - name: "Claude Opus 5"
+    description: "최고 성능의 최신 플래그십 모델"
+    provider: "bedrock"
+    model_id: "global.anthropic.claude-opus-5"
+    context_window: 1000000
+    max_tokens: 32768
+    temperature: 0.4
+    supports_temperature: false
+    thinking: true
+    thinking_mode: "adaptive"
+    # 최상위 모델을 사고 없이 쓸 이유가 없어 항상 켠다(정책).
+    # 깊이 조절이 필요하면 effort 를 낮춘다 — low 면 쉬운 질문에서 모델이 사고를 건너뛴다.
+    thinking_always_on: true
     effort: "high"
     supports_vision: true
     supports_document: true
