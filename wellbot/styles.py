@@ -57,18 +57,23 @@ GLOBAL_STYLE = {
         "background_color": "#cde9fb",
         "color": "#0a2540",
     },
+    # 폭 10px 중 thumb 의 투명 테두리 2px×2 를 뺀 6px 이 실제로 보이는 두께다.
     "::-webkit-scrollbar": {
-        "width": "6px",
-        "height": "6px",
+        "width": "10px",
+        "height": "10px",
     },
     "::-webkit-scrollbar-track": {
         "background": "transparent",
     },
     # Chrome/Edge 전용 셀렉터(사내 표준 브라우저 기준). 색은 반드시 CSS 변수 문자열로
     # — COLORS 주석 참고.
+    # 스크롤바에는 margin 이 없다(브라우저가 그리는 영역). 투명 테두리 + padding-box
+    # 클립으로 안쪽만 칠해 화면 끝에서 떨어뜨린다.
     "::-webkit-scrollbar-thumb": {
         "background": COLORS["scrollbar_thumb"],
-        "border_radius": "3px",
+        "border": "2px solid transparent",
+        "background_clip": "padding-box",
+        "border_radius": "5px",
     },
     "::-webkit-scrollbar-thumb:hover": {
         "background": COLORS["scrollbar_thumb_hover"],
