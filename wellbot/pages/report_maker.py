@@ -7,6 +7,7 @@ chat_layout 으로 래핑(표준 wellbot 사이드바 유지)하고, 메인 영�
 import reflex as rx
 
 from wellbot.components.layout import chat_layout
+from wellbot.constants import AI_DISCLAIMER_TEXT
 from wellbot.state.report_maker_scripts import (
     REPORT_MAKER_AUTOSCROLL_SCRIPT,
     REPORT_MAKER_SCRIPT,
@@ -472,6 +473,12 @@ def _chat_view() -> rx.Component:
     return rx.vstack(
         # 상단 바
         rx.hstack(
+            # 오류 탐지·스타일 편집 페이지와 같은 위치(좌상단 첫 요소)의 뒤로 가기.
+            # 이 화면은 채팅이라 제목이 없으므로 아이콘만 툴바에 얹는다.
+            rx.link(
+                rx.icon("arrow-left", size=18, color=COLORS["text_secondary"]),
+                href="/ai-services",
+            ),
             _template_menu(),
             rx.button(
                 rx.icon("plus", size=16), "새 보고서",
@@ -654,6 +661,14 @@ def _chat_view() -> rx.Component:
             max_width=SPACING["message_max_width"],
             margin_x="auto",
             _focus_within={"border_color": COLORS["accent_hover"]},
+        ),
+        # 하단 안내 텍스트 (일반 채팅 입력창과 동일 문구·크기)
+        rx.text(
+            AI_DISCLAIMER_TEXT,
+            size="1",
+            color=COLORS["text_secondary"],
+            text_align="center",
+            width="100%",
         ),
         width="100%",
         height="100%",
