@@ -23,7 +23,12 @@ COLORS = {
     "tool_btn_bg": rx.color("gray", 4),
     "tool_btn_hover": rx.color("gray", 5),
     "category_text": rx.color("gray", 9),
-    "scrollbar_thumb": rx.color("gray", 6),
+    # 스크롤바만 rx.color() 가 아닌 CSS 변수 문자열이다 — GLOBAL_STYLE(전역 스타일시트)은
+    # Var 를 해석하지 못해 str(rx.color(...)) 가 무효값이 되고 브라우저가 선언을 버린다
+    # (폭만 잡히고 아무것도 안 그려짐). --gray-N 은 Radix 가 gray_color 설정(slate)에
+    # 맞춰 정의하므로 테마 톤도 그대로 따라간다. rx.color() 로 되돌리지 말 것.
+    "scrollbar_thumb": "var(--gray-8)",
+    "scrollbar_thumb_hover": "var(--gray-10)",
 }
 
 SPACING = {
@@ -52,19 +57,26 @@ GLOBAL_STYLE = {
         "background_color": "#cde9fb",
         "color": "#0a2540",
     },
+    # 폭 10px 중 thumb 의 투명 테두리 2px×2 를 뺀 6px 이 실제로 보이는 두께다.
     "::-webkit-scrollbar": {
-        "width": "6px",
-        "height": "6px",
+        "width": "10px",
+        "height": "10px",
     },
     "::-webkit-scrollbar-track": {
         "background": "transparent",
     },
+    # Chrome/Edge 전용 셀렉터(사내 표준 브라우저 기준). 색은 반드시 CSS 변수 문자열로
+    # — COLORS 주석 참고.
+    # 스크롤바에는 margin 이 없다(브라우저가 그리는 영역). 투명 테두리 + padding-box
+    # 클립으로 안쪽만 칠해 화면 끝에서 떨어뜨린다.
     "::-webkit-scrollbar-thumb": {
-        "background": str(COLORS["scrollbar_thumb"]),
-        "border_radius": "3px",
+        "background": COLORS["scrollbar_thumb"],
+        "border": "2px solid transparent",
+        "background_clip": "padding-box",
+        "border_radius": "5px",
     },
     "::-webkit-scrollbar-thumb:hover": {
-        "background": str(rx.color("gray", 8)),
+        "background": COLORS["scrollbar_thumb_hover"],
     },
     ".codeblock-wrapper pre": {
         "background": "transparent !important",

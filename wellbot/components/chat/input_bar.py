@@ -16,6 +16,7 @@ from wellbot.components.chat.kb_panels import (
     kb_flyout,
     kb_upload_panel,
 )
+from wellbot.constants import AI_DISCLAIMER_TEXT
 from wellbot.state.chat_helpers.model_params import (
     EFFORT_PRESETS,
     MAX_TOKENS_PRESETS,
@@ -724,7 +725,7 @@ def input_bar() -> rx.Component:
             ),
                 # 하단 안내 텍스트
                 rx.text(
-                    "WellBot은 실수할 수 있습니다. WellBot의 출력 결과를 확인하고 활용하세요.",
+                    AI_DISCLAIMER_TEXT,
                     size="1",
                     color=COLORS["text_secondary"],
                     text_align="center",

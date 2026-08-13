@@ -7,14 +7,13 @@ chat_layout 으로 래핑(표준 wellbot 사이드바 유지)하고, 메인 영�
 import reflex as rx
 
 from wellbot.components.layout import chat_layout
+from wellbot.constants import AI_DISCLAIMER_TEXT
 from wellbot.state.report_maker_scripts import (
     REPORT_MAKER_AUTOSCROLL_SCRIPT,
     REPORT_MAKER_SCRIPT,
 )
 from wellbot.state.report_maker_state import ReportMakerState, ReportMessage
 from wellbot.styles import COLORS, MARKDOWN_COMPONENT_MAP, SPACING
-
-_ACCENT = "#E97055"
 
 
 def _template_menu_row(t) -> rx.Component:
@@ -144,7 +143,7 @@ def _setup_view() -> rx.Component:
             ),
             # 첫 사용 — 보고서 유형 생성
             rx.vstack(
-                rx.icon("sparkles", size=32, color=_ACCENT),
+                rx.icon("sparkles", size=32, color=COLORS["accent"]),
                 rx.heading("보고서 문구 작성 지원", size="6", color=COLORS["text_primary"]),
                 rx.text(
                     "첫 보고서 유형을 만들어 시작하세요.",
@@ -158,7 +157,7 @@ def _setup_view() -> rx.Component:
                             size="3", flex="1",
                         ),
                         rx.button("시작하기", type="submit", size="3",
-                                  style={"background": _ACCENT, "color": "white"}),
+                                  style={"background": COLORS["text_primary"], "color": COLORS["main_bg"]}),
                         width="100%",
                     ),
                     on_submit=ReportMakerState.create_template,
@@ -403,7 +402,7 @@ def _rename_dialog() -> rx.Component:
                     rx.button("취소", variant="soft", color_scheme="gray",
                               on_click=ReportMakerState.set_rename_open(False)),
                     rx.button("저장", on_click=ReportMakerState.commit_rename,
-                              style={"background": _ACCENT, "color": "white"}),
+                              style={"background": COLORS["text_primary"], "color": COLORS["main_bg"]}),
                     spacing="2", justify="end", width="100%",
                 ),
                 spacing="3", width="100%",
@@ -472,6 +471,12 @@ def _chat_view() -> rx.Component:
     return rx.vstack(
         # 상단 바
         rx.hstack(
+            # 오류 탐지·스타일 편집 페이지와 같은 위치(좌상단 첫 요소)의 뒤로 가기.
+            # 이 화면은 채팅이라 제목이 없으므로 아이콘만 툴바에 얹는다.
+            rx.link(
+                rx.icon("arrow-left", size=18, color=COLORS["text_secondary"]),
+                href="/ai-services",
+            ),
             _template_menu(),
             rx.button(
                 rx.icon("plus", size=16), "새 보고서",
@@ -655,6 +660,14 @@ def _chat_view() -> rx.Component:
             margin_x="auto",
             _focus_within={"border_color": COLORS["accent_hover"]},
         ),
+        # 하단 안내 텍스트 (일반 채팅 입력창과 동일 문구·크기)
+        rx.text(
+            AI_DISCLAIMER_TEXT,
+            size="1",
+            color=COLORS["text_secondary"],
+            text_align="center",
+            width="100%",
+        ),
         width="100%",
         height="100%",
         max_width="900px",
@@ -685,7 +698,9 @@ def report_maker_page() -> rx.Component:
                 ),
                 width="100%",
                 height="100%",
-                padding="1.5em 2em",
+                # 하단만 1em — 일반 채팅 입력 바(input_bar padding_bottom="1em")와
+                # 안내 문구의 바닥 간격을 맞춘다. 상단·좌우는 기존 값 유지.
+                padding="1.5em 2em 1em",
             )
         ),
     )
@@ -861,7 +876,7 @@ def report_maker_style_page() -> rx.Component:
                                 type="submit",
                                 disabled=ReportMakerState.is_streaming,
                                 size="3",
-                                style={"background": _ACCENT, "color": "white"},
+                                style={"background": COLORS["text_primary"], "color": COLORS["main_bg"]},
                             ),
                             width="100%",
                         ),

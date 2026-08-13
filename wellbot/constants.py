@@ -27,6 +27,11 @@ MESSAGE_SEQ_MAX_RETRIES: int = 5   # 메시지 seq 동시 발급 충돌 시 재�
 # ── UI ──
 SCROLL_THRESHOLD: int = 100        # 자동 스크롤 유지 판정(px)
 BTN_THRESHOLD: int = 30            # 스크롤 버튼 표시 판정(px)
+# 입력창 하단 고지. 채팅·보고서 draft 등 LLM 입력창이 있는 화면이 공유하므로
+# 문구가 갈라지지 않도록 한 곳에서 관리한다(스타일은 각 화면에서 지정).
+AI_DISCLAIMER_TEXT: str = (
+    "WellBot은 실수할 수 있습니다. WellBot의 출력 결과를 확인하고 활용하세요."
+)
 
 # ── 파일 첨부 ──
 FILE_MAX_SIZE_MB: int = 50                # 파일 단일 최대 크기
