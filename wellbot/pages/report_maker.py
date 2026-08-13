@@ -15,8 +15,6 @@ from wellbot.state.report_maker_scripts import (
 from wellbot.state.report_maker_state import ReportMakerState, ReportMessage
 from wellbot.styles import COLORS, MARKDOWN_COMPONENT_MAP, SPACING
 
-_ACCENT = "#E97055"
-
 
 def _template_menu_row(t) -> rx.Component:
     """드롭다운의 유형 1행 — 선택(전환) + 작성 스타일 바로가기 + 이름 변경 + 삭제(확인)."""
@@ -145,7 +143,7 @@ def _setup_view() -> rx.Component:
             ),
             # 첫 사용 — 보고서 유형 생성
             rx.vstack(
-                rx.icon("sparkles", size=32, color=_ACCENT),
+                rx.icon("sparkles", size=32, color=COLORS["accent"]),
                 rx.heading("보고서 문구 작성 지원", size="6", color=COLORS["text_primary"]),
                 rx.text(
                     "첫 보고서 유형을 만들어 시작하세요.",
@@ -159,7 +157,7 @@ def _setup_view() -> rx.Component:
                             size="3", flex="1",
                         ),
                         rx.button("시작하기", type="submit", size="3",
-                                  style={"background": _ACCENT, "color": "white"}),
+                                  style={"background": COLORS["text_primary"], "color": COLORS["main_bg"]}),
                         width="100%",
                     ),
                     on_submit=ReportMakerState.create_template,
@@ -404,7 +402,7 @@ def _rename_dialog() -> rx.Component:
                     rx.button("취소", variant="soft", color_scheme="gray",
                               on_click=ReportMakerState.set_rename_open(False)),
                     rx.button("저장", on_click=ReportMakerState.commit_rename,
-                              style={"background": _ACCENT, "color": "white"}),
+                              style={"background": COLORS["text_primary"], "color": COLORS["main_bg"]}),
                     spacing="2", justify="end", width="100%",
                 ),
                 spacing="3", width="100%",
@@ -700,7 +698,9 @@ def report_maker_page() -> rx.Component:
                 ),
                 width="100%",
                 height="100%",
-                padding="1.5em 2em",
+                # 하단만 1em — 일반 채팅 입력 바(input_bar padding_bottom="1em")와
+                # 안내 문구의 바닥 간격을 맞춘다. 상단·좌우는 기존 값 유지.
+                padding="1.5em 2em 1em",
             )
         ),
     )
@@ -876,7 +876,7 @@ def report_maker_style_page() -> rx.Component:
                                 type="submit",
                                 disabled=ReportMakerState.is_streaming,
                                 size="3",
-                                style={"background": _ACCENT, "color": "white"},
+                                style={"background": COLORS["text_primary"], "color": COLORS["main_bg"]},
                             ),
                             width="100%",
                         ),
