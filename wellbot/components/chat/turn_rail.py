@@ -20,30 +20,31 @@ import reflex as rx
 from wellbot.state.chat_models import TurnInfo
 from wellbot.styles import COLORS, SPACING
 
-_TICK_WIDTH = "14px"
-_TICK_HEIGHT = "2px"
+_TICK_WIDTH = "18px"
+# 1px 로 둔다 — 1.5px 같은 소수값은 1x 디스플레이에서 틱마다 1px/2px 로 다르게
+# 반올림돼 25개를 세로로 쌓았을 때 두께가 들쭉날쭉해진다.
+_TICK_HEIGHT = "1px"
+# 틱 위아래 여백. 인접한 틱 사이 간격은 이 값의 2배가 된다.
+_TICK_GAP = "2px"
 _POPUP_WIDTH = "260px"
 
 
 def _tick(item: rx.Var[TurnInfo]) -> rx.Component:
     """질문 1개에 대응하는 가로 틱.
 
-    보이는 두께는 2px 지만 상하 padding 으로 클릭 영역을 8px 로 넓힌다
-    (배경은 content-box 에만 칠해 두께는 그대로).
+    바깥 상자가 **클릭 영역 + 틱 사이 간격**을, 안쪽 막대가 실제로 보이는 눈금을 맡는다.
+    한 요소에 padding + `background-clip: content-box` 로 처리하면 `box-sizing:
+    border-box` 에서 안쪽 높이가 0 으로 눌려 아무것도 안 그려진다 — 그래서 두 요소로 나눴다.
+    (실제 색·크기는 컨테이너 스타일에 모아 뒀다.)
     """
     return rx.box(
+        rx.box(class_name="turn-bar"),
         class_name="turn-tick",
         custom_attrs={"data-turn": item.index},
         style={
-            "width": _TICK_WIDTH,
-            "height": _TICK_HEIGHT,
-            "padding": "3px 0",
-            "background": "var(--gray-7)",
-            "background_clip": "content-box",
-            "border_radius": "1px",
+            "padding": f"{_TICK_GAP} 0",
             "cursor": "pointer",
             "flex_shrink": "0",
-            "transition": "background 0.12s ease",
         },
     )
 
@@ -61,7 +62,7 @@ def _more_indicator() -> rx.Component:
         style={
             "font_size": "11px",
             "line_height": "1",
-            "color": "var(--gray-7)",
+            "color": "var(--gray-8)",
             "padding": "2px 0 4px 0",
             "cursor": "default",
             "user_select": "none",
@@ -117,7 +118,9 @@ def turn_rail(
             class_name="turn-popup",
             style={
                 "position": "absolute",
-                "right": "calc(100% + 10px)",
+                # 레일 **위에 바로** 겹쳐 띄운다. 레일 옆으로 띄우면 마우스가 레일에서
+                # 팝업으로 건너가는 사이 hover 가 끊겨 팝업이 닫힌다.
+                "right": "0",
                 "top": "50%",
                 "transform": "translateY(-50%)",
                 "width": _POPUP_WIDTH,
@@ -142,8 +145,17 @@ def turn_rail(
             "margin_bottom": "4px",
             # 점등(.is-active)은 JS 가 클래스로 토글한다. 색은 CSS 변수 문자열로 —
             # Radix 가 gray_color 설정에 맞춰 정의하므로 테마 톤을 따라간다.
-            "& .turn-tick:hover": {"background": "var(--gray-10)"},
-            "& .turn-tick.is-active": {"background": "var(--gray-12)"},
+            # 눈금 막대. 비활성도 또렷해야 "여기 목차가 있다"가 인지되므로
+            # 배경(gray 1~2)과 충분히 대비되는 단계를 쓴다.
+            "& .turn-bar": {
+                "width": _TICK_WIDTH,
+                "height": _TICK_HEIGHT,
+                "border_radius": "1px",
+                "background": "var(--gray-8)",
+                "transition": "background 0.12s ease",
+            },
+            "& .turn-tick:hover .turn-bar": {"background": "var(--gray-11)"},
+            "& .turn-tick.is-active .turn-bar": {"background": "var(--gray-12)"},
             "& .turn-more.is-active": {"color": "var(--gray-12)"},
             # 현재 위치·마우스 오버를 같은 배경으로 (마우스 위치로 구분되고,
             # 영역을 벗어나면 팝업 자체가 닫히므로 혼동이 없다)
