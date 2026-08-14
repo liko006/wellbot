@@ -20,12 +20,12 @@ import reflex as rx
 from wellbot.state.chat_models import TurnInfo
 from wellbot.styles import COLORS, SPACING
 
-_TICK_WIDTH = "18px"
-# 1px 로 둔다 — 1.5px 같은 소수값은 1x 디스플레이에서 틱마다 1px/2px 로 다르게
-# 반올림돼 25개를 세로로 쌓았을 때 두께가 들쭉날쭉해진다.
-_TICK_HEIGHT = "1px"
-# 틱 위아래 여백. 인접한 틱 사이 간격은 이 값의 2배가 된다.
-_TICK_GAP = "2px"
+# 아래 셋은 눈으로 맞춘 값이다. 소수 px 은 피한다 — 1x 디스플레이에서 틱마다 다르게
+# 반올림돼 세로로 쌓았을 때 두께가 들쭉날쭉해진다.
+_TICK_WIDTH = "16px"
+_TICK_HEIGHT = "2px"
+# 틱 위아래 여백. 인접한 틱 사이 간격은 이 값의 2배(8px)가 된다.
+_TICK_GAP = "4px"
 _POPUP_WIDTH = "260px"
 
 
@@ -55,9 +55,11 @@ def _more_indicator() -> rx.Component:
     넘치는 건 항상 과거 질문이므로 레일 **위쪽**에 둔다. 클릭 동작은 없다
     (팝업과 기능이 겹치고 오조작 위험만 생긴다). 사용자가 접힌 구간을 보고 있으면
     JS 가 여기에 `.is-active` 를 붙인다 — 아무 틱도 안 켜지는 상태를 막는다.
+
+    글자는 세로 말줄임(U+22EE). 레일이 세로로 쌓이므로 가로 '···' 는 방향이 어긋난다.
     """
     return rx.box(
-        "···",
+        "⋮",
         class_name="turn-more",
         style={
             "font_size": "11px",

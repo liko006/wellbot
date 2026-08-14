@@ -32,8 +32,14 @@ AUTO_SCROLL_SCRIPT = """
     var NAV_TOLERANCE = 8;
     var NAV_OFFSET = 12;
     var MUTATION_DEBOUNCE_MS = 200;
+    // 점등 판정선의 위치(화면 높이 대비). 이 선에 걸린 질문의 틱이 켜진다.
+    // 값이 크면 다음 질문으로 일찍 넘어가고(= 이전 답변이 조금만 남아도 전환),
+    // 작으면 늦게 넘어간다. 단 이 값이 '한 턴의 평균 높이'보다 커지면, 틱/목록을
+    // 클릭해 질문을 맨 위로 올렸을 때 곧바로 다음 틱이 켜지는 역전이 생긴다.
+    // 답변이 짧은 대화일수록 그 경계가 낮아지므로 화면의 1/4 정도로 둔다.
+    var TURN_ANCHOR_RATIO = 0.25;
 
-    var SETUP_VERSION = 5;
+    var SETUP_VERSION = 6;
 
     // 팝업 열림 시 현재 질문이 보이도록 스크롤. el 이나 setup 상태에 의존하지 않아
     // setup() 바깥에 둔다(설정 재시도로 리스너가 중복 등록되지 않게).
@@ -92,9 +98,18 @@ AUTO_SCROLL_SCRIPT = """
         }
 
         function currentTurnIndex(turns) {
-            // viewport 상단(= scrollTop + NAV_OFFSET)에 앵커된 질문 인덱스.
-            // offsetTop 이 anchor 이하인 마지막 질문 = 현재 보고 있는 턴.
-            var anchor = el.scrollTop + NAV_OFFSET + NAV_TOLERANCE;
+            // 바닥에 붙어 있으면 무조건 최신 질문으로 본다.
+            // 마지막 질문+답변이 한 화면을 못 채우면 viewport 상단에는 '직전 답변'이
+            // 걸리므로, 앵커 규칙만 쓰면 맨 아래에 있는데 바로 위 틱이 켜져 어색하다.
+            if (distFromBottom() < BTN_THRESHOLD) return turns.length - 1;
+
+            // 판정선(화면 위에서 TURN_ANCHOR_RATIO 만큼 내려온 지점)에 걸린 질문.
+            // offsetTop 이 anchor 이하인 마지막 질문 = 그 선을 소유한 턴.
+            // 선을 맨 위(NAV_OFFSET)에 두면 다음 질문이 화면 한가운데 보이는데도
+            // 이전 답변 꼬리가 남아 있는 한 이전 틱이 켜져 있어 어색하다.
+            var anchor = el.scrollTop
+                + Math.max(NAV_OFFSET + NAV_TOLERANCE,
+                           el.clientHeight * TURN_ANCHOR_RATIO);
             var idx = -1;
             for (var i = 0; i < turns.length; i++) {
                 if (turns[i].offsetTop <= anchor) idx = i;
