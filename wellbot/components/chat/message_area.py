@@ -7,6 +7,7 @@
 import reflex as rx
 
 from wellbot.components.chat.message_bubble import message_bubble
+from wellbot.components.chat.turn_rail import turn_rail
 from wellbot.components.icons import north_star_icon
 from wellbot.state.chat_state import ChatState
 from wellbot.styles import COLORS, MARKDOWN_COMPONENT_MAP, SPACING
@@ -139,17 +140,27 @@ def _rail_button(
 
 
 def navigation_rail() -> rx.Component:
-    """채팅 영역 우측 사이드 네비게이션 레일.
+    """채팅 영역 우측 사이드 네비게이션.
 
-    - 이전 메시지(↑) / 다음 메시지(↓): 메시지 단위 이동
+    - 턴 레일: 질문이 일정 수 이상일 때만 노출. 질문 단위 점프 + 호버 목록
     - 최하단(⤓): 스크롤 끝으로 이동, 바닥에 있으면 비활성 표시
+
+    이전/다음 메시지 화살표(↑/↓)는 제거했다 — 턴 레일이 상위 호환이기 때문이다
+    (한 칸씩 이동 → 원하는 질문으로 직접 점프). 레일이 안 뜨는 짧은 대화에서는
+    스크롤만으로 충분하다. 반면 ⤓ 는 "진행 중인 답변으로 복귀"라는 다른 기능이라
+    레일이 대체하지 못하므로 남긴다.
     """
     return rx.box(
-        _rail_button("chevron-up", "nav-prev-btn", "이전 메시지"),
-        _rail_button("chevron-down", "nav-next-btn", "다음 메시지"),
-        _rail_button(
-            "chevrons-down", "scroll-to-bottom-btn", "최하단으로", margin_top="8px"
+        rx.cond(
+            ChatState.show_turn_rail,
+            turn_rail(
+                rail_items=ChatState.turn_rail_items,
+                all_items=ChatState.turn_items,
+                has_overflow=ChatState.turn_rail_overflow,
+            ),
+            rx.fragment(),
         ),
+        _rail_button("chevrons-down", "scroll-to-bottom-btn", "최하단으로"),
         id="navigation-rail",
         style={
             "position": "absolute",
@@ -158,6 +169,7 @@ def navigation_rail() -> rx.Component:
             "transform": "translateY(-50%)",
             "display": "flex",
             "flex_direction": "column",
+            "align_items": "center",
             "gap": "4px",
             "z_index": "10",
             "pointer_events": "auto",

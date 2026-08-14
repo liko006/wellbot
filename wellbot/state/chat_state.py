@@ -30,6 +30,9 @@ from wellbot.constants import (
     STREAM_FLUSH_INTERVAL_SEC,
     TITLE_MAX_LENGTH,
     TOOL_USE_MAX_ITERATIONS,
+    TURN_PREVIEW_MAX_CHARS,
+    TURN_RAIL_MAX_TICKS,
+    TURN_RAIL_MIN_TURNS,
     UPSTAGE_SUPPORTED_EXTS,
 )
 from wellbot.services.ai.bedrock import (
@@ -75,6 +78,7 @@ from wellbot.state.chat_models import (
     ModelInfo,
     PendingFile,
     PromptInfo,
+    TurnInfo,
     new_conversation,
 )
 
@@ -259,6 +263,41 @@ class ChatState(rx.State):
         if idx is None:
             return False
         return self.conversations[idx].has_more_older
+
+    # ── 턴 네비게이터 (우측 레일) ──
+    # 아래 var 들은 current_messages 에만 의존한다. 스트리밍 중에는 streaming_content 만
+    # 바뀌고 메시지 배열은 응답이 끝나야 갱신되므로, 토큰마다 재계산되지 않는다.
+
+    @rx.var
+    def turn_items(self) -> list[TurnInfo]:
+        """로드된 질문 목록 — 호버 팝업이 이 전체를 보여준다.
+
+        text 는 공백을 정규화(줄바꿈 제거)한 뒤 상한만큼 자른다. 팝업은 한 줄 +
+        CSS ellipsis 라 줄바꿈이 남아 있으면 표시가 깨지고, 상한이 없으면 긴 질문이
+        그대로 상태에 실린다(시각적 말줄임은 CSS 담당).
+        """
+        items: list[TurnInfo] = []
+        for m in self.current_messages:
+            if m.role != "user":
+                continue
+            text = " ".join(m.content.split())
+            items.append(TurnInfo(index=len(items), text=text[:TURN_PREVIEW_MAX_CHARS]))
+        return items
+
+    @rx.var
+    def turn_rail_items(self) -> list[TurnInfo]:
+        """레일에 그릴 틱 — 최근 TURN_RAIL_MAX_TICKS 개."""
+        return self.turn_items[-TURN_RAIL_MAX_TICKS:]
+
+    @rx.var
+    def turn_rail_overflow(self) -> bool:
+        """상한을 넘어 접힌 질문이 있는지 — 레일 위쪽 '···' 표시 여부."""
+        return len(self.turn_items) > TURN_RAIL_MAX_TICKS
+
+    @rx.var
+    def show_turn_rail(self) -> bool:
+        """레일 노출 여부. 질문이 적으면 스크롤만으로 충분해 숨긴다."""
+        return len(self.turn_items) >= TURN_RAIL_MIN_TURNS
 
     @rx.var
     def current_title(self) -> str:

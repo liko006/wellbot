@@ -108,6 +108,9 @@ def user_message(message: rx.Var[Message]) -> rx.Component:
             max_width="70%",
         ),
         class_name="chat-msg",
+        # 턴 네비게이터가 질문만 골라내는 표식. 레일 JS 가
+        # `.chat-msg[data-role="user"]` 로 질의해 DOM 순서 = 턴 순번으로 쓴다.
+        custom_attrs={"data-role": "user"},
         width="100%",
         justify="end",
         padding_x="1em",

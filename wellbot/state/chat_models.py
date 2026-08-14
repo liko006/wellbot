@@ -42,6 +42,18 @@ class AttachmentInfo(BaseModel):
     status: str = "processing"  # "processing" | "ready" | "failed"
 
 
+class TurnInfo(BaseModel):
+    """턴 네비게이터(우측 레일) 항목 — 질문 1개 = 틱 1개.
+
+    index 는 **로드된 질문 중 몇 번째인가**(0-based)이며, DOM 에서
+    `.chat-msg[data-role="user"]` 를 순서대로 세었을 때의 위치와 일치한다.
+    JS 는 이 값으로 틱 ↔ 메시지를 연결한다.
+    """
+
+    index: int
+    text: str  # 질문 원문(길이 상한 적용). 시각적 말줄임은 CSS 가 담당
+
+
 class Message(BaseModel):
     """개별 메시지 모델"""
 
