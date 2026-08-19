@@ -162,6 +162,10 @@ def _pending_file_row(f: PendingFile) -> rx.Component:
             f.name,
             size="1",
             flex="1",
+            # min-width 기본값 auto 는 flex 아이템을 min-content 아래로 줄이지 않는다.
+            # 파일명은 공백이 없어 통째로 한 덩어리라, 0 을 주지 않으면 행이 패널보다
+            # 넓어져 가로 스크롤이 생긴다(문서 목록 행도 같은 이유로 min_width="0").
+            min_width="0",
             overflow="hidden",
             text_overflow="ellipsis",
             white_space="nowrap",
@@ -452,6 +456,10 @@ def kb_docs_panel() -> rx.Component:
                                     width="100%",
                                     max_height="150px",
                                     overflow_y="auto",
+                                    # overflow-y 만 주면 overflow-x 가 visible→auto 로
+                                    # 자동 승격돼, 1px 만 넘쳐도 가로 스크롤이 생긴다.
+                                    # 세로 목록이라 가로 스크롤은 어느 경우에도 불필요.
+                                    overflow_x="hidden",
                                 ),
                                 # 개인/팀 탭: 기존 flat 뷰
                                 rx.vstack(
@@ -460,6 +468,7 @@ def kb_docs_panel() -> rx.Component:
                                     width="100%",
                                     max_height="150px",
                                     overflow_y="auto",
+                                    overflow_x="hidden",
                                 ),
                             ),
                             spacing="0",
@@ -688,6 +697,7 @@ def kb_upload_panel() -> rx.Component:
                         width="100%",
                         max_height="120px",
                         overflow_y="auto",
+                        overflow_x="hidden",
                     ),
                 ),
                 # 엑셀/CSV 형식 안내 (대기 목록에 .xlsx/.csv 가 있을 때만)
