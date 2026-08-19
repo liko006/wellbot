@@ -167,22 +167,27 @@ MAX_FILE_SIZE_DEFAULT = 100 * 1024 * 1024  # 100MB
 # ──────────────────────────────────────────────
 # 파일 크기 검증
 # ──────────────────────────────────────────────
-def validate_file_size(file_bytes: bytes, filename: str) -> None:
-    """
-    파일 형식별 크기 제한 검증.
+def validate_size_bytes(size_bytes: int, filename: str) -> None:
+    """파일 형식별 크기 제한 검증 (크기만 아는 경우 — 예: 디스크의 파일).
+
     xlsx/csv 는 분할 업로드로 처리되므로 제한 없음.
     """
     ext = Path(filename).suffix.lower()
     limit = MAX_FILE_SIZES.get(ext, MAX_FILE_SIZE_DEFAULT)
     if limit is None:
         return
-    if len(file_bytes) > limit:
+    if size_bytes > limit:
         limit_mb = limit // (1024 * 1024)
-        actual_mb = len(file_bytes) / (1024 * 1024)
+        actual_mb = size_bytes / (1024 * 1024)
         raise ValueError(
             f"파일 크기 초과: {filename} ({actual_mb:.1f}MB). "
             f"{ext} 파일은 {limit_mb}MB 이하만 업로드 가능합니다."
         )
+
+
+def validate_file_size(file_bytes: bytes, filename: str) -> None:
+    """파일 형식별 크기 제한 검증 (내용을 이미 읽은 경우)."""
+    validate_size_bytes(len(file_bytes), filename)
 
 
 # ──────────────────────────────────────────────
@@ -349,8 +354,8 @@ def split_and_upload_tabular(
 def pptx_to_dict(file_bytes: bytes) -> dict:
     """pptx 바이트를 슬라이드별 구조화 dict 로 추출 (제목/본문/표/노트).
 
-    convert_pptx_to_json(개인·팀 업로드) 과 scripts/shared_kb_manager(공용 KB)
-    가 공유하는 코어 추출 로직. 키는 'slide_{번호}_{제목}', 값은 슬라이드 텍스트.
+    convert_pptx_to_json 이 감싸는 코어 추출 로직(개인·팀·공용 업로드가 모두 그
+    래퍼를 쓴다). 키는 'slide_{번호}_{제목}', 값은 슬라이드 텍스트.
     """
     from pptx import Presentation
 
