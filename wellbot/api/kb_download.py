@@ -18,7 +18,7 @@ from fastapi import APIRouter, Cookie, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from wellbot.services.auth import auth_service
+from wellbot.api.guards import require_user
 from wellbot.services.files import storage_service
 from wellbot.services.knowledgebase.config import get_kb_config
 from wellbot.services.knowledgebase.kb_utils import kb_base, shared_base
@@ -82,18 +82,7 @@ def download_kb_file(
         wellbot_auth: 로그인 세션 토큰 (JWT)
     """
     # 1. 인증
-    if not wellbot_auth:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="로그인이 필요합니다.",
-        )
-    user = auth_service.validate_session_token(wellbot_auth)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="세션이 만료되었습니다. 다시 로그인해주세요.",
-        )
-    emp_no = user["emp_no"]
+    emp_no = require_user(wellbot_auth)["emp_no"]
 
     # 2. s3_uri 파싱
     if not req.s3_uri.startswith("s3://"):

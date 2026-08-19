@@ -40,6 +40,7 @@ from wellbot.services.knowledgebase.config import get_kb_config
 from wellbot.services.knowledgebase.kb_utils import (
     CONVERTIBLE_EXTS,
     SHARED_PARSE_POLICY,
+    SUPPORTED_EXTENSIONS,
     TABULAR_EXTS,
     ParsePolicy,
     convert_pdf_to_markdown,
@@ -104,10 +105,35 @@ def originals_prefix(folder: str) -> str:
     return raw_prefix(folder).replace("/raw/", "/originals/", 1)
 
 
+def staging_prefix(folder: str) -> str:
+    """업로드 원본 임시 적재 prefix. raw/ 의 형제라 색인 대상(raw/) 밖이다.
+
+    HTTP 업로드는 여기까지만 하고 변환·색인은 백그라운드에서 수행한다 — 다중 PDF 의
+    Upstage 변환이 요청 안에서 돌면 프록시 타임아웃(504)에 걸린다. originals/ 와 같은
+    이유로 소분류 계층을 보존한다.
+    """
+    return raw_prefix(folder).replace("/raw/", "/staging/", 1)
+
+
 def processed_prefix(folder: str) -> str:
     """DS 의 중간 저장(intermediateStorage) prefix — 대분류 단위."""
     top, _ = split_folder(folder)
     return f"{shared_base()}/{top}/processed/"
+
+
+def validate_folder(folder: str) -> tuple[str, str]:
+    """folder 문자열을 검증하고 (대분류, 소분류) 로 분해. 위반 시 ValueError.
+
+    S3 키를 만드는 값이라 경로 조작을 막는다 — 브라우저에서 오는 값이므로
+    ``..`` 한 번이면 다른 대분류나 색인 밖 경로에 파일을 심을 수 있다.
+    """
+    top, sub = split_folder(folder)
+    if not top:
+        raise ValueError("대분류가 비어 있습니다.")
+    for segment in [top, *(s for s in sub.split("/") if s)]:
+        if segment in (".", "..") or "\\" in segment:
+            raise ValueError(f"폴더 이름에 사용할 수 없는 값입니다: {segment!r}")
+    return top, sub
 
 
 def _data_source_name(top: str) -> str:
@@ -326,6 +352,42 @@ def _stash_original(bucket: str, folder: str, file_bytes: bytes, filename: str) 
     return uri
 
 
+def stage_files(folder: str, files: list[tuple[bytes, str]]) -> list[str]:
+    """원본을 staging/ 에만 적재(변환·색인 없음) — 업로드 HTTP 요청용.
+
+    무거운 변환을 요청 밖으로 미뤄 프록시 타임아웃(504)을 피한다. 색인은 이후
+    백그라운드에서 staging/ 의 원본을 읽어 수행한다.
+
+    적재 **전에** 형식·크기를 전부 검증해 하나라도 어긋나면 S3 에 아무것도 올리지
+    않는다(고아 방지). 부분 적재 중 실패하면 이미 올린 분을 되돌린다.
+    파일명은 basename 만 취해 경로 조작을 막는다.
+
+    반환: 적재된 파일명 목록.
+    """
+    validate_folder(folder)
+    checked: list[tuple[bytes, str]] = []
+    for file_bytes, filename in files:
+        name = Path(filename).name
+        if not name:
+            raise ValueError("파일명이 비어 있습니다.")
+        if Path(name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+            raise ValueError(f"지원하지 않는 파일 형식: {name}")
+        validate_file_size(file_bytes, name)
+        checked.append((file_bytes, name))
+
+    bucket = _bucket()
+    prefix = staging_prefix(folder)
+    uploaded_uris: list[str] = []
+    try:
+        for file_bytes, name in checked:
+            uploaded_uris.append(_put(bucket, f"{prefix}{name}", file_bytes))
+    except Exception:
+        delete_uris(uploaded_uris)
+        raise
+    log.info("[S3] staging 적재: %s (%d개)", prefix, len(uploaded_uris))
+    return [name for _, name in checked]
+
+
 def upload_files(
     folder: str,
     files: list[tuple[bytes, str]],
@@ -347,7 +409,7 @@ def upload_files(
 
     반환: 업로드된 S3 URI 목록.
     """
-    top, _ = split_folder(folder)
+    top, _ = validate_folder(folder)
     if top not in list_folders():
         log.info("[Upload] 미등록 대분류 → 자동 생성: %s", top)
         create_folder(top)
