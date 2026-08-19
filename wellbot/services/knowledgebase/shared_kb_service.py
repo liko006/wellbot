@@ -28,17 +28,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import re
 import time
-from functools import lru_cache
 from pathlib import Path
 
-import boto3
 import yaml
 
 from wellbot.paths import KNOWBASE_YAML
-from wellbot.services.core.aws import standard_config
 from wellbot.services.files import storage_service
 from wellbot.services.knowledgebase.config import get_kb_config
 from wellbot.services.knowledgebase.kb_utils import (
@@ -49,6 +45,7 @@ from wellbot.services.knowledgebase.kb_utils import (
     convert_pdf_to_markdown,
     convert_pptx_to_json,
     convert_xlsx_to_markdown,
+    get_bedrock_agent,
     shared_base,
     split_and_upload_tabular,
     validate_file_size,
@@ -77,15 +74,6 @@ def _bucket() -> str:
 def _s3():
     """S3 클라이언트 — storage_service 의 region 설정 클라이언트 재사용."""
     return storage_service.get_client()
-
-
-@lru_cache(maxsize=1)
-def _bedrock_agent():
-    return boto3.client(
-        "bedrock-agent",
-        region_name=os.getenv("AWS_REGION", "ap-northeast-2"),
-        config=standard_config(),
-    )
 
 
 # ──────────────────────────────────────────────
@@ -295,7 +283,7 @@ def create_folder(folder: str) -> str:
         return folders[top]
 
     log.info("[Folder] 새 대분류 Data Source 생성: top=%s", top)
-    resp = _bedrock_agent().create_data_source(
+    resp = get_bedrock_agent().create_data_source(
         knowledgeBaseId=_kb_id(),
         # 이름은 ASCII 슬러그+해시 (한글 폴더 지원). 한글 대분류명은 description 으로 식별.
         name=_data_source_name(top),
@@ -440,7 +428,7 @@ def upload_files(
 def start_ingestion(folder: str) -> str:
     """대분류 Data Source 의 Ingestion Job 실행. 반환: ingestion_job_id."""
     data_source_id = get_data_source_id(folder)
-    resp = _bedrock_agent().start_ingestion_job(
+    resp = get_bedrock_agent().start_ingestion_job(
         knowledgeBaseId=_kb_id(),
         dataSourceId=data_source_id,
     )
@@ -461,7 +449,7 @@ def poll_ingestion_status(folder: str, job_id: str) -> str:
     start = time.time()
 
     while time.time() - start < poll_timeout:
-        resp = _bedrock_agent().get_ingestion_job(
+        resp = get_bedrock_agent().get_ingestion_job(
             knowledgeBaseId=_kb_id(),
             dataSourceId=data_source_id,
             ingestionJobId=job_id,
@@ -557,7 +545,7 @@ def rename_folder(old: str, new: str) -> str:
     log.info("[S3] 옛 경로 삭제: %s/%s/ (%d개)", base, old_top, deleted)
 
     # 3. DS 를 새 경로로 갱신 (ds_id 유지)
-    _bedrock_agent().update_data_source(
+    get_bedrock_agent().update_data_source(
         knowledgeBaseId=_kb_id(),
         dataSourceId=ds_id,
         name=_data_source_name(new_top),

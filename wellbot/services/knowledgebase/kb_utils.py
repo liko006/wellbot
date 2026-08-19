@@ -105,12 +105,12 @@ def _get_s3():
 
 
 @lru_cache(maxsize=1)
-def _get_bedrock_agent():
+def get_bedrock_agent():
     return boto3.client("bedrock-agent", region_name=_region(), config=standard_config())
 
 
 @lru_cache(maxsize=1)
-def _get_s3vectors():
+def get_s3vectors():
     return boto3.client("s3vectors", region_name=_region(), config=standard_config())
 
 # ──────────────────────────────────────────────
@@ -600,7 +600,7 @@ def processed_prefix(kind: str, owner: str) -> str:
 # ──────────────────────────────────────────────
 def create_vector_index(kind: str, owner: str) -> str:
     """S3 Vectors 인덱스 생성. 반환: index ARN."""
-    resp = _get_s3vectors().create_index(
+    resp = get_s3vectors().create_index(
         vectorBucketName=_cfg()["s3_vector_bucket"],
         indexName=vector_index_name(kind, owner),
         dataType="float32",
@@ -616,7 +616,7 @@ def create_vector_index(kind: str, owner: str) -> str:
 def create_bedrock_kb(kind: str, owner: str, vector_index_arn: str) -> str:
     """Bedrock Knowledge Base 생성. 반환: knowledgeBaseId."""
     label = _KB_KIND_LABEL[kind]
-    resp = _get_bedrock_agent().create_knowledge_base(
+    resp = get_bedrock_agent().create_knowledge_base(
         name=kb_resource_name(kind, owner),
         description=f"{owner}의 {label} Knowledge Base",
         roleArn=_cfg()["kb_role_arn"],
@@ -642,7 +642,7 @@ def wait_until_kb_ready(kb_id: str) -> None:
     poll_interval = cfg.get("kb_poll_interval", 5)
     start = time.time()
     while time.time() - start < poll_timeout:
-        resp = _get_bedrock_agent().get_knowledge_base(knowledgeBaseId=kb_id)
+        resp = get_bedrock_agent().get_knowledge_base(knowledgeBaseId=kb_id)
         status = resp["knowledgeBase"]["status"]
         if status == "ACTIVE":
             return
@@ -654,7 +654,7 @@ def wait_until_kb_ready(kb_id: str) -> None:
 
 def create_data_source(kind: str, owner: str, kb_id: str) -> str:
     """KB 의 Data Source 생성. 반환: dataSourceId."""
-    resp = _get_bedrock_agent().create_data_source(
+    resp = get_bedrock_agent().create_data_source(
         knowledgeBaseId=kb_id,
         name=data_source_name(kind, owner),
         dataSourceConfiguration={
@@ -691,12 +691,12 @@ def find_existing_kb(kind: str, owner: str) -> Optional[dict]:
     """
     kb_name = kb_resource_name(kind, owner)
     try:
-        paginator = _get_bedrock_agent().get_paginator("list_knowledge_bases")
+        paginator = get_bedrock_agent().get_paginator("list_knowledge_bases")
         for page in paginator.paginate():
             for kb in page.get("knowledgeBaseSummaries", []):
                 if kb["name"] == kb_name and kb["status"] == "ACTIVE":
                     kb_id = kb["knowledgeBaseId"]
-                    ds_resp = _get_bedrock_agent().list_data_sources(knowledgeBaseId=kb_id)
+                    ds_resp = get_bedrock_agent().list_data_sources(knowledgeBaseId=kb_id)
                     ds_list = ds_resp.get("dataSourceSummaries", [])
                     if ds_list:
                         return {"kb_id": kb_id, "data_source_id": ds_list[0]["dataSourceId"]}
@@ -710,7 +710,7 @@ def find_existing_kb(kind: str, owner: str) -> Optional[dict]:
 # ──────────────────────────────────────────────
 def start_ingestion(kb_id: str, data_source_id: str) -> str:
     """Ingestion Job 실행. 반환: ingestion_job_id."""
-    resp = _get_bedrock_agent().start_ingestion_job(
+    resp = get_bedrock_agent().start_ingestion_job(
         knowledgeBaseId=kb_id,
         dataSourceId=data_source_id,
     )
@@ -720,7 +720,7 @@ def start_ingestion(kb_id: str, data_source_id: str) -> str:
 def is_ingestion_in_progress(kb_id: str, data_source_id: str) -> bool:
     """진행 중인 ingestion job 이 있는지 확인 (팀 KB 동시성 방지용)."""
     try:
-        resp = _get_bedrock_agent().list_ingestion_jobs(
+        resp = get_bedrock_agent().list_ingestion_jobs(
             knowledgeBaseId=kb_id,
             dataSourceId=data_source_id,
             sortBy={"attribute": "STARTED_AT", "order": "DESCENDING"},
@@ -1137,7 +1137,7 @@ def poll_ingestion_status(
         poll_timeout = cfg.get("ingest_poll_timeout", 300)
     start = time.time()
     while time.time() - start < poll_timeout:
-        resp = _get_bedrock_agent().get_ingestion_job(
+        resp = get_bedrock_agent().get_ingestion_job(
             knowledgeBaseId=kb_id,
             dataSourceId=data_source_id,
             ingestionJobId=job_id,
