@@ -7,9 +7,13 @@ cleanup_personal_kb.py
     1. Bedrock Data Source
     2. Bedrock Knowledge Base
     3. S3 Vectors Index
-    4. S3 main bucket 의 users/{emp_no}/ prefix
-    5. S3 intermediate bucket 의 users/{emp_no}/processed/ prefix
+    4. S3 main bucket 의 users{env}/{emp_no}/ prefix
+    5. S3 intermediate bucket 의 users{env}/{emp_no}/processed/ prefix
     6. DB 의 AGNT_MMRY_USE_N (PERSONAL) 행
+
+리소스 이름과 S3 경로는 kb_utils 의 헬퍼로 만든다 — 생성할 때와 같은 이름을 써야
+하고, 특히 APP_ENV 접미사(env_suffix)가 빠지면 다른 환경의 리소스를 지우게 된다.
+따라서 이 스크립트는 실행 환경의 .env(APP_ENV)를 대상 환경에 맞춰 실행해야 한다.
 
 특징:
     - 멱등: DB 행이 이미 없어도 다른 리소스가 남아 있으면 자동 감지해서 정리
@@ -50,33 +54,22 @@ init_env()  # KB 모듈의 모듈레벨 os.getenv 보장 (다른 wellbot import 
 from wellbot.models import AgntMmryUseN  # noqa: E402
 from wellbot.services.knowledgebase.config import get_kb_config  # noqa: E402
 from wellbot.services.core.database import get_session  # noqa: E402
+from wellbot.services.knowledgebase.kb_utils import (  # noqa: E402
+    AGNT_ID_KB,
+    decode_kb_info,
+    kb_resource_name,
+    kb_root_prefix,
+    processed_prefix,
+    vector_index_name,
+)
+from wellbot.services.knowledgebase.personal_kb_manager import (  # noqa: E402
+    SEQ_PERSONAL,
+    TYPE_PERSONAL,
+)
 
-
-# ──────────────────────────────────────────────
-# 상수 (personal_kb_manager 와 동일하게 맞춤)
-# ──────────────────────────────────────────────
-AGNT_ID_KB = "Agnt_KnowBase"
-TYPE_PERSONAL = "PERSONAL"
-SEQ_PERSONAL = 1
-KB_INFO_SEP = "||"
-
-
-def _kb_name(emp_no: str) -> str:
-    return f"aiinno-bedrock-kb-personal-{emp_no}"
-
-
-def _vector_index_name(emp_no: str) -> str:
-    # kb_utils.create_vector_index 와 동일: emp_no.lower()
-    return f"aiinno-bedrock-kb-personal-vector-index-{emp_no.lower()}"
-
-
-def _raw_prefix_root(emp_no: str) -> str:
-    """users/{emp_no}/ 전체 (raw/ + originals/ 포함)"""
-    return f"users/{emp_no}/"
-
-
-def _processed_prefix(emp_no: str) -> str:
-    return f"users/{emp_no}/processed/"
+# 리소스 이름·경로는 kb_utils 의 생성 로직과 같은 헬퍼를 쓴다.
+# (자체 f-string 을 두면 env_suffix() 를 빠뜨려 다른 환경의 리소스를 지우게 된다.)
+KIND_PERSONAL = "personal"
 
 
 # ──────────────────────────────────────────────
@@ -97,10 +90,12 @@ def fetch_kb_info_from_db(emp_no: str) -> Optional[dict]:
         )
         if not row or not row.agnt_mmry_path_addr:
             return None
-        parts = row.agnt_mmry_path_addr.split(KB_INFO_SEP, 1)
-        if len(parts) != 2:
-            return None
-        return {"kb_id": parts[0], "data_source_id": parts[1]}
+        path_addr = row.agnt_mmry_path_addr
+    try:
+        kb_id, data_source_id = decode_kb_info(path_addr)
+    except ValueError:
+        return None
+    return {"kb_id": kb_id, "data_source_id": data_source_id}
 
 
 def delete_db_row(emp_no: str) -> int:
@@ -244,23 +239,27 @@ def gather_resources(emp_no: str, kb_cfg: dict, clients: dict) -> dict:
     # DB 정보 없으면 Bedrock 에서 이름으로 fallback 검색
     kb_record = db_record
     if kb_record is None:
-        kb_record = find_kb_by_name(bedrock_agent, _kb_name(emp_no))
+        kb_record = find_kb_by_name(bedrock_agent, kb_resource_name(KIND_PERSONAL, emp_no))
 
     # S3 객체 수 집계
     main_bucket = kb_cfg["s3_bucket"]
     int_bucket = kb_cfg["s3_intermediate_bucket"]
-    main_keys = list_s3_keys(s3, main_bucket, _raw_prefix_root(emp_no))
-    processed_keys = list_s3_keys(s3, int_bucket, _processed_prefix(emp_no))
+    root_prefix = kb_root_prefix(KIND_PERSONAL, emp_no)
+    proc_prefix = processed_prefix(KIND_PERSONAL, emp_no)
+    main_keys = list_s3_keys(s3, main_bucket, root_prefix)
+    processed_keys = list_s3_keys(s3, int_bucket, proc_prefix)
 
     return {
         "db_record": db_record,
         "kb_record": kb_record,
         "main_bucket": main_bucket,
+        "main_prefix": root_prefix,
         "main_keys": main_keys,
         "int_bucket": int_bucket,
+        "processed_prefix": proc_prefix,
         "processed_keys": processed_keys,
         "vector_bucket": kb_cfg["s3_vector_bucket"],
-        "vector_index_name": _vector_index_name(emp_no),
+        "vector_index_name": vector_index_name(KIND_PERSONAL, emp_no),
     }
 
 
@@ -269,7 +268,7 @@ def print_preview(emp_no: str, info: dict) -> None:
     print(f"\n📋 다음 리소스가 삭제됩니다 (emp_no={emp_no}):")
 
     if info["db_record"]:
-        print("   - DB 행: AGNT_MMRY_USE_N (Agnt_KnowBase / PERSONAL)")
+        print(f"   - DB 행: AGNT_MMRY_USE_N ({AGNT_ID_KB} / {TYPE_PERSONAL})")
     else:
         print("   - DB 행: (없음 - 스킵)")
 
@@ -283,11 +282,11 @@ def print_preview(emp_no: str, info: dict) -> None:
 
     print(f"   - S3 Vectors Index: {info['vector_index_name']}")
     print(
-        f"   - S3 main: s3://{info['main_bucket']}/users/{emp_no}/ "
+        f"   - S3 main: s3://{info['main_bucket']}/{info['main_prefix']} "
         f"({len(info['main_keys'])}개 객체)"
     )
     print(
-        f"   - S3 intermediate: s3://{info['int_bucket']}/{_processed_prefix(emp_no)} "
+        f"   - S3 intermediate: s3://{info['int_bucket']}/{info['processed_prefix']} "
         f"({len(info['processed_keys'])}개 객체)"
     )
 
