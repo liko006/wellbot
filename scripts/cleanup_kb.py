@@ -95,12 +95,19 @@ def print_preview(plan: svc.CleanupPlan) -> None:
         print(f"\n⚠ 부서 전원({plan.db_row_count}명)의 팀 KB 가 삭제됩니다.")
 
 
-def print_steps(steps: list[svc.CleanupStep]) -> None:
-    """단계별 결과 출력."""
-    for i, step in enumerate(steps, start=1):
+def run_cleanup(plan: svc.CleanupPlan) -> bool:
+    """teardown 실행 + 단계별 진행 출력. 반환: 실패 단계가 있었는지.
+
+    서비스가 단계마다 결과를 내보내므로 받는 즉시 찍는다 — DS/KB 삭제 완료 대기로
+    한 단계가 수십 초를 쓸 수 있어, 어디서 기다리는 중인지 보여야 한다.
+    """
+    failed = False
+    for i, step in enumerate(svc.execute_cleanup(plan), start=1):
         mark = _STATUS_MARK.get(step.status, step.status)
         detail = f" — {step.detail}" if step.detail else ""
-        print(f"[{i}/{svc.TOTAL_STEPS}] {step.name}... {mark}{detail}")
+        print(f"[{i}/{svc.TOTAL_STEPS}] {step.name}... {mark}{detail}", flush=True)
+        failed = failed or step.is_failed
+    return failed
 
 
 def _parse_args():
@@ -158,10 +165,7 @@ def main() -> None:
             return
 
     print()
-    steps = svc.execute_cleanup(plan)
-    print_steps(steps)
-
-    if any(step.is_failed for step in steps):
+    if run_cleanup(plan):
         print("\n✗ 중단되었습니다. 원인을 해결한 뒤 같은 명령을 다시 실행하면 "
               "남은 리소스부터 이어서 정리합니다.")
         sys.exit(1)

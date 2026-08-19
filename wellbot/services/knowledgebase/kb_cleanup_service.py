@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from botocore.exceptions import ClientError
@@ -403,27 +404,19 @@ def gather_resources(kind: str, owner: str) -> CleanupPlan:
 # ──────────────────────────────────────────────
 # 실행
 # ──────────────────────────────────────────────
-def execute_cleanup(plan: CleanupPlan) -> list[CleanupStep]:
-    """의존성 역순으로 삭제. 반환: 단계별 결과.
+def execute_cleanup(plan: CleanupPlan) -> Iterator[CleanupStep]:
+    """의존성 역순으로 삭제. **단계가 끝날 때마다 결과를 하나씩 내보낸다.**
 
-    한 단계가 실패하면 **거기서 멈추고** 그때까지의 결과를 돌려준다(뒤 단계는 목록에
-    없다). 각 단계는 멱등이라 같은 대상으로 다시 실행하면 남은 것부터 이어서 정리된다.
-    호출자는 ``any(s.is_failed for s in steps)`` 로 성공 여부를 판정한다.
+    제너레이터인 이유: DS/KB 삭제 완료 대기(§모듈 docstring)로 한 단계가 수십 초를
+    쓸 수 있어, 호출자가 진행 상황을 그때그때 보여줄 수 있어야 한다. CLI 는 받는 즉시
+    찍고, Reflex 이벤트는 사이사이 화면을 갱신한다.
+
+    한 단계가 실패하면 그 단계를 마지막으로 내보내고 **멈춘다**(뒤 단계는 실행하지
+    않는다 — 아직 도는 삭제 작업의 대상을 우리가 먼저 지우면 안 된다). 각 단계는
+    멱등이라 같은 대상으로 다시 실행하면 남은 것부터 이어서 정리된다.
+
+    전부 모아 받으려면 ``steps = list(execute_cleanup(plan))``.
     """
-    steps: list[CleanupStep] = []
-
-    def run(name: str, action) -> bool:
-        """한 단계 실행. 실패면 steps 에 기록하고 False."""
-        try:
-            status, detail = action()
-        except Exception as exc:  # noqa: BLE001 - 단계별로 실패를 보고해야 한다
-            log.exception("KB teardown 단계 실패: kind=%s owner=%s step=%s",
-                          plan.kind, plan.owner, name)
-            steps.append(CleanupStep(name, STEP_FAILED, str(exc)))
-            return False
-        steps.append(CleanupStep(name, status, detail))
-        return True
-
     def check_ingestion():
         if not (plan.kb_id and plan.data_source_id):
             return STEP_SKIPPED, "KB/DS 없음"
@@ -483,10 +476,15 @@ def execute_cleanup(plan: CleanupPlan) -> list[CleanupStep]:
              plan.kind, plan.owner, plan.kb_id or "-",
              plan.db_row_count, len(plan.main_keys) + len(plan.intermediate_keys))
     for name, action in ordered:
-        if not run(name, action):
-            return steps
+        try:
+            status, detail = action()
+        except Exception as exc:  # noqa: BLE001 - 단계별로 실패를 보고해야 한다
+            log.exception("KB teardown 단계 실패: kind=%s owner=%s step=%s",
+                          plan.kind, plan.owner, name)
+            yield CleanupStep(name, STEP_FAILED, str(exc))
+            return
+        yield CleanupStep(name, status, detail)
     log.info("KB teardown 완료: kind=%s owner=%s", plan.kind, plan.owner)
-    return steps
 
 
 TOTAL_STEPS = 7   # execute_cleanup 의 단계 수 (CLI/UI 진행 표시용)
