@@ -1,5 +1,5 @@
 """
-cleanup_personal_kb.py
+cleanup_kb.py
 
 개인 또는 팀 Knowledge Base 관련 리소스를 일괄 정리하는 관리자 CLI
 (퇴사자 정리, 팀 해체 등).
@@ -28,16 +28,16 @@ cleanup_personal_kb.py
 
 사용 예:
     # 개인 — 미리보기
-    python scripts/cleanup_personal_kb.py --emp-no 12345678 --dry-run
+    python scripts/cleanup_kb.py --emp-no 12345678 --dry-run
 
     # 개인 — 실제 삭제 (y/N 프롬프트)
-    python scripts/cleanup_personal_kb.py --emp-no 12345678
+    python scripts/cleanup_kb.py --emp-no 12345678
 
     # 팀 — 부서 전원의 팀 KB 정리 (영향 범위가 크므로 미리보기 먼저)
-    python scripts/cleanup_personal_kb.py --dept-cd D0012 --dry-run
+    python scripts/cleanup_kb.py --dept-cd D0012 --dry-run
 
     # 프롬프트 건너뛰기
-    python scripts/cleanup_personal_kb.py --emp-no 12345678 --yes
+    python scripts/cleanup_kb.py --emp-no 12345678 --yes
 """
 
 from __future__ import annotations

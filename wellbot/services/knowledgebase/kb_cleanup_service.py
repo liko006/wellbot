@@ -3,7 +3,7 @@
 퇴사자 정리, 팀 해체 등으로 한 소유자의 KB 관련 리소스를 **의존성 역순으로 전부**
 삭제한다. 운용(업로드·문서 삭제)과 달리 비가역·전면 삭제라 별도 모듈로 둔다.
 
-**호출자는 둘이다** — CLI(``scripts/cleanup_personal_kb.py``)와 admin UI. 그래서
+**호출자는 둘이다** — CLI(``scripts/cleanup_kb.py``)와 admin UI. 그래서
 admin 계층이 아니라 도메인 계층에 둔다.
 
 scope (``kind``):
