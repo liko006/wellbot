@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -104,12 +105,12 @@ def _get_s3():
 
 
 @lru_cache(maxsize=1)
-def _get_bedrock_agent():
+def get_bedrock_agent():
     return boto3.client("bedrock-agent", region_name=_region(), config=standard_config())
 
 
 @lru_cache(maxsize=1)
-def _get_s3vectors():
+def get_s3vectors():
     return boto3.client("s3vectors", region_name=_region(), config=standard_config())
 
 # ──────────────────────────────────────────────
@@ -166,22 +167,27 @@ MAX_FILE_SIZE_DEFAULT = 100 * 1024 * 1024  # 100MB
 # ──────────────────────────────────────────────
 # 파일 크기 검증
 # ──────────────────────────────────────────────
-def validate_file_size(file_bytes: bytes, filename: str) -> None:
-    """
-    파일 형식별 크기 제한 검증.
+def validate_size_bytes(size_bytes: int, filename: str) -> None:
+    """파일 형식별 크기 제한 검증 (크기만 아는 경우 — 예: 디스크의 파일).
+
     xlsx/csv 는 분할 업로드로 처리되므로 제한 없음.
     """
     ext = Path(filename).suffix.lower()
     limit = MAX_FILE_SIZES.get(ext, MAX_FILE_SIZE_DEFAULT)
     if limit is None:
         return
-    if len(file_bytes) > limit:
+    if size_bytes > limit:
         limit_mb = limit // (1024 * 1024)
-        actual_mb = len(file_bytes) / (1024 * 1024)
+        actual_mb = size_bytes / (1024 * 1024)
         raise ValueError(
             f"파일 크기 초과: {filename} ({actual_mb:.1f}MB). "
             f"{ext} 파일은 {limit_mb}MB 이하만 업로드 가능합니다."
         )
+
+
+def validate_file_size(file_bytes: bytes, filename: str) -> None:
+    """파일 형식별 크기 제한 검증 (내용을 이미 읽은 경우)."""
+    validate_size_bytes(len(file_bytes), filename)
 
 
 # ──────────────────────────────────────────────
@@ -348,8 +354,8 @@ def split_and_upload_tabular(
 def pptx_to_dict(file_bytes: bytes) -> dict:
     """pptx 바이트를 슬라이드별 구조화 dict 로 추출 (제목/본문/표/노트).
 
-    convert_pptx_to_json(개인·팀 업로드) 과 scripts/shared_kb_manager(공용 KB)
-    가 공유하는 코어 추출 로직. 키는 'slide_{번호}_{제목}', 값은 슬라이드 텍스트.
+    convert_pptx_to_json 이 감싸는 코어 추출 로직(개인·팀·공용 업로드가 모두 그
+    래퍼를 쓴다). 키는 'slide_{번호}_{제목}', 값은 슬라이드 텍스트.
     """
     from pptx import Presentation
 
@@ -429,6 +435,58 @@ def pdf_via_upstage_enabled() -> bool:
     return bool(PDF_VIA_UPSTAGE)
 
 
+# ──────────────────────────────────────────────
+# 업로드 변환 정책 (개인/팀 ↔ 공용의 비대칭을 값으로 표현)
+# ──────────────────────────────────────────────
+PARSER_AUTO = "auto"        # 형식별 전역 게이트(FILE_PARSER_MODE / PDF_VIA_UPSTAGE)를 따름
+PARSER_UPSTAGE = "upstage"  # 후보 형식을 무조건 Upstage 로 변환
+PARSER_LOCAL = "local"      # 무조건 로컬 처리 (pdf=원본 색인, xlsx=pandas 행 분할)
+PARSER_CHOICES = (PARSER_AUTO, PARSER_UPSTAGE, PARSER_LOCAL)
+
+
+@dataclass(frozen=True)
+class ParsePolicy:
+    """업로드 시 어떤 형식을 Upstage 로 변환할지 정하는 정책.
+
+    두 축이 있다.
+    - ``upstage_exts``: **호출 범위의 정책**. 개인/팀은 PDF 만 후보로 두고 xlsx 는
+      pandas 행 분할로 처리한다(사용자가 올리는 데이터표는 행 분할이 적합).
+      공용 KB 는 xlsx 도 후보다(사규 표는 병합셀·빈칸이 많아 Upstage 가 견고).
+      의도된 비대칭이라 호출자가 정책으로 넘긴다.
+    - ``parser``: 그 후보 안에서의 **호출 단위 override**(CLI ``--parser``, 관리자
+      업로드 선택). 지정하지 않으면 전역 게이트를 따른다.
+    """
+
+    parser: str = PARSER_AUTO
+    upstage_exts: frozenset[str] = frozenset({".pdf"})
+
+    def __post_init__(self) -> None:
+        if self.parser not in PARSER_CHOICES:
+            raise ValueError(
+                f"알 수 없는 parser: {self.parser!r} (허용: {', '.join(PARSER_CHOICES)})"
+            )
+
+    def should_use_upstage(self, ext: str) -> bool:
+        """해당 확장자를 Upstage 로 변환할지 여부. 후보가 아니면 항상 False."""
+        if ext not in self.upstage_exts:
+            return False
+        if self.parser == PARSER_UPSTAGE:
+            return True
+        if self.parser == PARSER_LOCAL:
+            return False
+        return xlsx_via_upstage_enabled() if ext == ".xlsx" else pdf_via_upstage_enabled()
+
+    def with_parser(self, parser: str) -> "ParsePolicy":
+        """parser 만 교체한 사본. 범위 정책(upstage_exts)은 유지."""
+        return replace(self, parser=parser)
+
+
+# 개인/팀 업로드 기본 정책 — PDF 만 Upstage 후보(xlsx 는 pandas 분할 고정).
+USER_PARSE_POLICY = ParsePolicy()
+# 공용(shared) KB 업로드 기본 정책 — PDF + xlsx 를 Upstage 후보로 본다.
+SHARED_PARSE_POLICY = ParsePolicy(upstage_exts=frozenset({".pdf", ".xlsx"}))
+
+
 def _convert_via_upstage(
     file_bytes: bytes,
     filename: str,
@@ -494,16 +552,47 @@ def decode_kb_info(kb_info: str) -> tuple[str, str]:
 
 
 # ──────────────────────────────────────────────
+# AWS 리소스 이름 (생성·조회·삭제가 공유하는 단일 출처)
+#   이름에는 반드시 env_suffix() 가 들어간다 — dev/prd 가 같은 AWS 계정·버킷을
+#   공유하므로, 생성할 때와 다른 이름으로 조회·삭제하면 리소스를 못 찾거나
+#   다른 환경의 리소스를 건드리게 된다. 그래서 f-string 을 호출부에 흩지 않는다.
+# ──────────────────────────────────────────────
+def kb_resource_name(kind: str, owner: str) -> str:
+    """Bedrock Knowledge Base 이름."""
+    return f"aiinno-bedrock-kb-{kind}-{owner}{env_suffix()}"
+
+
+def data_source_name(kind: str, owner: str) -> str:
+    """Bedrock Data Source 이름."""
+    return f"aiinno-bedrock-kb-ds-{kind}-{owner}{env_suffix()}"
+
+
+def vector_index_name(kind: str, owner: str) -> str:
+    """S3 Vectors 인덱스 이름. 인덱스명 규칙에 맞춰 owner 를 소문자로 정규화한다."""
+    return f"aiinno-bedrock-kb-{kind}-vector-index-{owner.lower()}{env_suffix()}"
+
+
+# ──────────────────────────────────────────────
 # S3 경로 헬퍼
 # ──────────────────────────────────────────────
+def kb_root_prefix(kind: str, owner: str) -> str:
+    """소유자 루트 prefix: 'users{env}/{owner}/' · 'teams{env}/{owner}/'.
+
+    main 버킷에서는 raw/·originals/·staging/ 의 상위이고, intermediate 버킷의
+    processed/ 도 같은 경로 문법을 쓴다(버킷만 다름). teardown 은 이 루트를
+    통째로 지운다.
+    """
+    return f"{kb_base(kind)}/{owner}/"
+
+
 def raw_prefix(kind: str, owner: str) -> str:
     """kind='personal'→'users{env}/{owner}/raw/', kind='team'→'teams{env}/{owner}/raw/'."""
-    return f"{kb_base(kind)}/{owner}/raw/"
+    return f"{kb_root_prefix(kind, owner)}raw/"
 
 
 def processed_prefix(kind: str, owner: str) -> str:
     """processed/ prefix. raw_prefix 와 동일 규칙."""
-    return f"{kb_base(kind)}/{owner}/processed/"
+    return f"{kb_root_prefix(kind, owner)}processed/"
 
 
 # ──────────────────────────────────────────────
@@ -511,9 +600,9 @@ def processed_prefix(kind: str, owner: str) -> str:
 # ──────────────────────────────────────────────
 def create_vector_index(kind: str, owner: str) -> str:
     """S3 Vectors 인덱스 생성. 반환: index ARN."""
-    resp = _get_s3vectors().create_index(
+    resp = get_s3vectors().create_index(
         vectorBucketName=_cfg()["s3_vector_bucket"],
-        indexName=f"aiinno-bedrock-kb-{kind}-vector-index-{owner.lower()}{env_suffix()}",
+        indexName=vector_index_name(kind, owner),
         dataType="float32",
         dimension=1024,
         distanceMetric="cosine",
@@ -527,8 +616,8 @@ def create_vector_index(kind: str, owner: str) -> str:
 def create_bedrock_kb(kind: str, owner: str, vector_index_arn: str) -> str:
     """Bedrock Knowledge Base 생성. 반환: knowledgeBaseId."""
     label = _KB_KIND_LABEL[kind]
-    resp = _get_bedrock_agent().create_knowledge_base(
-        name=f"aiinno-bedrock-kb-{kind}-{owner}{env_suffix()}",
+    resp = get_bedrock_agent().create_knowledge_base(
+        name=kb_resource_name(kind, owner),
         description=f"{owner}의 {label} Knowledge Base",
         roleArn=_cfg()["kb_role_arn"],
         knowledgeBaseConfiguration={
@@ -553,7 +642,7 @@ def wait_until_kb_ready(kb_id: str) -> None:
     poll_interval = cfg.get("kb_poll_interval", 5)
     start = time.time()
     while time.time() - start < poll_timeout:
-        resp = _get_bedrock_agent().get_knowledge_base(knowledgeBaseId=kb_id)
+        resp = get_bedrock_agent().get_knowledge_base(knowledgeBaseId=kb_id)
         status = resp["knowledgeBase"]["status"]
         if status == "ACTIVE":
             return
@@ -565,9 +654,9 @@ def wait_until_kb_ready(kb_id: str) -> None:
 
 def create_data_source(kind: str, owner: str, kb_id: str) -> str:
     """KB 의 Data Source 생성. 반환: dataSourceId."""
-    resp = _get_bedrock_agent().create_data_source(
+    resp = get_bedrock_agent().create_data_source(
         knowledgeBaseId=kb_id,
-        name=f"aiinno-bedrock-kb-ds-{kind}-{owner}{env_suffix()}",
+        name=data_source_name(kind, owner),
         dataSourceConfiguration={
             "type": "S3",
             "s3Configuration": {
@@ -600,14 +689,14 @@ def find_existing_kb(kind: str, owner: str) -> Optional[dict]:
 
     반환: {"kb_id", "data_source_id"} 또는 None.
     """
-    kb_name = f"aiinno-bedrock-kb-{kind}-{owner}{env_suffix()}"
+    kb_name = kb_resource_name(kind, owner)
     try:
-        paginator = _get_bedrock_agent().get_paginator("list_knowledge_bases")
+        paginator = get_bedrock_agent().get_paginator("list_knowledge_bases")
         for page in paginator.paginate():
             for kb in page.get("knowledgeBaseSummaries", []):
                 if kb["name"] == kb_name and kb["status"] == "ACTIVE":
                     kb_id = kb["knowledgeBaseId"]
-                    ds_resp = _get_bedrock_agent().list_data_sources(knowledgeBaseId=kb_id)
+                    ds_resp = get_bedrock_agent().list_data_sources(knowledgeBaseId=kb_id)
                     ds_list = ds_resp.get("dataSourceSummaries", [])
                     if ds_list:
                         return {"kb_id": kb_id, "data_source_id": ds_list[0]["dataSourceId"]}
@@ -621,7 +710,7 @@ def find_existing_kb(kind: str, owner: str) -> Optional[dict]:
 # ──────────────────────────────────────────────
 def start_ingestion(kb_id: str, data_source_id: str) -> str:
     """Ingestion Job 실행. 반환: ingestion_job_id."""
-    resp = _get_bedrock_agent().start_ingestion_job(
+    resp = get_bedrock_agent().start_ingestion_job(
         knowledgeBaseId=kb_id,
         dataSourceId=data_source_id,
     )
@@ -631,7 +720,7 @@ def start_ingestion(kb_id: str, data_source_id: str) -> str:
 def is_ingestion_in_progress(kb_id: str, data_source_id: str) -> bool:
     """진행 중인 ingestion job 이 있는지 확인 (팀 KB 동시성 방지용)."""
     try:
-        resp = _get_bedrock_agent().list_ingestion_jobs(
+        resp = get_bedrock_agent().list_ingestion_jobs(
             knowledgeBaseId=kb_id,
             dataSourceId=data_source_id,
             sortBy={"attribute": "STARTED_AT", "order": "DESCENDING"},
@@ -764,7 +853,10 @@ def _validate_upload_files(files: list[tuple[bytes, str]]) -> None:
 _PDF_CONVERT_MAX_WORKERS = 3
 
 
-def _convert_pdfs_parallel(files: list[tuple[bytes, str]]) -> dict[int, tuple[bytes, str]]:
+def _convert_pdfs_parallel(
+    files: list[tuple[bytes, str]],
+    policy: ParsePolicy,
+) -> dict[int, tuple[bytes, str]]:
     """업로드 목록 중 PDF(Upstage 모드)를 병렬 변환. 반환: {files 인덱스: (md_bytes, md_name)}.
 
     네트워크 바운드 Upstage 호출을 최대 _PDF_CONVERT_MAX_WORKERS 개 동시 실행해
@@ -772,7 +864,7 @@ def _convert_pdfs_parallel(files: list[tuple[bytes, str]]) -> dict[int, tuple[by
     제외 → 호출자(upload_files_to_kb)가 원본 PDF 색인으로 폴백. files 인덱스로
     매핑해 동일 파일명 충돌을 피한다.
     """
-    if not pdf_via_upstage_enabled():
+    if not policy.should_use_upstage(".pdf"):
         return {}
     targets = [
         (i, fb, fn) for i, (fb, fn) in enumerate(files)
@@ -803,13 +895,18 @@ def upload_files_to_kb(
     prefix: str,
     files: list[tuple[bytes, str]],
     with_rollback: bool = False,
+    policy: ParsePolicy = USER_PARSE_POLICY,
 ) -> list[str]:
     """파일 목록을 S3 {bucket}/{prefix} 에 업로드. 최대 5개.
 
     - pptx: 원본은 originals/ 로, JSON 변환본은 raw/ 로 업로드
-    - xlsx/csv: ROWS_PER_SPLIT 단위로 분할 업로드
+    - pdf/xlsx: policy 가 Upstage 후보로 보면 markdown 변환본만 raw/ 로 색인
+    - xlsx/csv(로컬 처리): ROWS_PER_SPLIT 단위로 분할 업로드
     - 그 외: 단일 업로드 (형식별 크기 제한 검증)
     - with_rollback=True 시 도중 실패하면 부분 업로드분을 모두 삭제
+
+    policy 기본값은 개인/팀 정책(PDF 만 Upstage 후보) — 공용 KB 는
+    SHARED_PARSE_POLICY 를 넘긴다.
 
     반환: 업로드된 S3 URI 목록 (pptx 의 originals/ 원본 URI 포함).
     """
@@ -818,7 +915,7 @@ def upload_files_to_kb(
 
     # PDF Upstage 변환을 락·S3 쓰기 밖에서 미리 병렬 수행(직렬 합산 지연 단축).
     # 변환 실패분은 pdf_md 에 없어 아래 루프가 원본 PDF 색인으로 폴백.
-    pdf_md = _convert_pdfs_parallel(files)
+    pdf_md = _convert_pdfs_parallel(files, policy)
 
     # 상한 검증(count)→S3 쓰기를 prefix 락으로 직렬화해 TOCTOU(동시 업로드가 같은
     # count 를 읽고 둘 다 통과)를 차단. 단일 백엔드 프로세스 기준.
@@ -836,7 +933,7 @@ def upload_files_to_kb(
                     _stash_original(bucket, prefix, file_bytes, filename, uploaded_uris)
                     file_bytes, filename = convert_pptx_to_json(file_bytes, filename)
                     ext = ".json"
-                elif ext == ".pdf" and pdf_via_upstage_enabled():
+                elif ext == ".pdf" and policy.should_use_upstage(".pdf"):
                     # PDF 는 위에서 병렬 변환됨(pdf_md). 원본 PDF 는 originals/ 에 보관,
                     # 변환본 _pdf.md 만 raw/ 에 색인. 변환 실패분(pdf_md 에 없음)은 원본
                     # PDF 를 그대로 색인 → Lambda parse_pdf 폴백.
@@ -846,8 +943,24 @@ def upload_files_to_kb(
                         file_bytes, filename = md
                         ext = ".md"
 
-                # xlsx 는 여기(개인/팀)서 Upstage 변환하지 않고 pandas 분할(TABULAR_EXTS)로 처리.
-                # xlsx→Upstage 는 공용 KB CLI(shared_kb_manager)에서만 적용하는 정책 — 의도된 비대칭.
+                elif ext == ".xlsx" and policy.should_use_upstage(".xlsx"):
+                    # 공용 KB 정책(개인/팀은 후보가 아니라 이 분기에 오지 않는다).
+                    # 원본은 originals/ 에 보관하고 변환본 _xlsx.md 만 raw/ 에 색인한다.
+                    # PDF 와 달리 직렬 변환 — 공용 업로드는 배치가 작고 xlsx 비중이 낮다.
+                    # 변환 실패 시 아래 TABULAR_EXTS 분기(pandas 행 분할)로 그대로 폴백.
+                    try:
+                        md_bytes, md_name = convert_xlsx_to_markdown(file_bytes, filename)
+                    except Exception:
+                        log.warning(
+                            "Upstage xlsx 변환 실패, pandas 분할로 폴백: %s",
+                            filename, exc_info=True,
+                        )
+                    else:
+                        _stash_original(bucket, prefix, file_bytes, filename, uploaded_uris)
+                        file_bytes, filename = md_bytes, md_name
+                        ext = ".md"
+
+                # 여기 남은 xlsx/csv 는 로컬 처리 대상 — pandas 행 분할.
                 if ext in TABULAR_EXTS:
                     # 분할본(_partN)과 별개로 원본을 originals/ 에 보관 → 논리 문서 카운트·
                     # 목록·삭제가 멀티시트/분할 여부와 무관하게 '파일 1개'로 일관 처리.
@@ -918,6 +1031,7 @@ def process_staged_files(
     bucket: str,
     prefix: str,
     names: list[str],
+    policy: ParsePolicy = USER_PARSE_POLICY,
 ) -> list[str]:
     """staging/ 의 원본을 읽어 변환+raw/+originals/ 적재(색인 준비) 후 staging 정리.
 
@@ -927,6 +1041,7 @@ def process_staged_files(
     성공·실패와 무관하게 정리해 고아를 남기지 않는다.
 
     prefix: raw/ prefix. names: staging 에 적재된 원본 파일명(=업로드 파일명).
+    policy: 변환 정책(기본 = 개인/팀). 공용 KB 는 SHARED_PARSE_POLICY 를 넘긴다.
     반환: 색인된 raw/originals URI 목록.
     """
     staging = get_staging_prefix(prefix)
@@ -936,7 +1051,7 @@ def process_staged_files(
         for key, name in zip(staged_keys, names):
             obj = _get_s3().get_object(Bucket=bucket, Key=key)
             files.append((obj["Body"].read(), name))
-        return upload_files_to_kb(bucket, prefix, files, with_rollback=True)
+        return upload_files_to_kb(bucket, prefix, files, with_rollback=True, policy=policy)
     finally:
         # 성공: 원본 staging 정리 / 실패: upload_files_to_kb 가 raw·originals 롤백,
         # 여기서 staging 정리 → 어느 경로든 고아 없음.
@@ -1022,7 +1137,7 @@ def poll_ingestion_status(
         poll_timeout = cfg.get("ingest_poll_timeout", 300)
     start = time.time()
     while time.time() - start < poll_timeout:
-        resp = _get_bedrock_agent().get_ingestion_job(
+        resp = get_bedrock_agent().get_ingestion_job(
             knowledgeBaseId=kb_id,
             dataSourceId=data_source_id,
             ingestionJobId=job_id,

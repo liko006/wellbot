@@ -164,7 +164,7 @@ uv run pytest tests/chat
 uv run pytest tests/report_maker
 ```
 
-운영·마이그레이션 유틸은 [`scripts/`](scripts/)에 있습니다 (예: `shared_kb_manager.py`, `cleanup_personal_kb.py`, `transform_lambda.py`).  
+운영·마이그레이션 유틸은 [`scripts/`](scripts/)에 있습니다 (예: `shared_kb_manager.py`, `cleanup_kb.py`, `transform_lambda.py`).  
 사용법은 각 스크립트 docstring을 참고하세요.
 
 코드 주석·docstring 규칙은 [`docs/refactor-structure/style-guide.md`](docs/refactor-structure/style-guide.md)를 따릅니다.

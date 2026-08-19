@@ -87,7 +87,7 @@ def get_user_team_kb(emp_no: str) -> Optional[dict]:
     return {"kb_id": kb_id, "data_source_id": data_source_id}
 
 
-def _find_team_kb_from_teammates(dept_cd: str) -> Optional[dict]:
+def find_team_kb_by_dept(dept_cd: str) -> Optional[dict]:
     """
     같은 팀(부서)의 다른 팀원이 이미 팀 KB 를 등록했는지 DB 에서 검색
     EMP_NO → PSTN_DEPT_CD 조인으로 같은 부서 사용자의 TEAM 행을 조회
@@ -166,7 +166,7 @@ def ensure_team_kb_membership(emp_no: str, dept_cd: str) -> Optional[dict]:
         record = get_user_team_kb(emp_no)
         if record:
             return record
-        teammate_record = _find_team_kb_from_teammates(dept_cd)
+        teammate_record = find_team_kb_by_dept(dept_cd)
         if teammate_record:
             _insert_user_team_kb(
                 emp_no,
@@ -190,7 +190,7 @@ def get_or_create_team_kb(emp_no: str, dept_cd: str) -> dict:
         if record:
             return record
 
-        teammate_record = _find_team_kb_from_teammates(dept_cd)
+        teammate_record = find_team_kb_by_dept(dept_cd)
         if teammate_record:
             _insert_user_team_kb(emp_no, teammate_record["kb_id"], teammate_record["data_source_id"])
             return teammate_record
