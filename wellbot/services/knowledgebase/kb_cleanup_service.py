@@ -12,9 +12,19 @@ scope (``kind``):
 
 삭제 순서 (역순인 이유):
     Data Source → Knowledge Base → S3 Vectors 인덱스 → S3 원본 → S3 중간산출물 → DB 행.
-    DS 삭제가 곧 인덱스에서 그 DS 의 벡터를 지우는 동작(dataDeletionPolicy 기본값
-    ``Delete``)이므로 인덱스를 먼저 지우면 그 정리가 향할 곳이 없어진다. 벡터 스토어
-    자체는 KB/DS 를 지워도 남으므로 별도로 지운다.
+    벡터 스토어 자체는 KB/DS 를 지워도 남으므로 별도로 지운다.
+
+**DS/KB 삭제는 비동기다** — DeleteDataSource·DeleteKnowledgeBase 는 202(접수)만
+돌려주고 실제 정리는 백그라운드에서 진행된다. 접수 응답을 성공으로 보고 바로
+다음 단계로 넘어가면, 아직 도는 정리 작업이 쓰려던 벡터 인덱스를 우리가 먼저
+지워버려 ``DELETE_UNSUCCESSFUL`` 로 끝난다(로그상으로는 전부 성공으로 보였다).
+그래서 두 가지를 한다.
+
+1. DS 삭제 **전에 dataDeletionPolicy 를 RETAIN 으로** 바꾼다. teardown 은 인덱스를
+   통째로 지우므로 DS 가 벡터를 한 건씩 정리하는 건 낭비이자 유일한 실패 지점이다.
+   (공용 KB 폴더 삭제는 인덱스가 공유라 정반대 — 거긴 벡터를 실제로 빼야 한다.)
+2. 다음 단계로 넘어가기 전에 **리소스가 실제로 사라질 때까지 기다린다**.
+   ``DELETE_UNSUCCESSFUL`` 이면 failureReasons 를 그대로 실패 사유로 올린다.
 
 멱등:
     DB 행이 이미 없어도 이름으로 Bedrock/S3 를 조회해 남은 리소스를 정리한다.
@@ -25,6 +35,7 @@ scope (``kind``):
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 
 from botocore.exceptions import ClientError
@@ -64,6 +75,10 @@ KIND_TEAM = "team"
 STEP_DONE = "done"
 STEP_SKIPPED = "skipped"
 STEP_FAILED = "failed"
+
+# 비동기 삭제(202) 완료 대기. RETAIN 으로 바꿔 벡터 정리를 건너뛰므로 보통 수 초에 끝난다.
+DELETE_POLL_INTERVAL_SEC = 3
+DELETE_POLL_TIMEOUT_SEC = 300
 
 
 @dataclass(frozen=True)
@@ -210,28 +225,99 @@ def _absorb_not_found(error: ClientError, codes: tuple[str, ...]) -> bool:
     return code in codes
 
 
-def _delete_data_source(kb_id: str, data_source_id: str) -> bool:
-    """Data Source 삭제. 반환: 실제로 지웠으면 True, 이미 없었으면 False."""
+def _set_retain_policy(kb_id: str, data_source_id: str) -> bool:
+    """DS 의 dataDeletionPolicy 를 RETAIN 으로 변경. 반환: 실제로 바꿨으면 True.
+
+    teardown 은 벡터 인덱스를 통째로 지우므로 DS 가 벡터를 개별 정리할 필요가 없다.
+    기본값 ``Delete`` 로 두면 그 백그라운드 정리가 우리가 방금 지운 인덱스를 찾다가
+    DELETE_UNSUCCESSFUL 로 끝난다.
+
+    현재 설정을 읽어 정책만 바꿔 되쓴다(설정을 재구성하지 않아야 DS 를 망가뜨리지
+    않는다). 실패해도 삭제 자체는 시도하므로 best-effort 로 경고만 남긴다.
+    """
+    client = get_bedrock_agent()
     try:
-        get_bedrock_agent().delete_data_source(
+        current = client.get_data_source(
             knowledgeBaseId=kb_id, dataSourceId=data_source_id,
-        )
+        )["dataSource"]
+        if current.get("dataDeletionPolicy") == "RETAIN":
+            return False
+        payload = {
+            "knowledgeBaseId": kb_id,
+            "dataSourceId": data_source_id,
+            "name": current["name"],
+            "dataSourceConfiguration": current["dataSourceConfiguration"],
+            "dataDeletionPolicy": "RETAIN",
+        }
+        for optional in ("description", "vectorIngestionConfiguration"):
+            if current.get(optional):
+                payload[optional] = current[optional]
+        client.update_data_source(**payload)
         return True
+    except ClientError:
+        log.warning(
+            "dataDeletionPolicy RETAIN 전환 실패 (삭제는 계속 시도): kb_id=%s ds_id=%s",
+            kb_id, data_source_id, exc_info=True,
+        )
+        return False
+
+
+def _wait_until_gone(describe, label: str) -> None:
+    """리소스가 사라질 때까지 폴링. DELETE_UNSUCCESSFUL 이면 사유와 함께 예외.
+
+    describe() 는 리소스 dict 를 반환하거나 ResourceNotFoundException 을 던진다.
+    DS/KB 삭제는 202(접수)만 돌려주므로, 이 대기 없이 다음 단계로 가면 아직 도는
+    정리 작업의 대상(벡터 인덱스·S3)을 우리가 먼저 지워 실패시킨다.
+    """
+    deadline = time.monotonic() + DELETE_POLL_TIMEOUT_SEC
+    while time.monotonic() < deadline:
+        try:
+            resource = describe()
+        except ClientError as e:
+            if _absorb_not_found(e, ("ResourceNotFoundException",)):
+                return
+            raise
+        status = resource.get("status", "")
+        if status == "DELETE_UNSUCCESSFUL":
+            reasons = "; ".join(resource.get("failureReasons", []) or [])
+            raise RuntimeError(f"{label} 삭제 실패(DELETE_UNSUCCESSFUL): {reasons or '원인 미상'}")
+        time.sleep(DELETE_POLL_INTERVAL_SEC)
+    raise TimeoutError(f"{label} 삭제 완료 대기 타임아웃 ({DELETE_POLL_TIMEOUT_SEC}초)")
+
+
+def _delete_data_source(kb_id: str, data_source_id: str) -> bool:
+    """Data Source 삭제 후 실제로 사라질 때까지 대기. 반환: 이미 없었으면 False."""
+    client = get_bedrock_agent()
+    _set_retain_policy(kb_id, data_source_id)
+    try:
+        client.delete_data_source(knowledgeBaseId=kb_id, dataSourceId=data_source_id)
     except ClientError as e:
         if _absorb_not_found(e, ("ResourceNotFoundException", "ValidationException")):
             return False
         raise
+    _wait_until_gone(
+        lambda: client.get_data_source(
+            knowledgeBaseId=kb_id, dataSourceId=data_source_id,
+        )["dataSource"],
+        "Data Source",
+    )
+    return True
 
 
 def _delete_knowledge_base(kb_id: str) -> bool:
-    """Knowledge Base 삭제. 반환: 실제로 지웠으면 True."""
+    """Knowledge Base 삭제 후 실제로 사라질 때까지 대기. 반환: 이미 없었으면 False."""
+    client = get_bedrock_agent()
     try:
-        get_bedrock_agent().delete_knowledge_base(knowledgeBaseId=kb_id)
-        return True
+        client.delete_knowledge_base(knowledgeBaseId=kb_id)
     except ClientError as e:
         if _absorb_not_found(e, ("ResourceNotFoundException", "ValidationException")):
             return False
         raise
+    _wait_until_gone(
+        lambda: client.get_knowledge_base(knowledgeBaseId=kb_id)["knowledgeBase"],
+        "Knowledge Base",
+    )
+    return True
 
 
 def _delete_vector_index(vector_bucket: str, index_name: str) -> bool:
@@ -349,7 +435,9 @@ def execute_cleanup(plan: CleanupPlan) -> list[CleanupStep]:
         if not (plan.kb_id and plan.data_source_id):
             return STEP_SKIPPED, "DS 없음"
         ok = _delete_data_source(plan.kb_id, plan.data_source_id)
-        return STEP_DONE, plan.data_source_id if ok else "이미 없음"
+        if not ok:
+            return STEP_DONE, "이미 없음"
+        return STEP_DONE, f"{plan.data_source_id} (벡터는 인덱스 삭제로 일괄 제거)"
 
     def delete_kb():
         if not plan.kb_id:
