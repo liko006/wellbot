@@ -1,8 +1,12 @@
-"""공용(shared) KB 문서별 속성 레지스트리.
+"""공용(shared) KB 문서별 속성.
 
-`config/knowBase.yaml` 의 `shared_kb.docs` 를 읽고 쓴다 — `"대분류/[소분류/]파일명"` →
-`{tier, dept, ...}`. 검색측(`kb_retriever`)이 재랭킹(권위 티어)과 담당 부서 표시에
-쓰는 값으로, 지금까지는 수기로 편집하던 것을 admin UI 에서 관리하기 위한 계층이다.
+`shared_kb.docs` 를 읽고 쓴다 — `"대분류/[소분류/]파일명"` → `{tier, dept, ...}`.
+검색측(`kb_retriever`)이 재랭킹(권위 티어)과 담당 부서 표시에 쓰는 값으로, 지금까지는
+수기로 편집하던 것을 admin UI 에서 관리하기 위한 계층이다.
+
+**읽기는 설정(`get_kb_config`), 쓰기는 런타임 레지스트리(`kb_registry`)** 로 갈린다 —
+런타임에 고치는 값을 git 이 추적하는 파일에 쓰면 배포 때 충돌·유실이 난다(`kb_registry`
+모듈 docstring). 설정은 씨앗(knowBase.yaml) 위에 레지스트리를 덮은 결과다.
 
 문서 키는 `kb_retriever._shared_doc_key` 산출과 **같은 논리 경로**여야 한다
 (raw/originals 마커가 없는 경로). 어긋나면 조용히 재랭킹이 안 붙는다.
@@ -20,7 +24,7 @@ from collections.abc import Callable
 
 import yaml
 
-from wellbot.paths import KNOWBASE_YAML
+from wellbot.services.knowledgebase import kb_registry
 from wellbot.services.knowledgebase.config import get_kb_config
 
 log = logging.getLogger(__name__)
@@ -54,32 +58,19 @@ def tier_options() -> list[int]:
 
 
 # ──────────────────────────────────────────────
-# yaml 편집 (주석 보존을 위해 텍스트 단위로)
+# 레지스트리 파일 편집 (줄 단위)
 # ──────────────────────────────────────────────
-def _yaml_scalar(value: object) -> str:
-    """flow 표기 한 줄에 넣을 스칼라. 숫자·불리언은 그대로, 그 외는 따옴표."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
-    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
-
-
 def _format_doc_entry(doc_key: str, attrs: dict) -> str:
-    """entry 한 줄 생성. 기존 파일 형식(`    "키" : {tier: 0, dept: "X"}`)을 따른다."""
-    keys = [k for k in _DOC_ATTR_ORDER if k in attrs]
-    keys += sorted(k for k in attrs if k not in _DOC_ATTR_ORDER)
-    body = ", ".join(f"{k}: {_yaml_scalar(attrs[k])}" for k in keys)
-    return f'    "{doc_key}" : {{{body}}}'
+    """entry 한 줄. 표기 형식은 `kb_registry` 가 단일 출처(편집이 다시 찾아야 하므로)."""
+    return kb_registry.format_doc_entry(doc_key, attrs, _DOC_ATTR_ORDER)
 
 
 def _docs_block(lines: list[str]) -> tuple[int, int]:
     """shared_kb.docs 블록의 (헤더 줄 index, 마지막 entry 줄 index).
 
-    yaml.dump 로 통째 쓰지 않는 이유는 folders 레지스트리와 같다 — knowBase.yaml 에는
-    운영 주석이 많아 덤프하면 전부 사라진다. 섹션을 못 찾으면 파일을 건드리지 않고
-    예외를 던진다(형식이 바뀐 파일을 추측으로 수정하는 것보다 안전).
+    yaml.dump 로 통째 쓰지 않는 이유: 파일 상단 안내 주석이 사라지고, 무엇보다 블록
+    표기가 바뀌면 다음 편집이 기존 줄을 못 찾는다. 섹션을 못 찾으면 파일을 건드리지
+    않고 예외를 던진다(형식이 바뀐 파일을 추측으로 수정하는 것보다 안전).
     """
     in_shared = False
     header = None
@@ -133,7 +124,7 @@ def _update_doc_attr(doc_key: str, attr: str, value: object | None) -> None:
     검색측 `kb_retriever._merge_results` 가 매 호출마다 `get_kb_config()` 를 읽으므로
     앱 재시작 없이 다음 검색부터 반영된다.
     """
-    lines = KNOWBASE_YAML.read_text(encoding="utf-8").split("\n")
+    lines = kb_registry.read_lines()
     header, last = _docs_block(lines)
     index, attrs = _find_doc_entry(lines, header, last, doc_key)
 
@@ -153,7 +144,7 @@ def _update_doc_attr(doc_key: str, attr: str, value: object | None) -> None:
     else:
         return                                          # 지울 것도, 쓸 것도 없음
 
-    KNOWBASE_YAML.write_text("\n".join(lines), encoding="utf-8")
+    kb_registry.write_lines(lines)
 
     docs = _cfg().get("docs") or {}
     if attrs:
@@ -170,7 +161,7 @@ def _remove_entries(should_remove: Callable[[str], bool], label: str) -> int:
     한 건씩 지우면 파일을 문서 수만큼 다시 쓰게 되고, 중간에 실패하면 절반만 지워진
     상태가 남는다.
     """
-    lines = KNOWBASE_YAML.read_text(encoding="utf-8").split("\n")
+    lines = kb_registry.read_lines()
     header, last = _docs_block(lines)
 
     removed: list[str] = []
@@ -191,7 +182,7 @@ def _remove_entries(should_remove: Callable[[str], bool], label: str) -> int:
         return 0
 
     if removed:
-        KNOWBASE_YAML.write_text("\n".join(kept), encoding="utf-8")
+        kb_registry.write_lines(kept)
     for key in stale:
         docs.pop(key, None)
     _cfg()["docs"] = docs
@@ -233,7 +224,7 @@ def rekey_docs_under(old_top: str, new_top: str) -> int:
     if not old_top or not new_top or old_top == new_top:
         return 0
 
-    lines = KNOWBASE_YAML.read_text(encoding="utf-8").split("\n")
+    lines = kb_registry.read_lines()
     header, last = _docs_block(lines)
     old_prefix, new_prefix = f"{old_top}/", f"{new_top}/"
 
@@ -252,7 +243,7 @@ def rekey_docs_under(old_top: str, new_top: str) -> int:
     if not moved:
         return 0
 
-    KNOWBASE_YAML.write_text("\n".join(lines), encoding="utf-8")
+    kb_registry.write_lines(lines)
     docs = _cfg().get("docs") or {}
     for old_key, new_key in moved:
         if old_key in docs:

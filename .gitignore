@@ -217,6 +217,11 @@ __marimo__/
 # Prd
 config/notice.md
 
+# 공용 KB 런타임 레지스트리 — 앱이 수정하는 파일(폴더 등록·문서 티어).
+# 환경별로 값이 다르고 배포 때 pull 을 막으므로 추적하지 않는다.
+# 초기값은 config/knowBase.yaml 의 shared_kb.folders / docs 가 씨앗.
+config/kb_registry.yaml
+
 # 내부 인수인계 문서 — GitHub 미공개, 로컬 전용
 docs/handover.md
 

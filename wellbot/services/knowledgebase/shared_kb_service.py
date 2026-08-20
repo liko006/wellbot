@@ -20,8 +20,10 @@ S3 경로 구조:
     shared{env}/{대분류}/originals/{소분류}/ ← 변환 원본 보관 (색인 제외)
     shared{env}/{대분류}/processed/          ← Lambda 변환 결과 (intermediate 버킷)
 
-폴더 → Data Source id 레지스트리는 ``config/knowBase.yaml`` 의
-``shared_kb.folders`` 에 둔다(주석 보존을 위해 텍스트 삽입으로 기록).
+폴더 → Data Source id 레지스트리는 런타임 파일 ``config/kb_registry.yaml`` 의
+``shared_kb.folders`` 에 기록한다(``kb_registry``; 표기 보존을 위해 텍스트 삽입).
+읽기는 설정(``get_kb_config``)을 통하며, 그 값은 씨앗(knowBase.yaml) 위에 레지스트리를
+덮은 결과다.
 """
 
 from __future__ import annotations
@@ -33,12 +35,9 @@ import time
 from datetime import timezone
 from pathlib import Path
 
-import yaml
-
 from wellbot.constants import KST
-from wellbot.paths import KNOWBASE_YAML
 from wellbot.services.files import storage_service
-from wellbot.services.knowledgebase import shared_kb_docs
+from wellbot.services.knowledgebase import kb_registry, shared_kb_docs
 from wellbot.services.knowledgebase.config import get_kb_config
 from wellbot.services.knowledgebase.kb_utils import (
     CONVERTIBLE_EXTS,
@@ -192,12 +191,13 @@ def _cache_folder(top: str, data_source_id: str) -> None:
 
 
 def _register_folder(top: str, data_source_id: str) -> None:
-    """knowBase.yaml 의 shared_kb.folders 에 폴더를 추가.
+    """런타임 레지스트리의 shared_kb.folders 에 폴더를 추가.
 
-    yaml.dump 대신 텍스트 삽입으로 기존 주석/형식을 보존한다.
+    yaml.dump 대신 텍스트 삽입 — 덤프하면 파일 상단 안내 주석이 사라지고, 무엇보다
+    표기(4칸 들여쓰기·한 줄)가 바뀌어 **다음 편집이 기존 줄을 못 찾는다**.
     """
-    content = KNOWBASE_YAML.read_text(encoding="utf-8")
-    new_entry = f"    {top}: \"{data_source_id}\""
+    content = kb_registry.read_text()
+    new_entry = kb_registry.format_folder_entry(top, data_source_id)
 
     # folders: {} (빈 dict) → folders:\n    top: "ds-id" 로 변환
     if "folders: {}" in content:
@@ -221,18 +221,16 @@ def _register_folder(top: str, data_source_id: str) -> None:
             lines.insert(insert_idx, new_entry)
             content = "\n".join(lines)
     else:
-        log.warning("knowBase.yaml 에 folders 키가 없어 yaml.dump 로 폴백 (주석 손실 가능)")
-        full_config = yaml.safe_load(KNOWBASE_YAML.read_text(encoding="utf-8"))
-        shared = full_config["shared_kb"]
-        if not shared.get("folders"):
-            shared["folders"] = {}
-        shared["folders"][top] = data_source_id
-        with open(KNOWBASE_YAML, "w", encoding="utf-8") as f:
-            yaml.dump(full_config, f, allow_unicode=True, default_flow_style=False)
-        _cache_folder(top, data_source_id)
-        return
+        # kb_registry.ensure() 가 folders 키를 보장하므로 정상 경로에선 닿지 않는다.
+        # yaml.dump 로 폴백하지 않는 이유: 덤프가 표기를 바꿔 이후 편집이 기존 줄을
+        # 못 찾게 되고, 그러면 같은 문서·폴더가 중복으로 쌓인다. 조용히 망가지는 것보다
+        # 여기서 멈추는 게 낫다.
+        raise RuntimeError(
+            f"{kb_registry.REGISTRY_YAML.name} 에서 folders 키를 찾지 못했습니다. "
+            "파일 형식을 확인하세요."
+        )
 
-    KNOWBASE_YAML.write_text(content, encoding="utf-8")
+    kb_registry.write_text(content)
     _cache_folder(top, data_source_id)
     log.info("[Config] 폴더 등록 완료: %s → %s", top, data_source_id)
 
@@ -249,7 +247,7 @@ def unregister_folder(top: str) -> bool:
         return False
 
     data_source_id = folders[top]
-    lines = KNOWBASE_YAML.read_text(encoding="utf-8").split("\n")
+    lines = kb_registry.read_lines()
     entry_prefixes = (f"{top}:", f'"{top}":', f"'{top}':")
     kept = [
         line for line in lines
@@ -257,9 +255,12 @@ def unregister_folder(top: str) -> bool:
                 and data_source_id in line)
     ]
     if len(kept) != len(lines):
-        KNOWBASE_YAML.write_text("\n".join(kept), encoding="utf-8")
+        kb_registry.write_lines(kept)
     else:
-        log.warning("knowBase.yaml 에서 folders 항목을 찾지 못했습니다: %s", top)
+        log.warning(
+            "%s 에서 folders 항목을 찾지 못했습니다: %s",
+            kb_registry.REGISTRY_YAML.name, top,
+        )
 
     cfg = _cfg()
     fmap = cfg.get("folders") or {}
@@ -271,22 +272,17 @@ def unregister_folder(top: str) -> bool:
 
 def _rename_folder_in_yaml(old_top: str, new_top: str, data_source_id: str) -> None:
     """folders 레지스트리에서 대분류 키를 old→new 로 변경 (ds_id 동일 유지)."""
-    content = KNOWBASE_YAML.read_text(encoding="utf-8")
+    content = kb_registry.read_text()
     old_entry = f'{old_top}: "{data_source_id}"'
     new_entry = f'{new_top}: "{data_source_id}"'
-    if old_entry in content:
-        content = content.replace(old_entry, new_entry, 1)
-        KNOWBASE_YAML.write_text(content, encoding="utf-8")
-    else:
-        # 따옴표/형식이 달라 텍스트 치환 실패 시 yaml 로드/덤프 폴백 (주석 손실 가능)
-        log.warning("knowBase.yaml 텍스트 치환 실패 → yaml.dump 폴백")
-        full = yaml.safe_load(KNOWBASE_YAML.read_text(encoding="utf-8"))
-        fmap = (full.get("shared_kb", {}) or {}).get("folders") or {}
-        if old_top in fmap:
-            fmap[new_top] = fmap.pop(old_top)
-        full["shared_kb"]["folders"] = fmap
-        with open(KNOWBASE_YAML, "w", encoding="utf-8") as f:
-            yaml.dump(full, f, allow_unicode=True, default_flow_style=False)
+    if old_entry not in content:
+        # 표기가 어긋난 파일을 덤프로 덮으면 이후 편집이 줄을 못 찾는다(_register_folder
+        # 와 같은 이유) — 추측해서 고치지 않고 멈춘다.
+        raise RuntimeError(
+            f"{kb_registry.REGISTRY_YAML.name} 에서 folders 항목을 찾지 못했습니다: "
+            f"{old_top} (ds_id={data_source_id})"
+        )
+    kb_registry.write_text(content.replace(old_entry, new_entry, 1))
 
     cfg = _cfg()
     fmap = cfg.get("folders") or {}

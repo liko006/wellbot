@@ -31,6 +31,9 @@ AI_SERVICES_YAML: Path = CONFIG_DIR / "ai_services.yaml"
 GREETINGS_YAML: Path = CONFIG_DIR / "greetings.yaml"
 NOTICE_MD: Path = CONFIG_DIR / "notice.md"
 KNOWBASE_YAML: Path = CONFIG_DIR / "knowBase.yaml"
+# 공용 KB 런타임 레지스트리(폴더 등록·문서 속성). gitignore — 경로 상수는
+# services/knowledgebase/kb_registry.py 가 이 값을 쓴다.
+KB_REGISTRY_YAML: Path = CONFIG_DIR / "kb_registry.yaml"
 
 
 def wellbot_temp_dir(name: str) -> Path:
