@@ -157,22 +157,22 @@ def _admin_content() -> rx.Component:
                 rx.tabs.trigger("부서 관리", value="dept"),
                 rx.tabs.trigger("사원 관리", value="employee"),
                 rx.tabs.trigger("에이전트 관리", value="agent"),
-                rx.tabs.trigger("모니터링", value="monitoring"),
                 # 공용 KB 는 전사 검색 결과를 바꾸므로 실명 계정(DB ADMIN)에만 노출한다.
                 # ENV 비밀번호로 들어온 SUPER 는 세션 쿠키가 없어 업로드 엔드포인트도 못 쓴다.
                 rx.cond(
                     AdminState.admin_label != "SUPER",
-                    rx.tabs.trigger("지식베이스", value="kb"),
+                    rx.tabs.trigger("지식베이스 관리", value="kb"),
                 ),
+                rx.tabs.trigger("모니터링", value="monitoring"),
             ),
             rx.tabs.content(dept_tab(), value="dept", padding_top="1em"),
             rx.tabs.content(employee_tab(), value="employee", padding_top="1em"),
             rx.tabs.content(agent_tab(), value="agent", padding_top="1em"),
-            rx.tabs.content(monitoring_tab(), value="monitoring", padding_top="1em"),
             rx.cond(
                 AdminState.admin_label != "SUPER",
                 rx.tabs.content(kb_tab(), value="kb", padding_top="1em"),
             ),
+            rx.tabs.content(monitoring_tab(), value="monitoring", padding_top="1em"),
             value=AdminState.active_tab,
             on_change=AdminState.set_active_tab,
             width="100%",
