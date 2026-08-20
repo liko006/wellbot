@@ -672,9 +672,7 @@ class ChatState(rx.State):
         # 세션 만료·토큰 교체처럼 로그아웃을 거치지 않는 경로가 남아 있어 안전망을 둔다.
         if previous_emp_no and previous_emp_no != self._emp_no:
             log.info("사용자 변경 감지 — 화면 상태 초기화")
-            kept_model_settings = self.model_settings_raw
             self.reset()
-            self.model_settings_raw = kept_model_settings
             self._emp_no = auth.current_emp_no
 
         # KB 초기화: 개인/팀 KB 존재 여부 확인 (검색 범위 활성화 제어용)
