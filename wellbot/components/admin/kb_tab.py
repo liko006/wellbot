@@ -508,6 +508,62 @@ def _upload_modal() -> rx.Component:
     )
 
 
+def _orphan_modal() -> rx.Component:
+    """유령 속성 항목 확인 모달. 지울 키를 그대로 보여주고 확인을 받는다."""
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("속성 항목 정리"),
+            rx.vstack(
+                rx.text(
+                    "아래 항목은 실제 문서가 없습니다. 설정에서만 제거하며 "
+                    "S3 파일은 건드리지 않습니다.",
+                    size="2",
+                ),
+                rx.box(
+                    rx.vstack(
+                        rx.foreach(
+                            KbAdminState.orphan_doc_keys,
+                            lambda key: rx.text(
+                                key, size="1", color=COLORS["text_secondary"],
+                            ),
+                        ),
+                        spacing="1",
+                        align="start",
+                        width="100%",
+                    ),
+                    width="100%",
+                    max_height="220px",
+                    overflow_y="auto",
+                    overflow_x="auto",
+                ),
+                rx.hstack(
+                    rx.button(
+                        "취소",
+                        variant="soft",
+                        color_scheme="gray",
+                        on_click=KbAdminState.close_orphan_modal,
+                    ),
+                    rx.button(
+                        "정리",
+                        color_scheme="red",
+                        on_click=KbAdminState.clear_orphan_docs,
+                    ),
+                    spacing="3",
+                    justify="end",
+                    width="100%",
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            max_width="560px",
+        ),
+        open=KbAdminState.show_orphan_modal,
+        on_open_change=lambda is_open: rx.cond(  # type: ignore[misc]
+            ~is_open, KbAdminState.close_orphan_modal, None
+        ),
+    )
+
+
 def _delete_modal() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
@@ -588,6 +644,28 @@ def kb_tab() -> rx.Component:
                 ),
             ),
             rx.cond(
+                KbAdminState.has_orphan_docs,
+                rx.callout(
+                    rx.hstack(
+                        rx.text(KbAdminState.orphan_notice, size="1"),
+                        rx.button(
+                            "확인 후 정리",
+                            size="1",
+                            variant="soft",
+                            color_scheme="amber",
+                            on_click=KbAdminState.open_orphan_modal,
+                        ),
+                        align="center",
+                        gap="0.75em",
+                        wrap="wrap",
+                    ),
+                    icon="triangle_alert",
+                    color_scheme="amber",
+                    size="1",
+                    width="100%",
+                ),
+            ),
+            rx.cond(
                 KbAdminState.success != "",
                 rx.callout(
                     KbAdminState.success, icon="check", color_scheme="green", size="1",
@@ -608,9 +686,12 @@ def kb_tab() -> rx.Component:
             _folder_modal(),
             _upload_modal(),
             _delete_modal(),
+            _orphan_modal(),
             spacing="4",
             width="100%",
         ),
-        on_mount=KbAdminState.load_if_needed,
+        # 탭이 올라올 때마다 다시 읽는다 — CLI 나 다른 관리자가 바꾼 내용을 보려면
+        # 한 번만 읽어선 안 된다(옛 스냅샷에서 편집하면 유령 항목이 생긴다).
+        on_mount=KbAdminState.load_on_open,
         width="100%",
     )

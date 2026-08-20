@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from wellbot.constants import KB_UPLOAD_MAX_PER_REQUEST
 from wellbot.services.knowledgebase import shared_kb_docs, shared_kb_service
+from wellbot.services.knowledgebase.config import reload_kb_config
 from wellbot.services.knowledgebase.kb_utils import (
     PARSER_AUTO,
     PARSER_LOCAL,
@@ -83,7 +84,13 @@ class KbAdminDoc(BaseModel):
 
 
 def _fetch_all() -> tuple[list[dict], list[str], dict]:
-    """목록 조회 3건을 한 번의 오프로드로 묶는다 (S3 + 설정)."""
+    """목록 조회를 한 번의 오프로드로 묶는다 (설정 재읽기 + S3 + 설정 조회).
+
+    설정을 먼저 파일에서 다시 읽는 이유: CLI 는 별도 프로세스라 앱의 설정 캐시를
+    갱신할 수 없다. 다시 읽지 않으면 CLI 로 폴더 이름을 바꾼 뒤에도 화면이 옛 이름을
+    보여주고, 그 행에서 티어를 바꾸면 사라진 경로로 새 항목이 생긴다.
+    """
+    reload_kb_config()
     return (
         shared_kb_service.list_tree(),
         sorted(shared_kb_service.list_folders()),
@@ -177,9 +184,12 @@ class KbAdminState(rx.State):
     selected_docs: list[str] = []        # 체크된 문서 경로 (일괄 삭제 대상)
 
     loading: bool = False
-    loaded: bool = False
     error: str = ""
     success: str = ""
+
+    # 실제 문서가 없는 속성 키 (설정 파일에 남은 유령 항목)
+    orphan_doc_keys: list[str] = []
+    show_orphan_modal: bool = False
 
     # ── 폴더 생성 모달 ──
     show_folder_modal: bool = False
@@ -250,6 +260,17 @@ class KbAdminState(rx.State):
         return bool(visible) and all(path in self.selected_docs for path in visible)
 
     @rx.var
+    def has_orphan_docs(self) -> bool:
+        return bool(self.orphan_doc_keys)
+
+    @rx.var
+    def orphan_notice(self) -> str:
+        return (
+            f"실제 문서가 없는 속성 항목이 {len(self.orphan_doc_keys)}건 있습니다. "
+            "문서 목록에 표시되지 않아 여기서만 정리할 수 있습니다."
+        )
+
+    @rx.var
     def delete_summary(self) -> str:
         """삭제 확인 모달에 보여줄 대상 요약 (길면 뒤를 접는다)."""
         names = [path.rsplit("/", 1)[-1] for path in self.selected_docs]
@@ -286,9 +307,13 @@ class KbAdminState(rx.State):
     # ──────────────────────────────────────────
     # 목록 로드
     # ──────────────────────────────────────────
-    async def load_if_needed(self):
-        """탭 최초 진입 시 1회 로드 (모니터링 탭과 같은 on_mount 패턴)."""
-        if self.loaded or self.loading:
+    async def load_on_open(self):
+        """탭이 화면에 올라올 때마다 다시 읽는다.
+
+        한 번만 읽으면(이전 구현) CLI 나 다른 관리자가 바꾼 내용을 못 본다 — 그 상태에서
+        티어를 바꾸면 사라진 경로로 새 항목이 생긴다. 비용은 설정 재읽기 + S3 목록 1회다.
+        """
+        if self.loading:
             return
         async for _ in self._load():
             yield
@@ -321,7 +346,15 @@ class KbAdminState(rx.State):
         self.selected_docs = [
             path for path in self.selected_docs if any(d.path == path for d in self.docs)
         ]
-        self.loaded = True
+
+        # 실제 문서가 없는 속성 키(유령 항목) 탐지. 설정 파일에는 참조 무결성이 없어
+        # 이런 키가 생길 수 있고(외부 rename 중 편집 등), **문서 목록에 뜨지 않으니
+        # 화면에서 지울 방법이 없다** — 여기서 세어 관리자에게 보여준다.
+        # 트리에 파일이 하나도 없으면 판단을 보류한다(S3 조회 실패를 전체 유령으로
+        # 오인해 전부 지우자고 권하면 안 된다).
+        live = {d.path for d in self.docs}
+        self.orphan_doc_keys = sorted(attrs) if live else []
+        self.orphan_doc_keys = [key for key in self.orphan_doc_keys if key not in live]
 
     async def _load(self):
         if not await self._is_db_admin():
@@ -733,6 +766,37 @@ class KbAdminState(rx.State):
             return
         self._replace_doc(path, dept=name)
         self.success = f"'{path.rsplit('/', 1)[-1]}' 담당 부서를 저장했습니다."
+
+    # ──────────────────────────────────────────
+    # 유령 속성 항목 정리
+    # ──────────────────────────────────────────
+    def open_orphan_modal(self) -> None:
+        self._clear_messages()
+        self.show_orphan_modal = True
+
+    def close_orphan_modal(self) -> None:
+        self.show_orphan_modal = False
+
+    async def clear_orphan_docs(self):
+        """실제 문서가 없는 속성 항목을 제거. S3 는 건드리지 않는다(설정만 정리)."""
+        if not await self._is_db_admin():
+            self.error = _ADMIN_ONLY
+            return
+        targets = list(self.orphan_doc_keys)
+        if not targets:
+            self.show_orphan_modal = False
+            return
+
+        try:
+            removed = await asyncio.to_thread(shared_kb_docs.remove_docs, targets)
+        except Exception as exc:  # noqa: BLE001 - 화면에 원인 노출
+            log.exception("유령 속성 항목 정리 실패: %d건", len(targets))
+            self.error = f"정리 실패: {exc}"
+            return
+
+        self.show_orphan_modal = False
+        self.orphan_doc_keys = []
+        self.success = f"속성 항목 {removed}건을 정리했습니다."
 
     # ──────────────────────────────────────────
     # 색인 상태
