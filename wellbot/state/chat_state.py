@@ -19,6 +19,7 @@ from wellbot.logger import log_context
 from wellbot.constants import (
     ATTACHMENT_PROCESS_TIMEOUT_SEC,
     ATTACHMENT_UPLOAD_WAIT_MAX_SEC,
+    CONVERSATION_LIMIT,
     DEFAULT_CONVERSATION_TITLE,
     FILE_MAX_PER_MESSAGE,
     FILE_MAX_SIZE_MB,
@@ -109,6 +110,13 @@ class ChatState(rx.State):
     # ── 대화 검색 ──
     search_query: str = ""
 
+    # ── 대화 목록 페이지 ──
+    has_more_conversations: bool = False      # 사이드바 '더 보기' 노출 여부
+    is_loading_more_conversations: bool = False
+    # 지금까지 펼친 페이지 수. 목록을 다시 읽을 때 이 배수만큼 가져와, 페이지를
+    # 넘겨둔 상태에서 화면을 옮겼다 돌아와도 접히지 않는다.
+    _conversation_pages: int = 1
+
     # ── 첨부파일 ──
     pending_attachments: list[AttachmentInfo] = []
     attachment_error: str = ""
@@ -189,10 +197,27 @@ class ChatState(rx.State):
             self._ensure_conversation()
             return
 
-        rows = await asyncio.to_thread(chat_service.list_conversations, self._emp_no)
+        limit = max(1, self._conversation_pages) * CONVERSATION_LIMIT
+        rows, has_more = await asyncio.to_thread(
+            chat_service.list_conversations, self._emp_no, limit
+        )
+        self.has_more_conversations = has_more
         self.conversations, self.current_conversation_id = merge_conversations(
             self.conversations, rows, self.current_conversation_id
         )
+
+    async def load_more_conversations(self) -> None:
+        """사이드바 '더 보기' — 다음 페이지까지 포함해 목록을 다시 읽는다."""
+        if self.is_loading_more_conversations or not self.has_more_conversations:
+            return
+        self.is_loading_more_conversations = True
+        yield          # 버튼 문구를 '불러오는 중'으로 먼저 갱신
+
+        try:
+            self._conversation_pages += 1
+            await self._refresh_conversations()
+        finally:
+            self.is_loading_more_conversations = False
 
     def _get_current_index(self) -> int | None:
         """현재 대화의 인덱스 반환. 없으면 자동 복구 시도"""
