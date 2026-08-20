@@ -183,6 +183,10 @@ class KbAdminState(rx.State):
     expanded_folders: list[str] = []     # 펼쳐진 폴더 경로 (기본은 전부 접힘)
     selected_docs: list[str] = []        # 체크된 문서 경로 (일괄 삭제 대상)
 
+    # 우측 본문에 무엇을 보여줄지 — "docs"(문서 표) | "cleanup"(정리 화면).
+    # 좌측 레일에서 폴더를 고르면 docs, 정리 항목을 고르면 cleanup(KbCleanupState.open).
+    view: str = "docs"
+
     loading: bool = False
     error: str = ""
     success: str = ""
@@ -376,6 +380,7 @@ class KbAdminState(rx.State):
         self.loading = False
 
     def select_folder(self, path: str) -> None:
+        self.view = "docs"
         self.selected_folder = path
         # 선택은 폴더 단위라 문서 체크도 폴더를 벗어나면 초기화한다 —
         # 안 보이는 문서가 선택된 채로 남으면 삭제 대상이 화면과 어긋난다.

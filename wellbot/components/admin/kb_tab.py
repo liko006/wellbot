@@ -10,8 +10,10 @@
 
 import reflex as rx
 
+from wellbot.components.admin.cleanup_panel import CLEANUP_ITEMS, cleanup_panel
 from wellbot.components.chat.file_icon import file_icon_by_name
 from wellbot.state.chat_models import PendingFile
+from wellbot.state.kb_cleanup_state import KbCleanupState
 from wellbot.state.kb_admin_state import (
     PARSER_LABELS,
     KbAdminDoc,
@@ -106,10 +108,34 @@ def _folder_row(folder: KbAdminFolder) -> rx.Component:
     )
 
 
+def _cleanup_item(label: str, mode: str, icon: str) -> rx.Component:
+    """정리 항목 한 줄. 고르면 우측이 정리 화면으로 바뀐다."""
+    is_active = (KbAdminState.view == "cleanup") & (KbCleanupState.mode == mode)
+    return rx.hstack(
+        rx.icon(icon, size=14, color=COLORS["text_secondary"], flex_shrink="0"),
+        rx.text(
+            label,
+            size="2",
+            color=COLORS["text_primary"],
+            weight=rx.cond(is_active, "medium", "regular"),
+        ),
+        width="100%",
+        align="center",
+        gap="0.4em",
+        padding_y="0.4em",
+        padding_x="0.5em",
+        cursor="pointer",
+        border_radius=SPACING["border_radius_sm"],
+        bg=rx.cond(is_active, COLORS["sidebar_active"], "transparent"),
+        _hover={"bg": rx.cond(is_active, COLORS["sidebar_active"], COLORS["sidebar_hover"])},
+        on_click=KbCleanupState.open(mode),
+    )
+
+
 def _folder_rail() -> rx.Component:
     return rx.vstack(
         rx.hstack(
-            rx.text("폴더", size="1", color=COLORS["category_text"], weight="medium"),
+            rx.text("공용 KB", size="1", color=COLORS["category_text"], weight="medium"),
             rx.spacer(),
             rx.button(
                 rx.icon("folder-plus", size=14),
@@ -134,9 +160,12 @@ def _folder_rail() -> rx.Component:
                 width="100%",
                 overflow_y="auto",
                 overflow_x="hidden",
-                max_height="60vh",
+                max_height="45vh",
             ),
         ),
+        rx.divider(margin_y="0.5em"),
+        rx.text("정리", size="1", color=COLORS["category_text"], weight="medium"),
+        *[_cleanup_item(label, mode, icon) for label, mode, icon in CLEANUP_ITEMS],
         width=_RAIL_WIDTH,
         flex_shrink="0",
         spacing="2",
@@ -677,7 +706,11 @@ def kb_tab() -> rx.Component:
                 rx.center(rx.spinner(size="3"), padding="3em", width="100%"),
                 rx.hstack(
                     _folder_rail(),
-                    _doc_table(),
+                    rx.cond(
+                        KbAdminState.view == "cleanup",
+                        cleanup_panel(),
+                        _doc_table(),
+                    ),
                     width="100%",
                     align="start",
                     spacing="0",
