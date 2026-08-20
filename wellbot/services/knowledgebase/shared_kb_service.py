@@ -30,10 +30,12 @@ import hashlib
 import logging
 import re
 import time
+from datetime import timezone
 from pathlib import Path
 
 import yaml
 
+from wellbot.constants import KST
 from wellbot.paths import KNOWBASE_YAML
 from wellbot.services.files import storage_service
 from wellbot.services.knowledgebase.config import get_kb_config
@@ -46,7 +48,9 @@ from wellbot.services.knowledgebase.kb_utils import (
     convert_pdf_to_markdown,
     convert_pptx_to_json,
     convert_xlsx_to_markdown,
+    delete_kb_docs,
     get_bedrock_agent,
+    is_ingestion_in_progress,
     shared_base,
     split_and_upload_tabular,
     validate_file_size,
@@ -484,9 +488,166 @@ def upload_files(
     return uploaded_uris
 
 
+def process_staged(
+    folder: str,
+    names: list[str],
+    policy: ParsePolicy = SHARED_PARSE_POLICY,
+) -> list[str]:
+    """staging/ 의 원본을 읽어 변환 후 raw/·originals/ 에 적재(색인 준비).
+
+    HTTP 업로드(stage_files)의 뒷단이다 — Upstage 변환처럼 무거운 작업을 요청 밖에서
+    수행해 프록시 타임아웃을 피한다. 개인/팀의 `kb_utils.process_staged_files` 와
+    같은 역할이며, 공용은 소분류 경로를 보존해야 해서 이 모듈의 prefix 헬퍼를 쓴다.
+
+    staging/ 원본은 성공·실패와 무관하게 정리한다(고아 방지). 실패 시 raw/originals
+    부분 적재는 upload_files 가 롤백한다.
+
+    반환: 색인 대상 S3 URI 목록.
+    """
+    validate_folder(folder)
+    bucket = _bucket()
+    staging = staging_prefix(folder)
+    staged_keys = [f"{staging}{Path(name).name}" for name in names]
+    try:
+        files: list[tuple[bytes, str]] = []
+        for key, name in zip(staged_keys, names):
+            obj = _s3().get_object(Bucket=bucket, Key=key)
+            files.append((obj["Body"].read(), Path(name).name))
+        return upload_files(folder, files, policy)
+    finally:
+        delete_uris([f"s3://{bucket}/{key}" for key in staged_keys])
+
+
+# ──────────────────────────────────────────────
+# 문서 목록 / 삭제
+# ──────────────────────────────────────────────
+def _tree_rows(node: dict, prefix: str, depth: int, out: list[dict]) -> None:
+    """트리 노드를 DFS 로 평탄화. 각 노드에서 파일 먼저(업로드일↓ + 이름↑), 그다음 폴더(이름순)."""
+    for fname in sorted(sorted(node["files"]), key=lambda n: node["files"][n], reverse=True):
+        out.append({
+            "depth": depth,
+            "path": f"{prefix}/{fname}" if prefix else fname,
+            "name": fname,
+            "is_folder": False,
+            "uploaded_at": node["files"][fname],
+        })
+    for dname in sorted(node["dirs"]):
+        dpath = f"{prefix}/{dname}" if prefix else dname
+        out.append({
+            "depth": depth, "path": dpath, "name": dname,
+            "is_folder": True, "uploaded_at": "",
+        })
+        _tree_rows(node["dirs"][dname], dpath, depth + 1, out)
+
+
+def list_tree() -> list[dict]:
+    """공용 KB 문서 목록을 **평탄화한 N단계 트리 행**으로 반환.
+
+    행: `{depth, path, name, is_folder, uploaded_at}`. `path` 는 대분류부터의 논리 경로
+    (`"사규/규정/취업규칙.pdf"`)로, raw/originals 마커가 없어 문서 속성 키(`docs`)와
+    그대로 맞물린다. 들여쓰기 폭 같은 표시 값은 호출자(State)가 depth 로 계산한다.
+
+    raw/ 와 originals/ 는 같은 문서를 가리키므로 논리 경로로 dedup 해 한 번만 노출한다
+    (변환본 `_pdf.md` 등은 `list_objects_with_meta` 가 이미 제외).
+
+    S3 를 호출하는 블로킹 함수 — async 컨텍스트에서는 executor 로 오프로드해야 한다.
+    """
+    bucket = _bucket()
+    if not bucket:
+        return []
+
+    base = shared_base()
+    tree: dict = {"dirs": {}, "files": {}}
+    seen: set[str] = set()
+    for obj in storage_service.list_objects_with_meta(f"{base}/", bucket):
+        parts = obj["key"].split("/")
+        # shared{env}/{대분류}/{raw|originals}/{...}/{파일} 형태만 채택
+        # (staging/·processed/ 는 색인 대상이 아니므로 목록에 넣지 않는다).
+        if len(parts) < 4 or parts[0] != base or parts[2] not in ("raw", "originals"):
+            continue
+        segs = [parts[1]] + parts[3:]           # raw/originals 마커 제거 = 논리 경로
+        logical = "/".join(segs)
+        if logical in seen:
+            continue
+        seen.add(logical)
+        last_modified = obj["last_modified"]
+        if last_modified.tzinfo is None:
+            last_modified = last_modified.replace(tzinfo=timezone.utc)
+        node = tree
+        for seg in segs[:-1]:
+            node = node["dirs"].setdefault(seg, {"dirs": {}, "files": {}})
+        node["files"][segs[-1]] = last_modified.strftime("%Y-%m-%d")
+
+    rows: list[dict] = []
+    _tree_rows(tree, "", 0, rows)
+    return rows
+
+
+def split_doc_path(path: str) -> tuple[str, str]:
+    """문서 논리 경로 → (부모 폴더, 파일명). 예: '사규/규정/A.pdf' → ('사규/규정', 'A.pdf')."""
+    segs = [s for s in path.strip("/").split("/") if s]
+    if len(segs) < 2:
+        raise ValueError(f"문서 경로가 올바르지 않습니다: {path!r}")
+    filename = segs[-1]
+    if filename in (".", "..") or "\\" in filename:
+        raise ValueError(f"파일명에 사용할 수 없는 값입니다: {filename!r}")
+    return "/".join(segs[:-1]), filename
+
+
+def delete_docs(paths: list[str]) -> None:
+    """문서 논리 경로 목록을 S3 에서 삭제(raw/ 색인본 + originals/ 보관본).
+
+    벡터 제거는 재-ingest 로 이뤄지므로 호출자가 이어서 `start_ingestion` 을 돌려야
+    한다(삭제만 하면 검색 결과에 남는다).
+    """
+    bucket = _bucket()
+    for path in paths:
+        parent, filename = split_doc_path(path)
+        validate_folder(parent)
+        delete_kb_docs(bucket, raw_prefix(parent), originals_prefix(parent), [filename])
+        log.info("[S3] 문서 삭제: %s", path)
+
+
 # ──────────────────────────────────────────────
 # Ingestion
 # ──────────────────────────────────────────────
+def ingestion_in_progress(folder: str) -> bool:
+    """대분류 DS 에 진행 중인 Ingestion 이 있는지 (중복 실행 차단용)."""
+    return is_ingestion_in_progress(_kb_id(), get_data_source_id(folder))
+
+
+def latest_ingestion(folder: str) -> dict:
+    """대분류 DS 의 최신 Ingestion Job 요약. job 이 없으면 {}.
+
+    job_id 를 화면 상태에 보관하지 않고 매번 Bedrock 에서 최신 job 을 읽는다 — 업로드
+    후 색인은 fire-and-forget 이라, 새로고침하거나 다른 관리자가 접속해도 같은 결과를
+    볼 수 있어야 실패가 묻히지 않는다.
+
+    반환: `{status, scanned, indexed, deleted, failed, updated_at}`.
+    """
+    resp = get_bedrock_agent().list_ingestion_jobs(
+        knowledgeBaseId=_kb_id(),
+        dataSourceId=get_data_source_id(folder),
+        sortBy={"attribute": "STARTED_AT", "order": "DESCENDING"},
+        maxResults=1,
+    )
+    jobs = resp.get("ingestionJobSummaries") or []
+    if not jobs:
+        return {}
+
+    job = jobs[0]
+    stats = job.get("statistics") or {}
+    updated = job.get("updatedAt") or job.get("startedAt")
+    return {
+        "status": job.get("status", ""),
+        "scanned": stats.get("numberOfDocumentsScanned", 0),
+        "indexed": stats.get("numberOfNewDocumentsIndexed", 0),
+        "deleted": stats.get("numberOfDocumentsDeleted", 0),
+        "failed": stats.get("numberOfDocumentsFailed", 0),
+        "updated_at": updated.astimezone(KST).strftime("%Y-%m-%d %H:%M") if updated else "",
+    }
+
+
 def start_ingestion(folder: str) -> str:
     """대분류 Data Source 의 Ingestion Job 실행. 반환: ingestion_job_id."""
     data_source_id = get_data_source_id(folder)

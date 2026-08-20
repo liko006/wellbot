@@ -1242,73 +1242,26 @@ class ChatState(rx.State):
         loop = _asyncio.get_running_loop()
         try:
             if tab == "shared":
-                # 회사 KB: shared{env}/{문서종류}/raw/{파일} 구조 → 문서종류 단위 그룹 뷰.
-                # 공용 prefix base 는 dev/prd 분기(shared / shared-dev) — kb_utils 단일 출처.
-                from wellbot.services.knowledgebase.config import get_kb_config
-                from wellbot.services.knowledgebase.kb_utils import shared_base
-                shared_cfg = get_kb_config().get("shared_kb", {})
-                shared_bucket = shared_cfg.get("s3_bucket", "")
-                if not shared_bucket:
-                    self.kb_shared_tree = []
-                    return
+                # 회사 KB: "대분류/[소분류.../]파일" 논리 경로의 N단계 평탄 트리.
+                # 목록 산출은 서비스가 담당(admin KB 관리 탭과 같은 출처) — 여기서는
+                # 표시용 값(들여쓰기 폭·만료 표기)만 붙인다.
+                from wellbot.services.knowledgebase import shared_kb_service
 
-                base = shared_base()
-                items = await loop.run_in_executor(
-                    None,
-                    lambda: storage_service.list_objects_with_meta(f"{base}/", shared_bucket),
-                )
-                # 전체 경로를 "대분류/[서브.../]파일" 논리 경로로 정규화해 **N단계 트리** 구성.
-                # (raw/originals 마커 제거; 폴더는 도메인 표시용, 깊이 무관.) raw+originals 중복은
-                # 논리 경로 dedup 으로 1회만 노출. 변환본(_pdf.md 등)은 list_objects 가 이미 제외.
-                tree: dict = {"dirs": {}, "files": {}}
-                seen_shared: set[str] = set()
-                for obj in items:
-                    parts = obj["key"].split("/")
-                    # shared{env}/{대분류}/{raw|originals}/{...}/{파일} 형태만 채택
-                    if (
-                        len(parts) < 4
-                        or parts[0] != base
-                        or parts[2] not in ("raw", "originals")
-                    ):
-                        continue
-                    segs = [parts[1]] + parts[3:]   # raw/originals 제거한 논리 경로 세그먼트
-                    logical = "/".join(segs)
-                    if logical in seen_shared:
-                        continue
-                    seen_shared.add(logical)
-                    lm = obj["last_modified"]
-                    if lm.tzinfo is None:
-                        lm = lm.replace(tzinfo=_tz.utc)
-                    node = tree
-                    for seg in segs[:-1]:
-                        node = node["dirs"].setdefault(seg, {"dirs": {}, "files": {}})
-                    node["files"][segs[-1]] = lm.strftime("%Y-%m-%d")
-
-                # DFS 평탄화: 각 노드에서 파일(업로드일↓ + 이름↑) 먼저, 그다음 하위 폴더(이름순).
-                # depth = 조상 폴더 수(0=대분류). indent(padding_left)는 depth 로 미리 계산.
-                rows: list[KbTreeRow] = []
-
-                def _walk(node: dict, prefix: str, depth: int) -> None:
-                    indent = f"{depth * 1.25}em"   # 1.25=이진수 정확값 → 1.25/2.5/3.75em (부동소수 오차 없음)
-                    for fname in sorted(
-                        sorted(node["files"]),
-                        key=lambda n: node["files"][n],
-                        reverse=True,
-                    ):
-                        fpath = f"{prefix}/{fname}" if prefix else fname
-                        rows.append(KbTreeRow(
-                            depth=depth, path=fpath, name=fname, is_folder=False,
-                            indent=indent, uploaded_at=node["files"][fname], expires_at="-",
-                        ))
-                    for dname in sorted(node["dirs"]):
-                        dpath = f"{prefix}/{dname}" if prefix else dname
-                        rows.append(KbTreeRow(
-                            depth=depth, path=dpath, name=dname, is_folder=True, indent=indent,
-                        ))
-                        _walk(node["dirs"][dname], dpath, depth + 1)
-
-                _walk(tree, "", 0)
-                self.kb_shared_tree = rows
+                rows = await loop.run_in_executor(None, shared_kb_service.list_tree)
+                self.kb_shared_tree = [
+                    KbTreeRow(
+                        depth=row["depth"],
+                        path=row["path"],
+                        name=row["name"],
+                        is_folder=row["is_folder"],
+                        # 1.25=이진수 정확값 → 1.25/2.5/3.75em (부동소수 오차 없음)
+                        indent=f"{row['depth'] * 1.25}em",
+                        uploaded_at=row["uploaded_at"],
+                        # 공용 KB 는 만료가 없어 파일 행에 '-' 를 표시(폴더 행은 공란)
+                        expires_at="" if row["is_folder"] else "-",
+                    )
+                    for row in rows
+                ]
                 return
 
             # personal / team: 본인(또는 팀) prefix 의 raw/ + originals/ 병합
