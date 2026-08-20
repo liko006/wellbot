@@ -6,11 +6,15 @@ config/knowBase.yaml 의 KB 동작 옵션과 .env 의 KB 인프라 변수를 병
 
 from __future__ import annotations
 
+import logging
 import os
 
 import yaml
 
 from wellbot.paths import KNOWBASE_YAML
+from wellbot.services.knowledgebase import kb_registry
+
+log = logging.getLogger(__name__)
 
 _kb_config: dict | None = None
 
@@ -76,4 +80,26 @@ def get_kb_config() -> dict:
         shared_kb_id = os.getenv("KB_ID")
         if shared_kb_id:
             _kb_config.setdefault("shared_kb", {})["kb_id"] = shared_kb_id
+
+        _apply_registry(_kb_config)
     return _kb_config
+
+
+def _apply_registry(config: dict) -> None:
+    """런타임 레지스트리(kb_registry.yaml)를 씨앗 위에 덮어쓴다.
+
+    폴더 등록·문서 속성은 앱이 런타임에 고치는 값이라 git 이 추적하지 않는 별도 파일에
+    쓴다(이유는 `kb_registry` 모듈 docstring). 그 파일이 있으면 해당 섹션의 값을
+    **통째로 대체**한다 — 레지스트리가 생긴 뒤부터는 그쪽이 유일한 진실이라, 씨앗과
+    합치면 지운 항목이 되살아난다.
+
+    파일이 없으면 씨앗(knowBase.yaml)이 그대로 쓰인다 — 레지스트리 도입 전에 배포된
+    서버도 그대로 동작한다.
+    """
+    registry = kb_registry.load()
+    if not registry:
+        log.info("[Config] 런타임 레지스트리 없음 — knowBase.yaml 씨앗 사용")
+        return
+    for section, values in registry.items():
+        if isinstance(values, dict):
+            config.setdefault(section, {}).update(values)
