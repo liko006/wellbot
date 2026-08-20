@@ -66,16 +66,23 @@ def list_conversations(emp_no: str) -> list[dict]:
     사이드바 목록에서 제외한다. (예: 보고서 오류 검출 사용 내역)
     """
     with get_session() as session:
-        agent_smry = (
+        # 이 대화에 에이전트 태깅 메시지가 있는지 (상관 서브쿼리).
+        # NOT IN + 전역 DISTINCT 목록이었는데, 그 목록은 **사번으로 걸러지지 않아**
+        # 전사 chtb_msg_d 를 훑었다. AI 서비스 사용량에 비례해 무거워지고, 남의 데이터가
+        # 내 목록 조회에 개입할 구조이기도 했다. EXISTS 는 대화 한 건씩 확인하고 끝난다.
+        has_agent_message = (
             session.query(ChatMessage.chtb_tlk_smry_id)
-            .filter(ChatMessage.agnt_id.isnot(None))
-            .distinct()
+            .filter(
+                ChatMessage.chtb_tlk_smry_id == ChatSummary.chtb_tlk_smry_id,
+                ChatMessage.agnt_id.isnot(None),
+            )
+            .exists()
         )
         rows = (
             session.query(ChatSummary)
             .filter(
                 ChatSummary.emp_no == emp_no,
-                ChatSummary.chtb_tlk_smry_id.notin_(agent_smry),
+                ~has_agent_message,
             )
             .order_by(ChatSummary.rgst_dtm.desc())
             .limit(CONVERSATION_LIMIT)

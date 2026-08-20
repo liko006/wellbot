@@ -245,7 +245,7 @@ class AuthState(rx.State):
     # ── 로그아웃 ──
 
     async def logout(self) -> rx.event.EventSpec:
-        """로그아웃. 토큰 폐기 + 쿠키 삭제"""
+        """로그아웃. 토큰 폐기 + 쿠키 삭제 + 화면 상태 초기화"""
         if self.auth_token:
             await asyncio.to_thread(auth_service.invalidate_session_token, self.auth_token)
 
@@ -256,7 +256,40 @@ class AuthState(rx.State):
         self.current_user_role = ""
         self.current_dept_cd = ""
 
+        await self._clear_user_states()
         return rx.redirect("/login")
+
+    async def _clear_user_states(self) -> None:
+        """로그인 사용자에 종속된 State 를 전부 초기화.
+
+        Reflex State 는 **브라우저 토큰**에 묶여 있어 로그아웃해도 같은 상태 객체가
+        살아남는다. 여기서 비우지 않으면 같은 브라우저에서 다른 사번으로 로그인했을 때
+        이전 사용자의 대화 목록·보고서 내용이 그대로 보인다.
+
+        지울 필드를 골라내지 않고 **State 단위로 reset()** 하는 이유: 필드 목록을
+        관리하는 방식은 새 필드가 추가될 때마다 갱신해야 하고 반드시 빠뜨린다.
+        다만 **브라우저 취향(LocalStorage)** 은 사용자 데이터가 아니라 이 기기의
+        설정이므로 되돌려 놓는다 — 같은 사람이 다시 로그인했는데 설정이 초기화되면 안 된다.
+
+        UIState(사이드바 접힘 등)는 사용자 데이터를 담지 않아 대상이 아니다.
+        """
+        # 순환 import 방지 — State 들이 서로를 모듈 레벨에서 참조하지 않게 한다.
+        from wellbot.state.chat_state import ChatState
+        from wellbot.state.report_checker_state import ReportCheckerState
+        from wellbot.state.report_maker_state import ReportMakerState
+
+        chat = await self.get_state(ChatState)
+        kept_model_settings = chat.model_settings_raw
+        chat.reset()
+        chat.model_settings_raw = kept_model_settings
+
+        maker = await self.get_state(ReportMakerState)
+        kept_last_template = maker.last_template_id
+        maker.reset()
+        maker.last_template_id = kept_last_template
+
+        checker = await self.get_state(ReportCheckerState)
+        checker.reset()
 
     # ── 회원가입 ──
 
