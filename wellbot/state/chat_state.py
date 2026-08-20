@@ -19,6 +19,7 @@ from wellbot.logger import log_context
 from wellbot.constants import (
     ATTACHMENT_PROCESS_TIMEOUT_SEC,
     ATTACHMENT_UPLOAD_WAIT_MAX_SEC,
+    CONVERSATION_LIMIT,
     DEFAULT_CONVERSATION_TITLE,
     FILE_MAX_PER_MESSAGE,
     FILE_MAX_SIZE_MB,
@@ -79,6 +80,7 @@ from wellbot.state.chat_models import (
     PendingFile,
     PromptInfo,
     TurnInfo,
+    merge_conversations,
     new_conversation,
 )
 
@@ -107,6 +109,13 @@ class ChatState(rx.State):
 
     # ── 대화 검색 ──
     search_query: str = ""
+
+    # ── 대화 목록 페이지 ──
+    has_more_conversations: bool = False      # 사이드바 '더 보기' 노출 여부
+    is_loading_more_conversations: bool = False
+    # 지금까지 펼친 페이지 수. 목록을 다시 읽을 때 이 배수만큼 가져와, 페이지를
+    # 넘겨둔 상태에서 화면을 옮겼다 돌아와도 접히지 않는다.
+    _conversation_pages: int = 1
 
     # ── 첨부파일 ──
     pending_attachments: list[AttachmentInfo] = []
@@ -176,6 +185,39 @@ class ChatState(rx.State):
             conv = new_conversation()
             self.conversations = [conv]
             self.current_conversation_id = conv.id
+
+    async def _refresh_conversations(self) -> None:
+        """DB 목록을 다시 읽어 사이드바를 갱신 (병합 규칙은 merge_conversations).
+
+        **페이지에 들어올 때마다 실행된다.** 예전에는 "이미 로드했으면 생략"했는데
+        그 캐시에 무효화가 없어서, 목록이 한 번 잘못되면(다른 사용자 로그인 등)
+        새로고침으로도 풀리지 않았다.
+        """
+        if not self._emp_no:
+            self._ensure_conversation()
+            return
+
+        limit = max(1, self._conversation_pages) * CONVERSATION_LIMIT
+        rows, has_more = await asyncio.to_thread(
+            chat_service.list_conversations, self._emp_no, limit
+        )
+        self.has_more_conversations = has_more
+        self.conversations, self.current_conversation_id = merge_conversations(
+            self.conversations, rows, self.current_conversation_id
+        )
+
+    async def load_more_conversations(self) -> None:
+        """사이드바 '더 보기' — 다음 페이지까지 포함해 목록을 다시 읽는다."""
+        if self.is_loading_more_conversations or not self.has_more_conversations:
+            return
+        self.is_loading_more_conversations = True
+        yield          # 버튼 문구를 '불러오는 중'으로 먼저 갱신
+
+        try:
+            self._conversation_pages += 1
+            await self._refresh_conversations()
+        finally:
+            self.is_loading_more_conversations = False
 
     def _get_current_index(self) -> int | None:
         """현재 대화의 인덱스 반환. 없으면 자동 복구 시도"""
@@ -647,7 +689,16 @@ class ChatState(rx.State):
         # AuthState 에서 emp_no 취득
         from wellbot.state.auth_state import AuthState
         auth = await self.get_state(AuthState)
+        previous_emp_no = self._emp_no
         self._emp_no = auth.current_emp_no
+
+        # 사번이 바뀌었는데 이전 사용자의 화면 상태가 남아 있으면 비운다.
+        # 정상 경로(로그아웃)는 AuthState._clear_user_states 가 이미 처리하지만,
+        # 세션 만료·토큰 교체처럼 로그아웃을 거치지 않는 경로가 남아 있어 안전망을 둔다.
+        if previous_emp_no and previous_emp_no != self._emp_no:
+            log.info("사용자 변경 감지 — 화면 상태 초기화")
+            self.reset()
+            self._emp_no = auth.current_emp_no
 
         # KB 초기화: 개인/팀 KB 존재 여부 확인 (검색 범위 활성화 제어용)
         self.kb_modes = []
@@ -694,39 +745,7 @@ class ChatState(rx.State):
         # 환영 메시지 초기화
         self._refresh_greeting()
 
-        # 이미 DB 대화를 로드한 상태면 재조회 생략
-        has_db_conversations = any(c.is_persisted for c in self.conversations)
-        if has_db_conversations:
-            return
-
-        # DB 에서 대화 목록 로드
-        if self._emp_no:
-            convs = await asyncio.to_thread(chat_service.list_conversations, self._emp_no)
-            db_conversations = [
-                Conversation(
-                    id=c["id"],
-                    title=c["title"],
-                    messages=[],
-                    created_at=c["created_at"],
-                    model_name=c.get("model_name", ""),
-                    is_loaded=False,
-                    is_persisted=True,
-                )
-                for c in convs
-            ]
-            if db_conversations:
-                # 기존 빈 미저장 대화가 있으면 재사용, 없으면 새로 생성
-                existing_new = next(
-                    (c for c in self.conversations if not c.is_persisted and not c.messages),
-                    None,
-                )
-                new_conv = existing_new or new_conversation()
-                self.conversations = [new_conv, *db_conversations]
-                self.current_conversation_id = new_conv.id
-            else:
-                self._ensure_conversation()
-        else:
-            self._ensure_conversation()
+        await self._refresh_conversations()
 
         # 처리 중이던 첨부가 있으면 DB 에서 현재 상태를 다시 읽는다.
         # Reflex 상태는 새로고침으로 초기화되지 않으므로(같은 토큰으로 서버 상태에 재접속),

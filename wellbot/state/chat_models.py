@@ -144,3 +144,60 @@ def new_conversation() -> Conversation:
         is_loaded=True,
         is_persisted=False,
     )
+
+
+def _from_db_row(row: dict, existing: Conversation | None) -> Conversation:
+    """DB 목록 행을 Conversation 으로. 이미 있던 대화면 로드된 본문을 살린다."""
+    if existing is None:
+        return Conversation(
+            id=row["id"],
+            title=row["title"],
+            messages=[],
+            created_at=row["created_at"],
+            model_name=row.get("model_name", ""),
+            is_loaded=False,
+            is_persisted=True,
+        )
+    return Conversation(
+        id=existing.id,
+        title=row["title"],                                    # 제목은 DB 가 최신
+        messages=existing.messages,                            # 이미 받아온 본문 보존
+        created_at=existing.created_at,
+        model_name=row.get("model_name", "") or existing.model_name,
+        is_loaded=existing.is_loaded,
+        is_persisted=True,
+        has_more_older=existing.has_more_older,
+    )
+
+
+def merge_conversations(
+    existing: list[Conversation],
+    rows: list[dict],
+    current_id: str,
+) -> tuple[list[Conversation], str]:
+    """DB 대화 목록과 현재 화면 상태를 병합. 반환: (새 목록, 현재 대화 id).
+
+    사이드바는 페이지에 들어올 때마다 DB 를 다시 읽는다. 그냥 덮어쓰면 세 가지가
+    깨지므로 병합한다.
+
+    - **이미 불러온 본문**: 같은 id 는 기존 객체를 재사용한다. 매번 새로 만들면
+      대화를 열어둔 채 페이지를 옮길 때마다 메시지를 다시 받아야 한다.
+    - **아직 저장되지 않은 대화**: 작성 중인 새 대화는 DB 에 없으므로 목록 앞에 남긴다.
+    - **현재 보고 있는 대화**: 목록에 남아 있으면 그대로 둔다. 무조건 새 대화로
+      옮기면 페이지를 이동할 때마다 보던 대화에서 튕긴다.
+
+    현재 대화가 목록에서 사라졌을 때만(삭제됐거나 사용자가 바뀐 경우) 빈 대화로
+    옮기고, 쓸 만한 빈 대화가 없으면 새로 만든다.
+    """
+    by_id = {c.id: c for c in existing}
+    merged = [c for c in existing if not c.is_persisted]
+    merged += [_from_db_row(row, by_id.get(row["id"])) for row in rows]
+
+    if any(c.id == current_id for c in merged):
+        return merged, current_id
+
+    empty = next((c for c in merged if not c.is_persisted and not c.messages), None)
+    if empty is None:
+        empty = new_conversation()
+        merged = [empty, *merged]
+    return merged, empty.id
