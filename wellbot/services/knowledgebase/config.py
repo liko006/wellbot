@@ -26,6 +26,30 @@ _KB_INFRA_ENV_KEYS = {
 }
 
 
+def reload_kb_config() -> dict:
+    """설정을 파일에서 다시 읽는다. 반환: 새 설정 dict.
+
+    **앱 밖에서 yaml 이 바뀐 경우**를 위한 것이다 — CLI(`scripts/shared_kb_manager.py`,
+    `cleanup_kb.py`)는 별도 프로세스라 이 캐시를 갱신할 수 없다. 폴더 이름을 CLI 로
+    바꾼 뒤 admin 화면이 옛 이름을 계속 보여주면, 관리자가 사라진 경로에 티어를 써서
+    유령 항목을 만든다(실제 발생).
+
+    앱 안에서의 쓰기(`shared_kb_docs`, `shared_kb_service`)는 파일과 캐시를 함께
+    갱신하므로 이 함수를 부를 필요가 없다. 다시 읽어도 결과는 같다(멱등).
+
+    `kb_retriever._shared_kb_id` 의 lru_cache 도 함께 비운다 — 그쪽은 이 설정에서
+    kb_id 를 캐싱하므로, 설정만 새로 읽으면 둘이 어긋난 채 남는다.
+    """
+    global _kb_config
+    _kb_config = None
+    config = get_kb_config()
+
+    from wellbot.services.knowledgebase import kb_retriever
+
+    kb_retriever._shared_kb_id.cache_clear()
+    return config
+
+
 def get_kb_config() -> dict:
     """knowBase.yaml + .env 의 KB_* 변수를 병합해 KB 설정을 반환 (캐싱).
 

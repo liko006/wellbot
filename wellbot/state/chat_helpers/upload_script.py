@@ -247,6 +247,67 @@ window.uploadKbFilesToApi = async function(empNo, uploadTarget, deptCd, allowedN
 """
 
 
+# ── 공용(회사) KB 관리자 업로드 JS (admin 페이지 레벨 정의) ──────────
+# 파일 선택은 KB_UPLOAD_SCRIPT 의 openKbFilePicker/_kbSelectedFiles/_kbBackendBase 를
+# 그대로 쓰고 전송만 관리자 엔드포인트로 한다 (admin 페이지에 두 스크립트를 함께 등록).
+#
+# 한 요청의 파일 수 상한(api/kb_upload.py MAX_FILES_PER_REQUEST)이 있어 **batchSize 개씩
+# 끊어 순차 전송**한다. 병렬로 띄우지 않는 이유: 한 요청이 곧 요청 본문 크기 + S3 적재라,
+# 동시에 여러 배치가 날아가면 프록시 본문 상한(client_max_body_size)과 앱 메모리를
+# 같이 밀어 올린다. 관리자가 디렉토리 단위로 수십 개를 올리는 화면이므로 더 그렇다.
+#
+# 실패한 배치에서 멈추고, **그때까지 적재된 파일명을 함께 돌려준다** — 호출자
+# (KbAdminState)가 그 목록으로 staging/ 을 정리해 고아를 남기지 않는다.
+ADMIN_KB_UPLOAD_SCRIPT = """
+window.uploadSharedKbFiles = async function(folder, allowedNames, batchSize) {
+    var files = window._kbSelectedFiles || [];
+    // 패널에 남아있는 파일만 전송. 파일명은 NFC 정규화해 비교(일부 OS 의 NFD 대응).
+    var _norm = function(s) { return (s && s.normalize) ? s.normalize('NFC') : s; };
+    var allowed = (allowedNames || []).map(_norm);
+    files = files.filter(function(f) { return allowed.indexOf(_norm(f.name)) !== -1; });
+    if (files.length === 0) {
+        // 패널과 브라우저 선택이 어긋난 상태 — stale 선택을 비워 재선택이 되게 한다.
+        window._kbSelectedFiles = [];
+        window._kbPendingMeta = [];
+        return {staged: [], error: 'No files selected'};
+    }
+
+    var size = batchSize > 0 ? batchSize : 5;
+    var base = await window._kbBackendBase();
+    var staged = [];
+    var error = null;
+    for (var i = 0; i < files.length; i += size) {
+        var form = new FormData();
+        var batch = files.slice(i, i + size);
+        for (var j = 0; j < batch.length; j++) form.append('files', batch[j]);
+        form.append('folder', folder);
+        try {
+            var resp = await fetch(base + '/api/admin/upload_shared_kb', {
+                method: 'POST',
+                body: form,
+                credentials: 'include',
+            });
+            var result = await resp.json().catch(function() { return {}; });
+            if (!resp.ok) {
+                error = (result && result.detail)
+                    ? result.detail
+                    : ('업로드 실패 (' + resp.status + ')');
+                break;
+            }
+            if (result && result.error) { error = result.error; break; }
+            staged = staged.concat((result && result.staged) || []);
+        } catch (e) {
+            error = (e && e.message) ? e.message : String(e);
+            break;
+        }
+    }
+    window._kbSelectedFiles = [];
+    window._kbPendingMeta = [];
+    return {staged: staged, error: error};
+};
+"""
+
+
 # ── 클립보드 이미지 붙여넣기 업로드 JS (페이지 레벨 window-global 정의) ──
 # 채팅 입력(textarea)에서 캡쳐 이미지를 Ctrl+V 로 붙여넣으면 첨부로 업로드.
 #

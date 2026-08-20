@@ -89,6 +89,15 @@ class PendingFile(BaseModel):
     size_display: str
 
 
+def format_file_size(size: int) -> str:
+    """바이트 → 사람이 읽는 크기 표기 (PendingFile.size_display 용)."""
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
 class KbTreeRow(BaseModel):
     """회사(공용) KB 문서 목록 트리의 **평탄화된 한 행** (폴더 또는 파일). N단계 지원.
 

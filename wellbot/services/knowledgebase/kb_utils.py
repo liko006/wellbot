@@ -1058,8 +1058,13 @@ def process_staged_files(
         _delete_keys_quietly(bucket, staged_keys)
 
 
-def delete_files_from_kb(bucket: str, prefix: str, filenames: list[str]) -> None:
-    """선택된 파일들을 S3 에서 삭제.
+def delete_kb_docs(
+    bucket: str,
+    raw_pfx: str,
+    originals_pfx: str,
+    filenames: list[str],
+) -> None:
+    """논리 파일들의 색인본(raw/)과 원본 보관본(originals/)을 S3 에서 삭제.
 
     pptx 의 경우 원본(originals/) 과 인덱싱본(raw/_pptx.json) 둘 다 삭제.
     삭제 후 ingestion job 을 실행해야 Bedrock 이 변경을 감지하여
@@ -1068,35 +1073,44 @@ def delete_files_from_kb(bucket: str, prefix: str, filenames: list[str]) -> None
     xlsx/csv 분할본(_partN)은 개수·시트 구성을 미리 알 수 없으므로 raw/ 를 나열해
     originals/ 기준 소유 판정으로 해당 파일 소유분만 삭제 (prefix 충돌 파일 보존).
 
+    두 prefix 를 **따로** 받는다 — 공용 KB 는 소분류가 raw/ 안에 중첩되어
+    (shared/{대분류}/raw/{소분류}/) originals prefix 를 raw prefix 에서 기계적으로
+    유도할 수 없다(get_originals_prefix 는 'raw/' 이후를 잘라 소분류를 잃는다).
+    개인/팀 경로는 delete_files_from_kb 가 유도해서 넘긴다.
+
     S3 delete_object 는 멱등이므로 키가 없어도 예외를 던지지 않음.
     """
-    originals = get_originals_prefix(prefix)
-    original_stems = _list_original_stems(bucket, originals)
+    original_stems = _list_original_stems(bucket, originals_pfx)
     keys_to_delete: list[str] = []
     for filename in filenames:
         ext = Path(filename).suffix.lower()
         stem = Path(filename).stem
         # 원본 보관본(pptx/Upstage pdf·xlsx/분할 csv·xlsx). 평문 파일엔 없어도 멱등 no-op.
-        keys_to_delete.append(f"{originals}{filename}")
+        keys_to_delete.append(f"{originals_pfx}{filename}")
         if ext == ".pptx":
-            keys_to_delete.append(f"{prefix}{stem}_pptx.json")
+            keys_to_delete.append(f"{raw_pfx}{stem}_pptx.json")
         elif ext == ".xlsx":
-            keys_to_delete.append(f"{prefix}{stem}_xlsx.md")          # Upstage 변환본
+            keys_to_delete.append(f"{raw_pfx}{stem}_xlsx.md")         # Upstage 변환본
             keys_to_delete.extend(                                    # local 분할본(_partN)
-                _owned_part_keys(bucket, prefix, stem, ".xlsx", original_stems)
+                _owned_part_keys(bucket, raw_pfx, stem, ".xlsx", original_stems)
             )
         elif ext == ".csv":
             keys_to_delete.extend(                                    # csv 분할본(_partN)
-                _owned_part_keys(bucket, prefix, stem, ".csv", original_stems)
+                _owned_part_keys(bucket, raw_pfx, stem, ".csv", original_stems)
             )
         elif ext == ".pdf":
-            keys_to_delete.append(f"{prefix}{stem}_pdf.md")           # Upstage 변환본
-            keys_to_delete.append(f"{prefix}{filename}")             # 미변환 원본 색인본
+            keys_to_delete.append(f"{raw_pfx}{stem}_pdf.md")          # Upstage 변환본
+            keys_to_delete.append(f"{raw_pfx}{filename}")             # 미변환 원본 색인본
         else:
-            keys_to_delete.append(f"{prefix}{filename}")
+            keys_to_delete.append(f"{raw_pfx}{filename}")
 
     for key in dict.fromkeys(keys_to_delete):  # 중복 키 제거(순서 보존)
         _get_s3().delete_object(Bucket=bucket, Key=key)
+
+
+def delete_files_from_kb(bucket: str, prefix: str, filenames: list[str]) -> None:
+    """개인/팀 KB 문서 삭제. originals prefix 를 raw prefix 에서 유도해 위임."""
+    delete_kb_docs(bucket, prefix, get_originals_prefix(prefix), filenames)
 
 
 # ──────────────────────────────────────────────

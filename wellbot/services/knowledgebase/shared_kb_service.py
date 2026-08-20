@@ -30,22 +30,28 @@ import hashlib
 import logging
 import re
 import time
+from datetime import timezone
 from pathlib import Path
 
 import yaml
 
+from wellbot.constants import KST
 from wellbot.paths import KNOWBASE_YAML
 from wellbot.services.files import storage_service
+from wellbot.services.knowledgebase import shared_kb_docs
 from wellbot.services.knowledgebase.config import get_kb_config
 from wellbot.services.knowledgebase.kb_utils import (
     CONVERTIBLE_EXTS,
     SHARED_PARSE_POLICY,
+    SUPPORTED_EXTENSIONS,
     TABULAR_EXTS,
     ParsePolicy,
     convert_pdf_to_markdown,
     convert_pptx_to_json,
     convert_xlsx_to_markdown,
+    delete_kb_docs,
     get_bedrock_agent,
+    is_ingestion_in_progress,
     shared_base,
     split_and_upload_tabular,
     validate_file_size,
@@ -104,10 +110,35 @@ def originals_prefix(folder: str) -> str:
     return raw_prefix(folder).replace("/raw/", "/originals/", 1)
 
 
+def staging_prefix(folder: str) -> str:
+    """업로드 원본 임시 적재 prefix. raw/ 의 형제라 색인 대상(raw/) 밖이다.
+
+    HTTP 업로드는 여기까지만 하고 변환·색인은 백그라운드에서 수행한다 — 다중 PDF 의
+    Upstage 변환이 요청 안에서 돌면 프록시 타임아웃(504)에 걸린다. originals/ 와 같은
+    이유로 소분류 계층을 보존한다.
+    """
+    return raw_prefix(folder).replace("/raw/", "/staging/", 1)
+
+
 def processed_prefix(folder: str) -> str:
     """DS 의 중간 저장(intermediateStorage) prefix — 대분류 단위."""
     top, _ = split_folder(folder)
     return f"{shared_base()}/{top}/processed/"
+
+
+def validate_folder(folder: str) -> tuple[str, str]:
+    """folder 문자열을 검증하고 (대분류, 소분류) 로 분해. 위반 시 ValueError.
+
+    S3 키를 만드는 값이라 경로 조작을 막는다 — 브라우저에서 오는 값이므로
+    ``..`` 한 번이면 다른 대분류나 색인 밖 경로에 파일을 심을 수 있다.
+    """
+    top, sub = split_folder(folder)
+    if not top:
+        raise ValueError("대분류가 비어 있습니다.")
+    for segment in [top, *(s for s in sub.split("/") if s)]:
+        if segment in (".", "..") or "\\" in segment:
+            raise ValueError(f"폴더 이름에 사용할 수 없는 값입니다: {segment!r}")
+    return top, sub
 
 
 def _data_source_name(top: str) -> str:
@@ -204,6 +235,38 @@ def _register_folder(top: str, data_source_id: str) -> None:
     KNOWBASE_YAML.write_text(content, encoding="utf-8")
     _cache_folder(top, data_source_id)
     log.info("[Config] 폴더 등록 완료: %s → %s", top, data_source_id)
+
+
+def unregister_folder(top: str) -> bool:
+    """folders 레지스트리에서 대분류를 제거. 반환: 실제로 지웠으면 True.
+
+    폴더 삭제의 **마지막** 단계다 — 이 키가 없어지면 Data Source id 를 찾을 수 없어
+    앞 단계를 재시도할 방법이 사라진다. 앞 단계가 하나라도 실패하면 여기까지 오지
+    않는다(호출자가 실패 지점에서 멈춘다).
+    """
+    folders = list_folders()
+    if top not in folders:
+        return False
+
+    data_source_id = folders[top]
+    lines = KNOWBASE_YAML.read_text(encoding="utf-8").split("\n")
+    entry_prefixes = (f"{top}:", f'"{top}":', f"'{top}':")
+    kept = [
+        line for line in lines
+        if not (line.startswith("    ") and line.strip().startswith(entry_prefixes)
+                and data_source_id in line)
+    ]
+    if len(kept) != len(lines):
+        KNOWBASE_YAML.write_text("\n".join(kept), encoding="utf-8")
+    else:
+        log.warning("knowBase.yaml 에서 folders 항목을 찾지 못했습니다: %s", top)
+
+    cfg = _cfg()
+    fmap = cfg.get("folders") or {}
+    fmap.pop(top, None)
+    cfg["folders"] = fmap
+    log.info("[Config] 폴더 등록 해제: %s (ds_id=%s)", top, data_source_id)
+    return True
 
 
 def _rename_folder_in_yaml(old_top: str, new_top: str, data_source_id: str) -> None:
@@ -326,6 +389,42 @@ def _stash_original(bucket: str, folder: str, file_bytes: bytes, filename: str) 
     return uri
 
 
+def stage_files(folder: str, files: list[tuple[bytes, str]]) -> list[str]:
+    """원본을 staging/ 에만 적재(변환·색인 없음) — 업로드 HTTP 요청용.
+
+    무거운 변환을 요청 밖으로 미뤄 프록시 타임아웃(504)을 피한다. 색인은 이후
+    백그라운드에서 staging/ 의 원본을 읽어 수행한다.
+
+    적재 **전에** 형식·크기를 전부 검증해 하나라도 어긋나면 S3 에 아무것도 올리지
+    않는다(고아 방지). 부분 적재 중 실패하면 이미 올린 분을 되돌린다.
+    파일명은 basename 만 취해 경로 조작을 막는다.
+
+    반환: 적재된 파일명 목록.
+    """
+    validate_folder(folder)
+    checked: list[tuple[bytes, str]] = []
+    for file_bytes, filename in files:
+        name = Path(filename).name
+        if not name:
+            raise ValueError("파일명이 비어 있습니다.")
+        if Path(name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+            raise ValueError(f"지원하지 않는 파일 형식: {name}")
+        validate_file_size(file_bytes, name)
+        checked.append((file_bytes, name))
+
+    bucket = _bucket()
+    prefix = staging_prefix(folder)
+    uploaded_uris: list[str] = []
+    try:
+        for file_bytes, name in checked:
+            uploaded_uris.append(_put(bucket, f"{prefix}{name}", file_bytes))
+    except Exception:
+        delete_uris(uploaded_uris)
+        raise
+    log.info("[S3] staging 적재: %s (%d개)", prefix, len(uploaded_uris))
+    return [name for _, name in checked]
+
+
 def upload_files(
     folder: str,
     files: list[tuple[bytes, str]],
@@ -347,7 +446,7 @@ def upload_files(
 
     반환: 업로드된 S3 URI 목록.
     """
-    top, _ = split_folder(folder)
+    top, _ = validate_folder(folder)
     if top not in list_folders():
         log.info("[Upload] 미등록 대분류 → 자동 생성: %s", top)
         create_folder(top)
@@ -422,9 +521,192 @@ def upload_files(
     return uploaded_uris
 
 
+def process_staged(
+    folder: str,
+    names: list[str],
+    policy: ParsePolicy = SHARED_PARSE_POLICY,
+) -> list[str]:
+    """staging/ 의 원본을 읽어 변환 후 raw/·originals/ 에 적재(색인 준비).
+
+    HTTP 업로드(stage_files)의 뒷단이다 — Upstage 변환처럼 무거운 작업을 요청 밖에서
+    수행해 프록시 타임아웃을 피한다. 개인/팀의 `kb_utils.process_staged_files` 와
+    같은 역할이며, 공용은 소분류 경로를 보존해야 해서 이 모듈의 prefix 헬퍼를 쓴다.
+
+    staging/ 원본은 성공·실패와 무관하게 정리한다(고아 방지). 실패 시 raw/originals
+    부분 적재는 upload_files 가 롤백한다.
+
+    반환: 색인 대상 S3 URI 목록.
+    """
+    validate_folder(folder)
+    bucket = _bucket()
+    staging = staging_prefix(folder)
+    staged_keys = [f"{staging}{Path(name).name}" for name in names]
+    try:
+        files: list[tuple[bytes, str]] = []
+        for key, name in zip(staged_keys, names):
+            obj = _s3().get_object(Bucket=bucket, Key=key)
+            files.append((obj["Body"].read(), Path(name).name))
+        return upload_files(folder, files, policy)
+    finally:
+        delete_uris([f"s3://{bucket}/{key}" for key in staged_keys])
+
+
+def discard_staged(folder: str, names: list[str]) -> None:
+    """staging/ 에 적재된 원본을 색인 없이 폐기.
+
+    배치 업로드가 중간에 실패하면 앞선 배치가 staging/ 에 남는다. 그대로 두면 색인
+    대상 밖(raw/ 형제)이라 검색에는 안 걸리지만 영구 고아가 되므로 호출자가 정리한다.
+    """
+    bucket = _bucket()
+    staging = staging_prefix(folder)
+    delete_uris([f"s3://{bucket}/{staging}{Path(name).name}" for name in names])
+
+
+# ──────────────────────────────────────────────
+# 문서 목록 / 삭제
+# ──────────────────────────────────────────────
+def _tree_rows(node: dict, prefix: str, depth: int, out: list[dict]) -> None:
+    """트리 노드를 DFS 로 평탄화. 각 노드에서 파일 먼저(업로드일↓ + 이름↑), 그다음 폴더(이름순)."""
+    for fname in sorted(sorted(node["files"]), key=lambda n: node["files"][n], reverse=True):
+        out.append({
+            "depth": depth,
+            "path": f"{prefix}/{fname}" if prefix else fname,
+            "name": fname,
+            "is_folder": False,
+            "uploaded_at": node["files"][fname],
+        })
+    for dname in sorted(node["dirs"]):
+        dpath = f"{prefix}/{dname}" if prefix else dname
+        out.append({
+            "depth": depth, "path": dpath, "name": dname,
+            "is_folder": True, "uploaded_at": "",
+        })
+        _tree_rows(node["dirs"][dname], dpath, depth + 1, out)
+
+
+def list_tree() -> list[dict]:
+    """공용 KB 문서 목록을 **평탄화한 N단계 트리 행**으로 반환.
+
+    행: `{depth, path, name, is_folder, uploaded_at}`. `path` 는 대분류부터의 논리 경로
+    (`"사규/규정/취업규칙.pdf"`)로, raw/originals 마커가 없어 문서 속성 키(`docs`)와
+    그대로 맞물린다. 들여쓰기 폭 같은 표시 값은 호출자(State)가 depth 로 계산한다.
+
+    raw/ 와 originals/ 는 같은 문서를 가리키므로 논리 경로로 dedup 해 한 번만 노출한다
+    (변환본 `_pdf.md` 등은 `list_objects_with_meta` 가 이미 제외).
+
+    S3 를 호출하는 블로킹 함수 — async 컨텍스트에서는 executor 로 오프로드해야 한다.
+    """
+    bucket = _bucket()
+    if not bucket:
+        return []
+
+    base = shared_base()
+    tree: dict = {"dirs": {}, "files": {}}
+    seen: set[str] = set()
+    for obj in storage_service.list_objects_with_meta(f"{base}/", bucket):
+        parts = obj["key"].split("/")
+        # shared{env}/{대분류}/{raw|originals}/{...}/{파일} 형태만 채택
+        # (staging/·processed/ 는 색인 대상이 아니므로 목록에 넣지 않는다).
+        if len(parts) < 4 or parts[0] != base or parts[2] not in ("raw", "originals"):
+            continue
+        segs = [parts[1]] + parts[3:]           # raw/originals 마커 제거 = 논리 경로
+        logical = "/".join(segs)
+        if logical in seen:
+            continue
+        seen.add(logical)
+        last_modified = obj["last_modified"]
+        if last_modified.tzinfo is None:
+            last_modified = last_modified.replace(tzinfo=timezone.utc)
+        node = tree
+        for seg in segs[:-1]:
+            node = node["dirs"].setdefault(seg, {"dirs": {}, "files": {}})
+        node["files"][segs[-1]] = last_modified.strftime("%Y-%m-%d")
+
+    rows: list[dict] = []
+    _tree_rows(tree, "", 0, rows)
+    return rows
+
+
+def split_doc_path(path: str) -> tuple[str, str]:
+    """문서 논리 경로 → (부모 폴더, 파일명). 예: '사규/규정/A.pdf' → ('사규/규정', 'A.pdf')."""
+    segs = [s for s in path.strip("/").split("/") if s]
+    if len(segs) < 2:
+        raise ValueError(f"문서 경로가 올바르지 않습니다: {path!r}")
+    filename = segs[-1]
+    if filename in (".", "..") or "\\" in filename:
+        raise ValueError(f"파일명에 사용할 수 없는 값입니다: {filename!r}")
+    return "/".join(segs[:-1]), filename
+
+
+def delete_docs(paths: list[str]) -> None:
+    """문서 논리 경로 목록을 삭제(S3 raw/ 색인본 + originals/ 보관본 + 문서 속성).
+
+    벡터 제거는 재-ingest 로 이뤄지므로 호출자가 이어서 `start_ingestion` 을 돌려야
+    한다(삭제만 하면 검색 결과에 남는다).
+
+    문서 속성(티어·담당부서)까지 여기서 지우는 이유: 호출자가 따로 챙기게 두면
+    빠뜨리기 쉽고, 남은 키는 문서 목록에 뜨지 않아 **화면에서 지울 방법이 없다**.
+    더 나쁜 건 같은 경로로 다른 파일을 올렸을 때 예전 티어를 그대로 물려받는 것이다.
+    """
+    bucket = _bucket()
+    deleted: list[str] = []
+    try:
+        for path in paths:
+            parent, filename = split_doc_path(path)
+            validate_folder(parent)
+            delete_kb_docs(bucket, raw_prefix(parent), originals_prefix(parent), [filename])
+            deleted.append(path)
+            log.info("[S3] 문서 삭제: %s", path)
+    finally:
+        # 중간에 실패해도 **지워진 만큼은** 속성을 정리한다(부분 실패 시 불일치 최소화).
+        # 여기서 난 오류가 원래 예외를 덮지 않도록 경고만 남긴다.
+        if deleted:
+            try:
+                shared_kb_docs.remove_docs(deleted)
+            except Exception:  # noqa: BLE001 - 속성 정리 실패가 삭제를 되돌리진 않는다
+                log.warning("문서 속성 정리 실패: %s", deleted, exc_info=True)
+
+
 # ──────────────────────────────────────────────
 # Ingestion
 # ──────────────────────────────────────────────
+def ingestion_in_progress(folder: str) -> bool:
+    """대분류 DS 에 진행 중인 Ingestion 이 있는지 (중복 실행 차단용)."""
+    return is_ingestion_in_progress(_kb_id(), get_data_source_id(folder))
+
+
+def latest_ingestion(folder: str) -> dict:
+    """대분류 DS 의 최신 Ingestion Job 요약. job 이 없으면 {}.
+
+    job_id 를 화면 상태에 보관하지 않고 매번 Bedrock 에서 최신 job 을 읽는다 — 업로드
+    후 색인은 fire-and-forget 이라, 새로고침하거나 다른 관리자가 접속해도 같은 결과를
+    볼 수 있어야 실패가 묻히지 않는다.
+
+    반환: `{status, scanned, indexed, deleted, failed, updated_at}`.
+    """
+    resp = get_bedrock_agent().list_ingestion_jobs(
+        knowledgeBaseId=_kb_id(),
+        dataSourceId=get_data_source_id(folder),
+        sortBy={"attribute": "STARTED_AT", "order": "DESCENDING"},
+        maxResults=1,
+    )
+    jobs = resp.get("ingestionJobSummaries") or []
+    if not jobs:
+        return {}
+
+    job = jobs[0]
+    stats = job.get("statistics") or {}
+    updated = job.get("updatedAt") or job.get("startedAt")
+    return {
+        "status": job.get("status", ""),
+        "scanned": stats.get("numberOfDocumentsScanned", 0),
+        "indexed": stats.get("numberOfNewDocumentsIndexed", 0),
+        "deleted": stats.get("numberOfDocumentsDeleted", 0),
+        "failed": stats.get("numberOfDocumentsFailed", 0),
+        "updated_at": updated.astimezone(KST).strftime("%Y-%m-%d %H:%M") if updated else "",
+    }
+
+
 def start_ingestion(folder: str) -> str:
     """대분류 Data Source 의 Ingestion Job 실행. 반환: ingestion_job_id."""
     data_source_id = get_data_source_id(folder)
@@ -437,15 +719,18 @@ def start_ingestion(folder: str) -> str:
     return job_id
 
 
-def poll_ingestion_status(folder: str, job_id: str) -> str:
+def poll_ingestion_status(folder: str, job_id: str, poll_timeout: int | None = None) -> str:
     """Ingestion 완료까지 폴링. 반환: 최종 status (COMPLETE/FAILED/STOPPED).
 
-    poll_timeout 을 넘기면 TimeoutError. 공용 KB 는 대용량을 가정해 기본 대기가 길다.
+    poll_timeout 을 넘기면 TimeoutError. 기본값은 설정(공용 KB 는 대용량을 가정해 길다).
+    폴더 삭제처럼 대상이 비어 있어 금방 끝나야 하는 동기화는 호출자가 더 짧은 값을
+    넘긴다 — 그런 경우 오래 걸리는 건 정상이 아니라 이상 신호다.
     """
     data_source_id = get_data_source_id(folder)
     cfg = _cfg()
     poll_interval = cfg.get("poll_interval", 5)
-    poll_timeout = cfg.get("poll_timeout", 300)
+    if poll_timeout is None:
+        poll_timeout = cfg.get("poll_timeout", 300)
     start = time.time()
 
     while time.time() - start < poll_timeout:
@@ -555,8 +840,12 @@ def rename_folder(old: str, new: str) -> str:
     )
     log.info("[Bedrock] Data Source 갱신: inclusionPrefix → %s/%s/raw/", base, new_top)
 
-    # 4. yaml 레지스트리 키 변경 (ds_id 동일)
+    # 4. yaml 레지스트리 키 변경 (ds_id 동일) + 문서 속성 키도 새 경로로 이동.
+    #    문서 키는 논리 경로라 대분류가 바뀌면 전부 어긋난다 — 안 옮기면 옮겨진 문서가
+    #    티어·담당부서를 잃고(순위가 바뀐다) 옛 키는 지울 수 없는 잔여물로 남는다.
     _rename_folder_in_yaml(old_top, new_top, ds_id)
+    moved_docs = shared_kb_docs.rekey_docs_under(old_top, new_top)
+    log.info("[Rename] 문서 속성 키 이동: %d건", moved_docs)
 
     # 5. 재-ingest → 새 경로 색인 + 옛 경로 문서 벡터 제거(증분 동기화)
     job_id = start_ingestion(new_top)

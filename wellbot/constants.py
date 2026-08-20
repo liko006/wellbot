@@ -55,6 +55,11 @@ FILE_MAX_TOTAL_SIZE_MB: int = 200         # 대화당 누적 최대 용량
 # scope 별 상한. 공용(shared)은 관리자 업로드라 상한 미적용.
 KB_MAX_DOCS: dict[str, int] = {"personal": 5, "team": 10}
 
+# 한 업로드 요청에 실을 수 있는 파일 수. 요청 본문 크기(프록시 상한)와 앱 메모리를
+# 개수로 묶어두는 상한이며, 서버(엔드포인트)와 클라이언트(배치 전송 JS)가 같이 본다.
+# 관리자가 이보다 많이 고르면 이 단위로 끊어 순차 전송한다.
+KB_UPLOAD_MAX_PER_REQUEST: int = 5
+
 # ── 파서 ──
 FILE_PARSER_MODE: str = "upstage"           # "local" | "upstage" | "hybrid"
 FILE_PARSER_FALLBACK: bool = True         # local 실패 시 upstage 폴백 (hybrid 모드)
