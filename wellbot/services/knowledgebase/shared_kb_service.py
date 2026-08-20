@@ -518,6 +518,17 @@ def process_staged(
         delete_uris([f"s3://{bucket}/{key}" for key in staged_keys])
 
 
+def discard_staged(folder: str, names: list[str]) -> None:
+    """staging/ 에 적재된 원본을 색인 없이 폐기.
+
+    배치 업로드가 중간에 실패하면 앞선 배치가 staging/ 에 남는다. 그대로 두면 색인
+    대상 밖(raw/ 형제)이라 검색에는 안 걸리지만 영구 고아가 되므로 호출자가 정리한다.
+    """
+    bucket = _bucket()
+    staging = staging_prefix(folder)
+    delete_uris([f"s3://{bucket}/{staging}{Path(name).name}" for name in names])
+
+
 # ──────────────────────────────────────────────
 # 문서 목록 / 삭제
 # ──────────────────────────────────────────────

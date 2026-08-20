@@ -8,8 +8,13 @@ import reflex as rx
 from wellbot.components.admin.agent_tab import agent_tab
 from wellbot.components.admin.dept_tab import dept_tab
 from wellbot.components.admin.employee_tab import employee_tab
+from wellbot.components.admin.kb_tab import kb_tab
 from wellbot.components.admin.monitoring_tab import monitoring_tab
 from wellbot.state.admin_state import AdminState
+from wellbot.state.chat_helpers.upload_script import (
+    ADMIN_KB_UPLOAD_SCRIPT,
+    KB_UPLOAD_SCRIPT,
+)
 from wellbot.styles import COLORS
 
 
@@ -153,11 +158,21 @@ def _admin_content() -> rx.Component:
                 rx.tabs.trigger("사원 관리", value="employee"),
                 rx.tabs.trigger("에이전트 관리", value="agent"),
                 rx.tabs.trigger("모니터링", value="monitoring"),
+                # 공용 KB 는 전사 검색 결과를 바꾸므로 실명 계정(DB ADMIN)에만 노출한다.
+                # ENV 비밀번호로 들어온 SUPER 는 세션 쿠키가 없어 업로드 엔드포인트도 못 쓴다.
+                rx.cond(
+                    AdminState.admin_label != "SUPER",
+                    rx.tabs.trigger("지식베이스", value="kb"),
+                ),
             ),
             rx.tabs.content(dept_tab(), value="dept", padding_top="1em"),
             rx.tabs.content(employee_tab(), value="employee", padding_top="1em"),
             rx.tabs.content(agent_tab(), value="agent", padding_top="1em"),
             rx.tabs.content(monitoring_tab(), value="monitoring", padding_top="1em"),
+            rx.cond(
+                AdminState.admin_label != "SUPER",
+                rx.tabs.content(kb_tab(), value="kb", padding_top="1em"),
+            ),
             value=AdminState.active_tab,
             on_change=AdminState.set_active_tab,
             width="100%",
@@ -172,12 +187,19 @@ def _admin_content() -> rx.Component:
 
 def admin_page() -> rx.Component:
     """Admin 페이지."""
-    return rx.box(
-        rx.cond(
-            AdminState.is_authenticated,
-            _admin_content(),
-            _login_form(),
+    return rx.fragment(
+        rx.box(
+            rx.cond(
+                AdminState.is_authenticated,
+                _admin_content(),
+                _login_form(),
+            ),
+            bg=COLORS["main_bg"],
+            min_height="100vh",
         ),
-        bg=COLORS["main_bg"],
-        min_height="100vh",
+        # KB 업로드 JS 는 window 전역 함수라 페이지 fragment 루트에 1회만 등록한다
+        # (컴포넌트 내부에 두면 mount/unmount 타이밍에 따라 ReferenceError).
+        # 파일 선택 picker 는 채팅 KB 패널과 공용(KB_UPLOAD_SCRIPT), 전송만 관리자용.
+        rx.script(KB_UPLOAD_SCRIPT),
+        rx.script(ADMIN_KB_UPLOAD_SCRIPT),
     )

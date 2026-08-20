@@ -14,7 +14,7 @@ confirm_upload 시 ingestion 만 트리거.
 엔드포인트:
     POST /api/upload_kb_files
     - multipart/form-data
-    - files: 파일 목록 (최대 5개)
+    - files: 파일 목록 (한 요청당 KB_UPLOAD_MAX_PER_REQUEST 개)
     - upload_target: "personal" | "team"
     사번(emp_no)과 팀 부서코드(dept_cd)는 클라이언트 입력이 아니라
     wellbot_auth 세션 쿠키에서 서버가 도출.
@@ -36,6 +36,7 @@ import logging
 from fastapi import APIRouter, Cookie, File, Form, HTTPException, UploadFile, status
 
 from wellbot.api.guards import require_admin, require_user
+from wellbot.constants import KB_UPLOAD_MAX_PER_REQUEST
 from wellbot.logger import log_context
 from wellbot.services.knowledgebase import shared_kb_service
 from wellbot.services.knowledgebase.config import get_kb_config
@@ -45,11 +46,6 @@ from wellbot.services.knowledgebase.team_kb_manager import get_dept_cd
 log = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# 한 요청에 실을 수 있는 파일 수. 클라이언트는 이 단위로 끊어 순차 전송한다.
-# 요청 본문 크기 제한(nginx client_max_body_size)과 앱 프로세스 메모리 양쪽을
-# 파일 개수가 아니라 배치 크기로 묶어두기 위한 상한이다.
-MAX_FILES_PER_REQUEST = 5
 
 
 # 동기 핸들러(`def`) — 세션 검증(DB)·S3 적재가 전부 블로킹이라 이벤트 루프에서 돌리면
@@ -129,7 +125,7 @@ def upload_shared_kb_files(
     Form:
         folder: "대분류" 또는 "대분류/소분류". **이미 등록된 대분류여야 한다**
                 (새 대분류 생성은 별도 작업 — 오타로 Data Source 가 생기지 않도록).
-        files:  한 요청당 최대 MAX_FILES_PER_REQUEST 개. 그 이상은 클라이언트가
+        files:  한 요청당 최대 KB_UPLOAD_MAX_PER_REQUEST 개. 그 이상은 클라이언트가
                 끊어서 순차 전송한다.
     Cookie:
         wellbot_auth: 로그인 세션 토큰 (JWT). ADMIN 역할이 아니면 403.
@@ -139,11 +135,11 @@ def upload_shared_kb_files(
     require_admin(wellbot_auth)
     log_context.bind(kb_folder=folder)
 
-    if len(files) > MAX_FILES_PER_REQUEST:
+    if len(files) > KB_UPLOAD_MAX_PER_REQUEST:
         return {
             "staged": [],
             "folder": folder,
-            "error": f"한 번에 최대 {MAX_FILES_PER_REQUEST}개까지 전송할 수 있습니다.",
+            "error": f"한 번에 최대 {KB_UPLOAD_MAX_PER_REQUEST}개까지 전송할 수 있습니다.",
         }
 
     try:

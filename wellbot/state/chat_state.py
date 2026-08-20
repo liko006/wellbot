@@ -80,6 +80,7 @@ from wellbot.state.chat_models import (
     PendingFile,
     PromptInfo,
     TurnInfo,
+    format_file_size,
     merge_conversations,
     new_conversation,
 )
@@ -1480,12 +1481,7 @@ class ChatState(rx.State):
         return rx.call_script("clearKbSelectedFiles()")
 
     def _format_size(self, size: int) -> str:
-        if size < 1024:
-            return f"{size} B"
-        elif size < 1024 * 1024:
-            return f"{size / 1024:.1f} KB"
-        else:
-            return f"{size / (1024 * 1024):.1f} MB"
+        return format_file_size(size)
 
     def _user_friendly_error(self, error: str) -> str:
         """기술적 에러 메시지를 사용자 친화적 메시지로 변환"""
