@@ -22,31 +22,77 @@ from wellbot.styles import COLORS, SPACING
 
 _RAIL_WIDTH = "260px"
 
+# 문서 표의 고정 열 폭. 문서명 열만 남는 폭을 차지한다(table_layout=fixed).
+_COL_CHECK = "44px"
+_COL_DATE = "96px"
+_COL_TIER = "88px"
+_COL_DEPT = "150px"
+
 
 # ──────────────────────────────────────────────
 # 좌측: 폴더 레일
 # ──────────────────────────────────────────────
+def _toggle_box(folder: KbAdminFolder) -> rx.Component:
+    """+/- 펼침 토글. 하위 폴더가 없으면 자리만 비워 정렬을 유지한다.
+
+    행 전체가 아니라 이 박스에만 토글을 걸고 선택은 옆 영역이 받는다 —
+    이벤트 전파에 의존하지 않아 '펼치려다 선택이 바뀌는' 일이 없다.
+    """
+    is_expanded = KbAdminState.expanded_folders.contains(folder.path)
+    return rx.cond(
+        folder.has_children,
+        rx.box(
+            rx.icon(
+                rx.cond(is_expanded, "minus", "plus"),
+                size=10,
+                color=COLORS["text_secondary"],
+            ),
+            width="18px",
+            height="18px",
+            flex_shrink="0",
+            display="flex",
+            align_items="center",
+            justify_content="center",
+            cursor="pointer",
+            border=f"1px solid {COLORS['border']}",
+            border_radius="3px",
+            on_click=KbAdminState.toggle_folder(folder.path),
+            _hover={"bg": COLORS["sidebar_hover"]},
+        ),
+        rx.box(width="18px", flex_shrink="0"),
+    )
+
+
 def _folder_row(folder: KbAdminFolder) -> rx.Component:
     """폴더 한 줄. depth 만큼 들여쓰고, 선택된 폴더를 강조."""
     is_selected = KbAdminState.selected_folder == folder.path
     return rx.hstack(
-        rx.icon("folder", size=14, color=COLORS["text_secondary"], flex_shrink="0"),
-        rx.text(
-            folder.name,
-            size="2",
-            color=COLORS["text_primary"],
-            weight=rx.cond(is_selected, "medium", "regular"),
-            overflow="hidden",
-            text_overflow="ellipsis",
-            white_space="nowrap",
+        _toggle_box(folder),
+        rx.hstack(
+            rx.icon("folder", size=14, color=COLORS["text_secondary"], flex_shrink="0"),
+            rx.text(
+                folder.name,
+                size="2",
+                color=COLORS["text_primary"],
+                weight=rx.cond(is_selected, "medium", "regular"),
+                overflow="hidden",
+                text_overflow="ellipsis",
+                white_space="nowrap",
+                flex="1",
+                min_width="0",
+            ),
+            rx.text(
+                folder.doc_count.to_string(),
+                size="1",
+                color=COLORS["text_secondary"],
+                flex_shrink="0",
+            ),
+            align="center",
+            gap="0.4em",
             flex="1",
             min_width="0",
-        ),
-        rx.text(
-            folder.doc_count.to_string(),
-            size="1",
-            color=COLORS["text_secondary"],
-            flex_shrink="0",
+            cursor="pointer",
+            on_click=KbAdminState.select_folder(folder.path),
         ),
         width="100%",
         align="center",
@@ -54,11 +100,9 @@ def _folder_row(folder: KbAdminFolder) -> rx.Component:
         padding_y="0.4em",
         padding_right="0.5em",
         padding_left=folder.indent,      # 기본 여백 포함 (state._indent)
-        cursor="pointer",
         border_radius=SPACING["border_radius_sm"],
         bg=rx.cond(is_selected, COLORS["sidebar_active"], "transparent"),
         _hover={"bg": rx.cond(is_selected, COLORS["sidebar_active"], COLORS["sidebar_hover"])},
-        on_click=KbAdminState.select_folder(folder.path),
     )
 
 
@@ -86,7 +130,7 @@ def _folder_rail() -> rx.Component:
                 padding_y="0.5em",
             ),
             rx.box(
-                rx.foreach(KbAdminState.folders, _folder_row),
+                rx.foreach(KbAdminState.visible_folders, _folder_row),
                 width="100%",
                 overflow_y="auto",
                 overflow_x="hidden",
@@ -109,19 +153,31 @@ def _doc_row(doc: KbAdminDoc) -> rx.Component:
     """문서 한 행. 티어·담당부서는 그 자리에서 고쳐 설정에 바로 기록한다."""
     return rx.table.row(
         rx.table.cell(
+            rx.checkbox(
+                checked=KbAdminState.selected_docs.contains(doc.path),
+                on_change=lambda _: KbAdminState.toggle_doc(doc.path),
+            ),
+            text_align="center",
+        ),
+        rx.table.cell(
             rx.hstack(
                 file_icon_by_name(doc.name),
-                rx.text(
-                    doc.name,
-                    size="2",
-                    overflow="hidden",
-                    text_overflow="ellipsis",
-                    white_space="nowrap",
+                # 열 폭이 고정이라 긴 제목은 잘린다 → 전체 제목은 hover 툴팁으로.
+                rx.tooltip(
+                    rx.text(
+                        doc.name,
+                        size="2",
+                        overflow="hidden",
+                        text_overflow="ellipsis",
+                        white_space="nowrap",
+                    ),
+                    content=doc.name,
                 ),
                 align="center",
                 gap="0.4em",
                 min_width="0",
             ),
+            overflow="hidden",
         ),
         rx.table.cell(
             rx.text(doc.uploaded_at, size="1", color=COLORS["text_secondary"]),
@@ -133,7 +189,7 @@ def _doc_row(doc: KbAdminDoc) -> rx.Component:
                 value=doc.tier,
                 on_change=lambda value: KbAdminState.change_tier(doc.path, value),
                 size="1",
-                width="80px",
+                width="72px",
             ),
             text_align="center",
         ),
@@ -145,20 +201,8 @@ def _doc_row(doc: KbAdminDoc) -> rx.Component:
                 on_change=lambda value: KbAdminState.set_dept_draft(doc.path, value),
                 on_blur=lambda value: KbAdminState.change_dept(doc.path, value),
                 size="1",
-                width="130px",
+                width="100%",
             ),
-            text_align="center",
-        ),
-        rx.table.cell(
-            rx.icon_button(
-                rx.icon("trash-2", size=14),
-                variant="ghost",
-                size="1",
-                color_scheme="red",
-                cursor="pointer",
-                on_click=KbAdminState.open_delete_modal(doc.path),
-            ),
-            text_align="center",
         ),
     )
 
@@ -196,6 +240,18 @@ def _doc_toolbar() -> rx.Component:
         ),
         rx.spacer(),
         _status_badge(),
+        rx.cond(
+            KbAdminState.has_doc_selection,
+            rx.button(
+                rx.icon("trash-2", size=14),
+                f"선택 삭제 ({KbAdminState.selected_count})",
+                size="2",
+                color_scheme="red",
+                variant="soft",
+                disabled=KbAdminState.is_busy,
+                on_click=KbAdminState.open_delete_modal,
+            ),
+        ),
         rx.button(
             rx.icon("upload", size=14),
             "업로드",
@@ -244,15 +300,32 @@ def _doc_table() -> rx.Component:
                 rx.table.root(
                     rx.table.header(
                         rx.table.row(
+                            rx.table.column_header_cell(
+                                rx.checkbox(
+                                    checked=KbAdminState.all_visible_selected,
+                                    on_change=lambda _: KbAdminState.toggle_all_docs(),
+                                ),
+                                width=_COL_CHECK,
+                                text_align="center",
+                            ),
                             rx.table.column_header_cell("문서"),
-                            rx.table.column_header_cell("업로드", text_align="center"),
-                            rx.table.column_header_cell("티어", text_align="center"),
-                            rx.table.column_header_cell("담당 부서", text_align="center"),
-                            rx.table.column_header_cell("삭제", text_align="center"),
+                            rx.table.column_header_cell(
+                                "업로드", width=_COL_DATE, text_align="center",
+                            ),
+                            rx.table.column_header_cell(
+                                "티어", width=_COL_TIER, text_align="center",
+                            ),
+                            rx.table.column_header_cell(
+                                "담당 부서", width=_COL_DEPT, text_align="center",
+                            ),
                         ),
                     ),
                     rx.table.body(rx.foreach(KbAdminState.visible_docs, _doc_row)),
+                    # table_layout=fixed 가 핵심 — 기본(auto)은 내용 폭으로 열을 다시
+                    # 계산해서, 폴더를 바꿀 때마다 열 위치가 좌우로 흔들린다.
+                    table_layout="fixed",
                     width="100%",
+                    min_width="620px",
                     size="1",
                 ),
                 width="100%",
@@ -440,7 +513,12 @@ def _delete_modal() -> rx.Component:
         rx.dialog.content(
             rx.dialog.title("문서 삭제"),
             rx.vstack(
-                rx.text(KbAdminState.delete_target, size="2", weight="medium"),
+                rx.text(
+                    f"{KbAdminState.selected_count}건을 삭제합니다.",
+                    size="2",
+                    weight="medium",
+                ),
+                rx.text(KbAdminState.delete_summary, size="1", color=COLORS["text_secondary"]),
                 rx.callout(
                     "S3 원본과 색인본을 지우고 바로 재색인합니다. 재색인이 끝나기 전까지는 "
                     "검색 결과에 남아 있을 수 있습니다.",
@@ -470,7 +548,7 @@ def _delete_modal() -> rx.Component:
             ),
             max_width="440px",
         ),
-        open=KbAdminState.delete_target != "",
+        open=KbAdminState.show_delete_modal,
         on_open_change=lambda is_open: rx.cond(  # type: ignore[misc]
             ~is_open, KbAdminState.close_delete_modal, None
         ),

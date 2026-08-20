@@ -68,6 +68,7 @@ class KbAdminFolder(BaseModel):
     depth: int = 0
     indent: str = "0em"
     doc_count: int = 0      # 이 폴더 직속 문서 수
+    has_children: bool = False   # 하위 폴더 유무 (펼침 토글 표시 여부)
 
 
 class KbAdminDoc(BaseModel):
@@ -95,6 +96,12 @@ def _parent_of(path: str) -> str:
     return path.rsplit("/", 1)[0] if "/" in path else ""
 
 
+def _ancestors(path: str) -> list[str]:
+    """논리 경로의 조상 폴더 목록. '사규/규정/인사' → ['사규', '사규/규정']."""
+    segments = [s for s in path.split("/") if s]
+    return ["/".join(segments[:i]) for i in range(1, len(segments))]
+
+
 def _indent(depth: int) -> str:
     """폴더 줄의 좌측 여백. 기본 여백(0.5em)을 포함해 계산한다 —
     padding_left 가 padding_x 를 덮어쓰므로 여기서 합쳐야 최상위 줄도 여백을 갖는다.
@@ -116,24 +123,23 @@ def _build_folders(rows: list[dict], registered: list[str]) -> list[KbAdminFolde
             parent = _parent_of(row["path"])
             counts[parent] = counts.get(parent, 0) + 1
 
+    tree_folders = [(row["path"], row["name"], row["depth"]) for row in rows if row["is_folder"]]
+    known = {path for path, _, _ in tree_folders}
+    tree_folders += [(top, top, 0) for top in registered if top not in known]
+
+    # 하위 폴더가 있는지 = 누군가의 부모인지. 토글 표시 여부를 여기서 정해둔다.
+    parents = {_parent_of(path) for path, _, _ in tree_folders}
+
     folders = [
         KbAdminFolder(
-            path=row["path"],
-            name=row["name"],
-            depth=row["depth"],
-            indent=_indent(row["depth"]),
-            doc_count=counts.get(row["path"], 0),
+            path=path,
+            name=name,
+            depth=depth,
+            indent=_indent(depth),
+            doc_count=counts.get(path, 0),
+            has_children=path in parents,
         )
-        for row in rows
-        if row["is_folder"]
-    ]
-    known = {f.path for f in folders}
-    folders += [
-        KbAdminFolder(
-            path=top, name=top, indent=_indent(0), doc_count=counts.get(top, 0),
-        )
-        for top in registered
-        if top not in known
+        for path, name, depth in tree_folders
     ]
     folders.sort(key=lambda f: f.path)
     return folders
@@ -167,6 +173,8 @@ class KbAdminState(rx.State):
     registered_tops: list[str] = []      # DS 가 있는 대분류(업로드 가능 대상)
     tier_choices: list[str] = []         # [없음, 0, 1, ...] — 설정된 사다리에서
     selected_folder: str = ""
+    expanded_folders: list[str] = []     # 펼쳐진 폴더 경로 (기본은 전부 접힘)
+    selected_docs: list[str] = []        # 체크된 문서 경로 (일괄 삭제 대상)
 
     loading: bool = False
     loaded: bool = False
@@ -187,7 +195,7 @@ class KbAdminState(rx.State):
     upload_folder: str = ""              # 전송 시작 시점에 고정한 대상 폴더
 
     # ── 삭제 확인 모달 ──
-    delete_target: str = ""
+    show_delete_modal: bool = False
     deleting: bool = False
 
     # ── 색인 상태 ──
@@ -210,9 +218,44 @@ class KbAdminState(rx.State):
         self.success = ""
 
     @rx.var
+    def visible_folders(self) -> list[KbAdminFolder]:
+        """조상이 모두 펼쳐진 폴더만. 최상위(대분류)는 항상 보인다.
+
+        Reflex 는 임의 깊이 재귀 렌더가 안 되므로 평탄 목록을 필터해 단일 foreach 로
+        그린다 — 채팅 KB 패널(visible_shared_rows)과 같은 방식.
+        """
+        expanded = set(self.expanded_folders)
+        return [
+            folder for folder in self.folders
+            if all(ancestor in expanded for ancestor in _ancestors(folder.path))
+        ]
+
+    @rx.var
     def visible_docs(self) -> list[KbAdminDoc]:
         """선택된 폴더 직속 문서."""
         return [d for d in self.docs if d.parent == self.selected_folder]
+
+    @rx.var
+    def selected_count(self) -> int:
+        return len(self.selected_docs)
+
+    @rx.var
+    def has_doc_selection(self) -> bool:
+        return bool(self.selected_docs)
+
+    @rx.var
+    def all_visible_selected(self) -> bool:
+        """헤더 체크박스 상태. 현재 폴더의 문서가 전부 선택됐는지."""
+        visible = [d.path for d in self.docs if d.parent == self.selected_folder]
+        return bool(visible) and all(path in self.selected_docs for path in visible)
+
+    @rx.var
+    def delete_summary(self) -> str:
+        """삭제 확인 모달에 보여줄 대상 요약 (길면 뒤를 접는다)."""
+        names = [path.rsplit("/", 1)[-1] for path in self.selected_docs]
+        if len(names) <= 5:
+            return ", ".join(names)
+        return ", ".join(names[:5]) + f" 외 {len(names) - 5}건"
 
     @rx.var
     def selected_top(self) -> str:
@@ -265,9 +308,19 @@ class KbAdminState(rx.State):
         self.docs = _build_docs(rows, attrs)
         self.registered_tops = tops
         self.tier_choices = [TIER_NONE] + [str(t) for t in shared_kb_docs.tier_options()]
+
+        known = {f.path for f in self.folders}
         # 선택했던 폴더가 사라졌으면(문서 전부 삭제 등) 첫 폴더로 되돌린다
-        if self.selected_folder not in {f.path for f in self.folders}:
+        if self.selected_folder not in known:
             self.selected_folder = self.folders[0].path if self.folders else ""
+        # 사라진 폴더의 펼침 상태는 버리고, 선택된 폴더는 보이도록 조상을 펼친다
+        # (업로드 직후 목록을 다시 그려도 방금 보던 위치가 접히지 않게).
+        keep = [p for p in self.expanded_folders if p in known]
+        self.expanded_folders = list(dict.fromkeys(keep + _ancestors(self.selected_folder)))
+        # 목록이 바뀌면 이전 선택은 의미가 없다(경로가 사라졌을 수 있다)
+        self.selected_docs = [
+            path for path in self.selected_docs if any(d.path == path for d in self.docs)
+        ]
         self.loaded = True
 
     async def _load(self):
@@ -291,10 +344,25 @@ class KbAdminState(rx.State):
 
     def select_folder(self, path: str) -> None:
         self.selected_folder = path
+        # 선택은 폴더 단위라 문서 체크도 폴더를 벗어나면 초기화한다 —
+        # 안 보이는 문서가 선택된 채로 남으면 삭제 대상이 화면과 어긋난다.
+        self.selected_docs = []
         self.ingest_label = ""
         self.ingest_detail = ""
         self.ingest_failed = False
         self._clear_messages()
+
+    def toggle_folder(self, path: str) -> None:
+        """펼침/접힘. 기본은 접힘이라 대분류부터 필요한 갈래만 열어 본다."""
+        if path in self.expanded_folders:
+            # 접을 때는 하위 폴더의 펼침 상태도 같이 정리한다(다시 열면 접힌 상태)
+            prefix = f"{path}/"
+            self.expanded_folders = [
+                p for p in self.expanded_folders
+                if p != path and not p.startswith(prefix)
+            ]
+        else:
+            self.expanded_folders = self.expanded_folders + [path]
 
     # ──────────────────────────────────────────
     # 폴더(대분류) 생성
@@ -532,20 +600,43 @@ class KbAdminState(rx.State):
     # ──────────────────────────────────────────
     # 문서 삭제
     # ──────────────────────────────────────────
-    def open_delete_modal(self, path: str) -> None:
-        self.delete_target = path
+    def toggle_doc(self, path: str) -> None:
+        if path in self.selected_docs:
+            self.selected_docs = [p for p in self.selected_docs if p != path]
+        else:
+            self.selected_docs = self.selected_docs + [path]
+
+    def toggle_all_docs(self) -> None:
+        """헤더 체크박스 — 현재 폴더 문서 전체 선택/해제."""
+        visible = [d.path for d in self.docs if d.parent == self.selected_folder]
+        if visible and all(path in self.selected_docs for path in visible):
+            self.selected_docs = [p for p in self.selected_docs if p not in visible]
+        else:
+            remaining = [p for p in self.selected_docs if p not in visible]
+            self.selected_docs = remaining + visible
+
+    def open_delete_modal(self) -> None:
+        if not self.selected_docs:
+            self.error = "삭제할 문서를 선택해 주세요."
+            return
         self._clear_messages()
+        self.show_delete_modal = True
 
     def close_delete_modal(self) -> None:
-        self.delete_target = ""
+        self.show_delete_modal = False
 
     async def confirm_delete(self):
-        """S3(raw+originals) 삭제 후 재-ingest. 재색인 없이는 벡터가 남아 계속 검색된다."""
+        """선택 문서를 S3(raw+originals)에서 지우고 재-ingest.
+
+        재색인을 돌리지 않으면 벡터가 남아 지운 문서가 계속 검색된다. 재색인은
+        **대분류(Data Source)당 한 번**이면 충분하다 — 문서마다 job 을 띄우면 동시
+        실행이 겹쳐 뒤 job 이 거부되거나 불필요하게 전체를 다시 훑는다.
+        """
         if not await self._is_db_admin():
             self.error = _ADMIN_ONLY
             return
-        target = self.delete_target
-        if not target:
+        targets = list(self.selected_docs)
+        if not targets:
             return
 
         self.deleting = True
@@ -553,19 +644,21 @@ class KbAdminState(rx.State):
         yield
 
         try:
-            await asyncio.to_thread(shared_kb_service.delete_docs, [target])
-            folder = shared_kb_service.split_doc_path(target)[0]
-            job_id = await asyncio.to_thread(shared_kb_service.start_ingestion, folder)
+            await asyncio.to_thread(shared_kb_service.delete_docs, targets)
+            tops = list(dict.fromkeys(path.split("/")[0] for path in targets))
+            for top in tops:
+                job_id = await asyncio.to_thread(shared_kb_service.start_ingestion, top)
+                log.info("[KbAdmin] 삭제 후 재색인: top=%s, job_id=%s", top, job_id)
         except Exception as exc:  # noqa: BLE001 - 화면에 원인 노출
-            log.exception("공용 KB 문서 삭제 실패: %s", target)
+            log.exception("공용 KB 문서 삭제 실패: %d건", len(targets))
             self.deleting = False
             self.error = f"삭제 실패: {exc}"
             return
 
-        log.info("[KbAdmin] 문서 삭제 후 재색인: doc=%s, job_id=%s", target, job_id)
         self.deleting = False
-        self.delete_target = ""
-        self.success = f"'{target}' 을 삭제하고 재색인을 시작했습니다."
+        self.show_delete_modal = False
+        self.selected_docs = []
+        self.success = f"{len(targets)}건을 삭제하고 재색인을 시작했습니다."
         self.ingest_label = _STATUS_LABELS["STARTING"]
         self.ingest_detail = ""
         self.ingest_failed = False
