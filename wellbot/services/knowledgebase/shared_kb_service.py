@@ -236,6 +236,38 @@ def _register_folder(top: str, data_source_id: str) -> None:
     log.info("[Config] 폴더 등록 완료: %s → %s", top, data_source_id)
 
 
+def unregister_folder(top: str) -> bool:
+    """folders 레지스트리에서 대분류를 제거. 반환: 실제로 지웠으면 True.
+
+    폴더 삭제의 **마지막** 단계다 — 이 키가 없어지면 Data Source id 를 찾을 수 없어
+    앞 단계를 재시도할 방법이 사라진다. 앞 단계가 하나라도 실패하면 여기까지 오지
+    않는다(호출자가 실패 지점에서 멈춘다).
+    """
+    folders = list_folders()
+    if top not in folders:
+        return False
+
+    data_source_id = folders[top]
+    lines = KNOWBASE_YAML.read_text(encoding="utf-8").split("\n")
+    entry_prefixes = (f"{top}:", f'"{top}":', f"'{top}':")
+    kept = [
+        line for line in lines
+        if not (line.startswith("    ") and line.strip().startswith(entry_prefixes)
+                and data_source_id in line)
+    ]
+    if len(kept) != len(lines):
+        KNOWBASE_YAML.write_text("\n".join(kept), encoding="utf-8")
+    else:
+        log.warning("knowBase.yaml 에서 folders 항목을 찾지 못했습니다: %s", top)
+
+    cfg = _cfg()
+    fmap = cfg.get("folders") or {}
+    fmap.pop(top, None)
+    cfg["folders"] = fmap
+    log.info("[Config] 폴더 등록 해제: %s (ds_id=%s)", top, data_source_id)
+    return True
+
+
 def _rename_folder_in_yaml(old_top: str, new_top: str, data_source_id: str) -> None:
     """folders 레지스트리에서 대분류 키를 old→new 로 변경 (ds_id 동일 유지)."""
     content = KNOWBASE_YAML.read_text(encoding="utf-8")
@@ -671,15 +703,18 @@ def start_ingestion(folder: str) -> str:
     return job_id
 
 
-def poll_ingestion_status(folder: str, job_id: str) -> str:
+def poll_ingestion_status(folder: str, job_id: str, poll_timeout: int | None = None) -> str:
     """Ingestion 완료까지 폴링. 반환: 최종 status (COMPLETE/FAILED/STOPPED).
 
-    poll_timeout 을 넘기면 TimeoutError. 공용 KB 는 대용량을 가정해 기본 대기가 길다.
+    poll_timeout 을 넘기면 TimeoutError. 기본값은 설정(공용 KB 는 대용량을 가정해 길다).
+    폴더 삭제처럼 대상이 비어 있어 금방 끝나야 하는 동기화는 호출자가 더 짧은 값을
+    넘긴다 — 그런 경우 오래 걸리는 건 정상이 아니라 이상 신호다.
     """
     data_source_id = get_data_source_id(folder)
     cfg = _cfg()
     poll_interval = cfg.get("poll_interval", 5)
-    poll_timeout = cfg.get("poll_timeout", 300)
+    if poll_timeout is None:
+        poll_timeout = cfg.get("poll_timeout", 300)
     start = time.time()
 
     while time.time() - start < poll_timeout:

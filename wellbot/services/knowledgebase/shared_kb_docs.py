@@ -163,6 +163,39 @@ def _update_doc_attr(doc_key: str, attr: str, value: object | None) -> None:
     log.info("[Config] 문서 속성 기록: %s → %s", doc_key, attrs or "(제거)")
 
 
+def remove_docs_under(top: str) -> int:
+    """대분류 하위 문서 entry 를 **한 번의 쓰기로** 모두 제거. 반환: 제거된 건수.
+
+    폴더(대분류)를 삭제할 때 쓴다. 한 건씩 지우면 파일을 문서 수만큼 다시 쓰게 되고,
+    중간에 실패하면 절반만 지워진 상태가 남는다.
+    """
+    if not top:
+        return 0
+    lines = KNOWBASE_YAML.read_text(encoding="utf-8").split("\n")
+    header, last = _docs_block(lines)
+
+    prefix = f"{top}/"
+    removed: list[str] = []
+    kept: list[str] = []
+    for i, line in enumerate(lines):
+        match = _DOC_ENTRY_RE.match(line) if header < i <= last else None
+        if match and match.group("key").startswith(prefix):
+            removed.append(match.group("key"))
+            continue
+        kept.append(line)
+
+    if not removed:
+        return 0
+
+    KNOWBASE_YAML.write_text("\n".join(kept), encoding="utf-8")
+    docs = _cfg().get("docs") or {}
+    for key in removed:
+        docs.pop(key, None)
+    _cfg()["docs"] = docs
+    log.info("[Config] 문서 속성 일괄 제거: top=%s (%d건)", top, len(removed))
+    return len(removed)
+
+
 # ──────────────────────────────────────────────
 # 변경
 # ──────────────────────────────────────────────

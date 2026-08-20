@@ -1,7 +1,12 @@
-"""개인/팀 Knowledge Base teardown 서비스.
+"""Knowledge Base teardown 서비스.
 
-퇴사자 정리, 팀 해체 등으로 한 소유자의 KB 관련 리소스를 **의존성 역순으로 전부**
-삭제한다. 운용(업로드·문서 삭제)과 달리 비가역·전면 삭제라 별도 모듈로 둔다.
+두 가지 비가역 삭제를 담당한다. 운용(업로드·문서 삭제)과 성격이 달라 별도 모듈로 둔다.
+
+1. **개인/팀 KB 전체 삭제** (`gather_resources` / `execute_cleanup`) — 퇴사자 정리,
+   팀 해체 등. 한 소유자의 리소스를 의존성 역순으로 전부 지운다.
+2. **공용 KB 폴더(대분류=Data Source) 삭제** (`gather_folder_resources` /
+   `execute_folder_cleanup`) — 벡터 인덱스가 공유 자산이라 접근이 정반대다.
+   파일 하단 섹션 주석 참고.
 
 **호출자는 둘이다** — CLI(``scripts/cleanup_kb.py``)와 admin UI. 그래서
 admin 계층이 아니라 도메인 계층에 둔다.
@@ -54,6 +59,7 @@ from wellbot.services.knowledgebase.kb_utils import (
     kb_resource_name,
     kb_root_prefix,
     processed_prefix,
+    shared_base,
     vector_index_name,
 )
 from wellbot.services.knowledgebase.personal_kb_manager import (
@@ -286,10 +292,23 @@ def _wait_until_gone(describe, label: str) -> None:
     raise TimeoutError(f"{label} 삭제 완료 대기 타임아웃 ({DELETE_POLL_TIMEOUT_SEC}초)")
 
 
-def _delete_data_source(kb_id: str, data_source_id: str) -> bool:
-    """Data Source 삭제 후 실제로 사라질 때까지 대기. 반환: 이미 없었으면 False."""
+def _delete_data_source(
+    kb_id: str, data_source_id: str, *, retain_vectors: bool,
+) -> bool:
+    """Data Source 삭제 후 실제로 사라질 때까지 대기. 반환: 이미 없었으면 False.
+
+    retain_vectors 는 호출자가 **반드시 명시**한다(키워드 전용, 기본값 없음) —
+    두 경로의 정답이 정반대이고, 잘못 고르면 조용히 나쁜 결과가 남는다.
+
+    - True (개인/팀 teardown): 인덱스를 통째로 지우므로 DS 의 개별 벡터 정리는
+      낭비이자 유일한 실패 지점이다.
+    - False (공용 폴더 삭제): 인덱스를 여러 폴더가 공유한다. RETAIN 으로 두면 앞
+      단계의 동기화가 미처 못 지운 벡터가 인덱스에 영구히 남아 **다른 폴더 질의의
+      검색 결과를 오염시킨다**. 기본 정책(Delete)이 마지막 안전망이다.
+    """
     client = get_bedrock_agent()
-    _set_retain_policy(kb_id, data_source_id)
+    if retain_vectors:
+        _set_retain_policy(kb_id, data_source_id)
     try:
         client.delete_data_source(knowledgeBaseId=kb_id, dataSourceId=data_source_id)
     except ClientError as e:
@@ -427,7 +446,9 @@ def execute_cleanup(plan: CleanupPlan) -> Iterator[CleanupStep]:
     def delete_ds():
         if not (plan.kb_id and plan.data_source_id):
             return STEP_SKIPPED, "DS 없음"
-        ok = _delete_data_source(plan.kb_id, plan.data_source_id)
+        ok = _delete_data_source(
+            plan.kb_id, plan.data_source_id, retain_vectors=True,
+        )
         if not ok:
             return STEP_DONE, "이미 없음"
         return STEP_DONE, f"{plan.data_source_id} (벡터는 인덱스 삭제로 일괄 제거)"
@@ -488,3 +509,170 @@ def execute_cleanup(plan: CleanupPlan) -> Iterator[CleanupStep]:
 
 
 TOTAL_STEPS = 7   # execute_cleanup 의 단계 수 (CLI/UI 진행 표시용)
+
+
+# ──────────────────────────────────────────────
+# 공용(shared) KB 폴더 삭제 — 대분류 = Data Source 하나
+# ──────────────────────────────────────────────
+# 개인/팀 teardown 과 결정적으로 다른 점: **벡터 인덱스가 여러 폴더의 공유 자산**이라
+# 인덱스를 지울 수 없다. 그래서 지우는 대상이 KB 가 아니라 "이 폴더의 벡터"이고,
+# 그걸 빼내는 유일한 수단이 S3 를 비운 뒤 **재색인(증분 동기화)** 이다.
+#
+# 순서가 곧 정확성이다 — 앞 단계가 끝나기 전에 뒤 단계를 시작하면 안 된다.
+#   1. S3 객체를 지워야 재색인이 "없어진 문서"로 인식한다.
+#   2. 재색인이 **완료**돼야 벡터가 실제로 빠진다.
+#   3. 그 다음에야 DS 를 지운다. 순서를 뒤집으면 DS 가 없어 재색인을 돌릴 수 없고,
+#      벡터는 공유 인덱스에 영구히 남는다.
+#   4. yaml 레지스트리는 마지막 — 먼저 지우면 ds_id 를 잃어 재시도가 불가능해진다.
+# 각 단계 함수는 효과가 확정된 뒤에만 반환하고(동기 삭제·폴링 대기), 한 단계라도
+# 실패하면 제너레이터가 그 지점에서 멈춘다.
+
+# 폴더 삭제용 재색인 대기 상한. 이 시점의 대상 prefix 는 비어 있어 금방 끝나야 하므로,
+# 설정값(공용 KB 대용량 가정 30분)보다 짧게 잡는다 — 오래 걸리면 정상이 아니다.
+FOLDER_SYNC_TIMEOUT_SEC = 900
+
+FOLDER_TOTAL_STEPS = 6
+
+
+@dataclass(frozen=True)
+class FolderCleanupPlan:
+    """공용 KB 대분류 삭제 대상 스냅샷 (미리보기 겸 실행 입력)."""
+
+    top: str
+    kb_id: str = ""
+    data_source_id: str = ""
+    bucket: str = ""
+    prefix: str = ""
+    keys: list[str] = field(default_factory=list)
+    intermediate_bucket: str = ""
+    intermediate_prefix: str = ""
+    intermediate_keys: list[str] = field(default_factory=list)
+    doc_keys: list[str] = field(default_factory=list)
+
+    @property
+    def has_nothing_to_delete(self) -> bool:
+        return not (
+            self.data_source_id or self.keys or self.intermediate_keys or self.doc_keys
+        )
+
+
+def gather_folder_resources(top: str) -> FolderCleanupPlan:
+    """공용 KB 대분류의 삭제 대상을 수집. 읽기만 하므로 미리보기에 그대로 쓴다."""
+    from wellbot.services.knowledgebase import shared_kb_docs, shared_kb_service
+
+    name = (top or "").strip().strip("/")
+    if not name:
+        raise ValueError("대분류 이름이 비어 있습니다.")
+    if "/" in name:
+        raise ValueError("삭제는 대분류 단위입니다. 소분류는 문서 삭제로 정리하세요.")
+
+    cfg = get_kb_config()["shared_kb"]
+    bucket = cfg.get("s3_bucket", "")
+    intermediate_bucket = cfg.get("s3_intermediate_bucket", "")
+    prefix = f"{shared_base()}/{name}/"
+    intermediate_prefix = shared_kb_service.processed_prefix(name)
+
+    return FolderCleanupPlan(
+        top=name,
+        kb_id=cfg.get("kb_id", ""),
+        data_source_id=shared_kb_service.list_folders().get(name, ""),
+        bucket=bucket,
+        prefix=prefix,
+        keys=_list_keys(bucket, prefix),
+        intermediate_bucket=intermediate_bucket,
+        intermediate_prefix=intermediate_prefix,
+        intermediate_keys=_list_keys(intermediate_bucket, intermediate_prefix),
+        doc_keys=sorted(
+            key for key in shared_kb_docs.list_doc_attrs() if key.startswith(f"{name}/")
+        ),
+    )
+
+
+def execute_folder_cleanup(plan: FolderCleanupPlan) -> Iterator[CleanupStep]:
+    """공용 KB 대분류를 삭제. 단계가 끝날 때마다 결과를 하나씩 내보낸다.
+
+    단계 순서와 그 이유는 위 섹션 주석 참고. 한 단계가 실패하면 그 단계를 마지막으로
+    내보내고 멈춘다 — 특히 재색인이 완료되지 않은 상태로 DS 를 지우면 공유 인덱스에
+    고아 벡터가 남아 되돌릴 방법이 없다.
+    """
+    from wellbot.services.knowledgebase import shared_kb_docs, shared_kb_service
+
+    def check_ingestion():
+        """남의 job 이 돌고 있으면 시작하지 않는다 — start_ingestion 이 거부되고,
+        그 job 의 결과를 우리 동기화로 오해할 수도 있다."""
+        if not (plan.kb_id and plan.data_source_id):
+            return STEP_SKIPPED, "Data Source 없음"
+        if is_ingestion_in_progress(plan.kb_id, plan.data_source_id):
+            raise RuntimeError("진행 중인 ingestion 이 있습니다. 완료 후 다시 시도해주세요.")
+        return STEP_DONE, "진행 중 없음"
+
+    def delete_objects():
+        """S3 delete_objects 는 동기 — 반환 시점에 삭제가 확정된다."""
+        if not plan.keys:
+            return STEP_SKIPPED, "객체 없음"
+        count = _delete_keys(plan.bucket, plan.keys)
+        return STEP_DONE, f"{count}개 삭제"
+
+    def sync_vectors():
+        """재색인으로 벡터 제거. **완료까지 기다리고, COMPLETE 가 아니면 실패로 멈춘다.**
+
+        객체가 없어도 DS 가 있으면 돌린다 — 인덱스에 남은 벡터가 있는지는 조회로
+        확인할 수 없으므로, 건너뛰면 고아를 남길 수 있다(빈 prefix 동기화는 저렴하다).
+        """
+        if not plan.data_source_id:
+            return STEP_SKIPPED, "Data Source 없음"
+        job_id = shared_kb_service.start_ingestion(plan.top)
+        status = shared_kb_service.poll_ingestion_status(
+            plan.top, job_id, poll_timeout=FOLDER_SYNC_TIMEOUT_SEC,
+        )
+        if status != "COMPLETE":
+            raise RuntimeError(
+                f"벡터 정리 동기화가 완료되지 않았습니다(status={status}). "
+                "Data Source 를 남겨 두었으니 원인 확인 후 다시 실행하세요."
+            )
+        return STEP_DONE, f"job={job_id}"
+
+    def delete_ds():
+        """벡터가 빠진 뒤에 DS 삭제. RETAIN 을 쓰지 않는 이유는 _delete_data_source 참고."""
+        if not (plan.kb_id and plan.data_source_id):
+            return STEP_SKIPPED, "Data Source 없음"
+        ok = _delete_data_source(plan.kb_id, plan.data_source_id, retain_vectors=False)
+        return STEP_DONE, plan.data_source_id if ok else "이미 없음"
+
+    def delete_intermediate():
+        """Lambda 변환 중간산출물. DS 가 사라진 뒤라 아무도 쓰지 않는다."""
+        if not plan.intermediate_keys:
+            return STEP_SKIPPED, "객체 없음"
+        count = _delete_keys(plan.intermediate_bucket, plan.intermediate_keys)
+        return STEP_DONE, f"{count}개 삭제"
+
+    def clear_registry():
+        removed = shared_kb_docs.remove_docs_under(plan.top)
+        unregistered = shared_kb_service.unregister_folder(plan.top)
+        if not (removed or unregistered):
+            return STEP_SKIPPED, "등록 정보 없음"
+        folder_part = "폴더 등록 해제" if unregistered else "폴더 등록 없음"
+        return STEP_DONE, f"{folder_part} · 문서 속성 {removed}건 제거"
+
+    ordered = [
+        ("Ingestion 진행 확인", check_ingestion),
+        ("S3 문서 삭제", delete_objects),
+        ("재색인으로 벡터 정리", sync_vectors),
+        ("Data Source 삭제", delete_ds),
+        ("S3 중간 산출물 삭제", delete_intermediate),
+        ("설정 레지스트리 정리", clear_registry),
+    ]
+
+    log.info(
+        "공용 KB 폴더 삭제 시작: top=%s ds_id=%s objects=%d docs=%d",
+        plan.top, plan.data_source_id or "-", len(plan.keys), len(plan.doc_keys),
+    )
+    for name, action in ordered:
+        try:
+            status, detail = action()
+        except Exception as exc:  # noqa: BLE001 - 단계별로 실패를 보고해야 한다
+            log.exception("공용 KB 폴더 삭제 단계 실패: top=%s step=%s", plan.top, name)
+            yield CleanupStep(name, STEP_FAILED, str(exc))
+            return
+        yield CleanupStep(name, status, detail)
+    log.info("공용 KB 폴더 삭제 완료: top=%s", plan.top)
