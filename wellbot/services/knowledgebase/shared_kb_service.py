@@ -38,6 +38,7 @@ import yaml
 from wellbot.constants import KST
 from wellbot.paths import KNOWBASE_YAML
 from wellbot.services.files import storage_service
+from wellbot.services.knowledgebase import shared_kb_docs
 from wellbot.services.knowledgebase.config import get_kb_config
 from wellbot.services.knowledgebase.kb_utils import (
     CONVERTIBLE_EXTS,
@@ -638,17 +639,32 @@ def split_doc_path(path: str) -> tuple[str, str]:
 
 
 def delete_docs(paths: list[str]) -> None:
-    """문서 논리 경로 목록을 S3 에서 삭제(raw/ 색인본 + originals/ 보관본).
+    """문서 논리 경로 목록을 삭제(S3 raw/ 색인본 + originals/ 보관본 + 문서 속성).
 
     벡터 제거는 재-ingest 로 이뤄지므로 호출자가 이어서 `start_ingestion` 을 돌려야
     한다(삭제만 하면 검색 결과에 남는다).
+
+    문서 속성(티어·담당부서)까지 여기서 지우는 이유: 호출자가 따로 챙기게 두면
+    빠뜨리기 쉽고, 남은 키는 문서 목록에 뜨지 않아 **화면에서 지울 방법이 없다**.
+    더 나쁜 건 같은 경로로 다른 파일을 올렸을 때 예전 티어를 그대로 물려받는 것이다.
     """
     bucket = _bucket()
-    for path in paths:
-        parent, filename = split_doc_path(path)
-        validate_folder(parent)
-        delete_kb_docs(bucket, raw_prefix(parent), originals_prefix(parent), [filename])
-        log.info("[S3] 문서 삭제: %s", path)
+    deleted: list[str] = []
+    try:
+        for path in paths:
+            parent, filename = split_doc_path(path)
+            validate_folder(parent)
+            delete_kb_docs(bucket, raw_prefix(parent), originals_prefix(parent), [filename])
+            deleted.append(path)
+            log.info("[S3] 문서 삭제: %s", path)
+    finally:
+        # 중간에 실패해도 **지워진 만큼은** 속성을 정리한다(부분 실패 시 불일치 최소화).
+        # 여기서 난 오류가 원래 예외를 덮지 않도록 경고만 남긴다.
+        if deleted:
+            try:
+                shared_kb_docs.remove_docs(deleted)
+            except Exception:  # noqa: BLE001 - 속성 정리 실패가 삭제를 되돌리진 않는다
+                log.warning("문서 속성 정리 실패: %s", deleted, exc_info=True)
 
 
 # ──────────────────────────────────────────────
@@ -824,8 +840,12 @@ def rename_folder(old: str, new: str) -> str:
     )
     log.info("[Bedrock] Data Source 갱신: inclusionPrefix → %s/%s/raw/", base, new_top)
 
-    # 4. yaml 레지스트리 키 변경 (ds_id 동일)
+    # 4. yaml 레지스트리 키 변경 (ds_id 동일) + 문서 속성 키도 새 경로로 이동.
+    #    문서 키는 논리 경로라 대분류가 바뀌면 전부 어긋난다 — 안 옮기면 옮겨진 문서가
+    #    티어·담당부서를 잃고(순위가 바뀐다) 옛 키는 지울 수 없는 잔여물로 남는다.
     _rename_folder_in_yaml(old_top, new_top, ds_id)
+    moved_docs = shared_kb_docs.rekey_docs_under(old_top, new_top)
+    log.info("[Rename] 문서 속성 키 이동: %d건", moved_docs)
 
     # 5. 재-ingest → 새 경로 색인 + 옛 경로 문서 벡터 제거(증분 동기화)
     job_id = start_ingestion(new_top)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 
 import yaml
 
@@ -163,37 +164,102 @@ def _update_doc_attr(doc_key: str, attr: str, value: object | None) -> None:
     log.info("[Config] 문서 속성 기록: %s → %s", doc_key, attrs or "(제거)")
 
 
-def remove_docs_under(top: str) -> int:
-    """대분류 하위 문서 entry 를 **한 번의 쓰기로** 모두 제거. 반환: 제거된 건수.
+def _remove_entries(should_remove: Callable[[str], bool], label: str) -> int:
+    """조건에 맞는 문서 entry 를 **한 번의 쓰기로** 제거. 반환: 제거된 건수.
 
-    폴더(대분류)를 삭제할 때 쓴다. 한 건씩 지우면 파일을 문서 수만큼 다시 쓰게 되고,
-    중간에 실패하면 절반만 지워진 상태가 남는다.
+    한 건씩 지우면 파일을 문서 수만큼 다시 쓰게 되고, 중간에 실패하면 절반만 지워진
+    상태가 남는다.
     """
-    if not top:
-        return 0
     lines = KNOWBASE_YAML.read_text(encoding="utf-8").split("\n")
     header, last = _docs_block(lines)
 
-    prefix = f"{top}/"
     removed: list[str] = []
     kept: list[str] = []
     for i, line in enumerate(lines):
         match = _DOC_ENTRY_RE.match(line) if header < i <= last else None
-        if match and match.group("key").startswith(prefix):
+        if match and should_remove(match.group("key")):
             removed.append(match.group("key"))
             continue
         kept.append(line)
 
-    if not removed:
+    # 캐시는 **파일에서 지운 것만이 아니라 조건에 맞는 전부**를 비운다. 정상 경로에서는
+    # 둘이 같지만, 어긋난 상태(다른 경로로 yaml 이 수정된 경우 등)에서 캐시에만 남은
+    # 키는 삭제된 문서의 티어를 계속 적용해 검색 순위를 바꾼다.
+    docs = _cfg().get("docs") or {}
+    stale = [key for key in docs if should_remove(key)]
+    if not (removed or stale):
         return 0
 
-    KNOWBASE_YAML.write_text("\n".join(kept), encoding="utf-8")
-    docs = _cfg().get("docs") or {}
-    for key in removed:
+    if removed:
+        KNOWBASE_YAML.write_text("\n".join(kept), encoding="utf-8")
+    for key in stale:
         docs.pop(key, None)
     _cfg()["docs"] = docs
-    log.info("[Config] 문서 속성 일괄 제거: top=%s (%d건)", top, len(removed))
+    log.info(
+        "[Config] 문서 속성 제거: %s (yaml %d건 · 캐시 %d건)",
+        label, len(removed), len(stale),
+    )
     return len(removed)
+
+
+def remove_docs(doc_keys: list[str]) -> int:
+    """지정한 문서들의 entry 를 제거. 반환: 제거된 건수.
+
+    문서를 삭제할 때 반드시 함께 호출한다 — 남겨두면 문서 목록에 나타나지 않아
+    **화면에서는 지울 수 없는** 키가 되고, 나중에 같은 경로로 다른 파일을 올리면
+    그 문서가 예전 티어·담당부서를 그대로 물려받는다.
+    """
+    targets = {key for key in doc_keys if key}
+    if not targets:
+        return 0
+    return _remove_entries(lambda key: key in targets, f"{len(targets)}개 문서")
+
+
+def remove_docs_under(top: str) -> int:
+    """대분류 하위 문서 entry 를 모두 제거. 반환: 제거된 건수. (폴더 삭제용)"""
+    if not top:
+        return 0
+    prefix = f"{top}/"
+    return _remove_entries(lambda key: key.startswith(prefix), f"top={top}")
+
+
+def rekey_docs_under(old_top: str, new_top: str) -> int:
+    """대분류 이름 변경에 맞춰 문서 키의 앞부분을 옮긴다. 반환: 옮긴 건수.
+
+    폴더 이름이 바뀌면 문서의 논리 경로도 바뀐다. 키를 옮기지 않으면 **옮겨진 문서는
+    티어·담당부서를 통째로 잃고**(미배정으로 되돌아가 검색 순위가 바뀐다), 옛 키는
+    화면에서 지울 수 없는 잔여물로 남는다.
+    """
+    if not old_top or not new_top or old_top == new_top:
+        return 0
+
+    lines = KNOWBASE_YAML.read_text(encoding="utf-8").split("\n")
+    header, last = _docs_block(lines)
+    old_prefix, new_prefix = f"{old_top}/", f"{new_top}/"
+
+    moved: list[tuple[str, str]] = []
+    for j in range(header + 1, last + 1):
+        match = _DOC_ENTRY_RE.match(lines[j])
+        if not match:
+            continue
+        key = match.group("key")
+        if not key.startswith(old_prefix):
+            continue
+        new_key = new_prefix + key[len(old_prefix):]
+        lines[j] = _format_doc_entry(new_key, _parse_doc_attrs(match.group("attrs")))
+        moved.append((key, new_key))
+
+    if not moved:
+        return 0
+
+    KNOWBASE_YAML.write_text("\n".join(lines), encoding="utf-8")
+    docs = _cfg().get("docs") or {}
+    for old_key, new_key in moved:
+        if old_key in docs:
+            docs[new_key] = docs.pop(old_key)
+    _cfg()["docs"] = docs
+    log.info("[Config] 문서 키 이동: %s/ → %s/ (%d건)", old_top, new_top, len(moved))
+    return len(moved)
 
 
 # ──────────────────────────────────────────────
