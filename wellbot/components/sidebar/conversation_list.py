@@ -58,6 +58,27 @@ def conversation_item(conv: Conversation) -> rx.Component:
     )
 
 
+def _load_more_button() -> rx.Component:
+    """목록 하단 '더 보기'. 한 번에 CONVERSATION_LIMIT 개씩 과거 대화를 펼친다."""
+    is_loading = ChatState.is_loading_more_conversations
+    return rx.el.button(
+        rx.cond(is_loading, "불러오는 중...", "이전 대화 더 보기"),
+        on_click=ChatState.load_more_conversations,
+        disabled=is_loading,
+        width="100%",
+        padding_x="0.75em",
+        padding_y="0.5em",
+        margin_top="0.25em",
+        font_size="0.8rem",
+        color=COLORS["text_secondary"],
+        background="transparent",
+        border="none",
+        border_radius=SPACING["border_radius_sm"],
+        cursor=rx.cond(is_loading, "default", "pointer"),
+        _hover={"bg": COLORS["sidebar_hover"], "color": COLORS["text_primary"]},
+    )
+
+
 def conversation_list() -> rx.Component:
     """대화 목록."""
     return rx.box(
@@ -84,6 +105,12 @@ def conversation_list() -> rx.Component:
                     ChatState.sorted_conversations,
                     conversation_item,
                 ),
+            ),
+            # 검색 중에는 숨긴다 — 검색은 이미 불러온 목록만 훑으므로,
+            # 여기서 더 불러와도 결과가 늘지 않아 오해를 준다.
+            rx.cond(
+                ChatState.has_more_conversations & ~ChatState.is_searching,
+                _load_more_button(),
             ),
             spacing="0",
             width="100%",

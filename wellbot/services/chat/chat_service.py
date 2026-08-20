@@ -8,7 +8,12 @@ from decimal import Decimal
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
-from wellbot.constants import CONVERSATION_LIMIT, KST, MESSAGE_SEQ_MAX_RETRIES
+from wellbot.constants import (
+    CONVERSATION_LIMIT,
+    DEFAULT_CONVERSATION_TITLE,
+    KST,
+    MESSAGE_SEQ_MAX_RETRIES,
+)
 from wellbot.models.chat_message import ChatMessage
 from wellbot.models.chat_summary import ChatSummary
 from wellbot.services.core.database import get_session
@@ -59,37 +64,52 @@ def can_attach(smry_id: str, emp_no: str) -> bool:
     return not has_messages
 
 
-def list_conversations(emp_no: str) -> list[dict]:
-    """사원의 대화 목록 조회 (최근 30개, 메시지 제외).
+def list_conversations(emp_no: str, limit: int = CONVERSATION_LIMIT) -> tuple[list[dict], bool]:
+    """사원의 대화 목록 조회 (최근순, 메시지 제외). 반환: (목록, 더 있는지).
 
     AI 서비스/에이전트가 생성한 기록(메시지에 agnt_id 태깅)은 사람의 채팅이 아니므로
     사이드바 목록에서 제외한다. (예: 보고서 오류 검출 사용 내역)
+
+    **offset 이 아니라 limit 만 받는 이유** — 사이드바의 "더 보기"는 목록을 늘려 가며
+    항상 맨 위부터 다시 읽는다. offset 페이지네이션은 페이지를 넘기는 사이에 새 대화가
+    생기면 창이 밀려 중복·누락이 생기는데, 이 목록은 최대 수십 건이라 전 구간을 다시
+    읽는 편이 단순하고 정확하다.
+
+    더 있는지는 limit + 1 건을 읽어 판단한다(별도 COUNT 질의 불필요).
     """
     with get_session() as session:
-        agent_smry = (
+        # 이 대화에 에이전트 태깅 메시지가 있는지 (상관 서브쿼리).
+        # NOT IN + 전역 DISTINCT 목록이었는데, 그 목록은 **사번으로 걸러지지 않아**
+        # 전사 chtb_msg_d 를 훑었다. AI 서비스 사용량에 비례해 무거워지고, 남의 데이터가
+        # 내 목록 조회에 개입할 구조이기도 했다. EXISTS 는 대화 한 건씩 확인하고 끝난다.
+        has_agent_message = (
             session.query(ChatMessage.chtb_tlk_smry_id)
-            .filter(ChatMessage.agnt_id.isnot(None))
-            .distinct()
+            .filter(
+                ChatMessage.chtb_tlk_smry_id == ChatSummary.chtb_tlk_smry_id,
+                ChatMessage.agnt_id.isnot(None),
+            )
+            .exists()
         )
         rows = (
             session.query(ChatSummary)
             .filter(
                 ChatSummary.emp_no == emp_no,
-                ChatSummary.chtb_tlk_smry_id.notin_(agent_smry),
+                ~has_agent_message,
             )
             .order_by(ChatSummary.rgst_dtm.desc())
-            .limit(CONVERSATION_LIMIT)
+            .limit(limit + 1)
             .all()
         )
+        has_more = len(rows) > limit
         return [
             {
                 "id": r.chtb_tlk_smry_id,
-                "title": r.chtb_tlk_smry_ttl or "새 대화",
+                "title": r.chtb_tlk_smry_ttl or DEFAULT_CONVERSATION_TITLE,
                 "model_name": r.chtb_mdl_nm or "",
                 "created_at": r.rgst_dtm.timestamp() if r.rgst_dtm else 0.0,
             }
-            for r in rows
-        ]
+            for r in rows[:limit]
+        ], has_more
 
 
 def get_conversation_messages(
