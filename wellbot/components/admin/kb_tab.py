@@ -441,6 +441,9 @@ def _pending_row(file: PendingFile) -> rx.Component:
         width="100%",
         align="center",
         gap="0.4em",
+        # ghost 버튼의 음수 마진이 행 밖으로 4px 넘쳐 스크롤 컨테이너에 잡히는 것을 흡수한다.
+        # 상세는 chat/kb_panels.py 의 _pending_file_row 주석.
+        padding_y="0.25em",
     )
 
 

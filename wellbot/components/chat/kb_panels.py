@@ -182,6 +182,11 @@ def _pending_file_row(f: PendingFile) -> rx.Component:
         width="100%",
         align="center",
         gap="0.5em",
+        # ghost 아이콘 버튼은 패딩만큼 음수 마진을 갖는다(content-box) — border-box 가 행의
+        # margin-box 밖으로 사방 4px 삐져나온다. 그 넘침이 부모 스크롤 컨테이너의 scrollable
+        # overflow 에 잡혀 파일 1개에도 세로 스크롤바가 생겼다(가로축은 overflow_x 로 덮여
+        # 있던 같은 원인). 행 padding 으로 흡수한다 — 문서 목록 행의 padding_y 와 같은 효과.
+        padding_y="0.25em",
     )
 
 
