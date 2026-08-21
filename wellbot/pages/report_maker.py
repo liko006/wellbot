@@ -261,6 +261,28 @@ def _message(m: ReportMessage, idx: int) -> rx.Component:
     )
 
 
+def _report_history_more_button() -> rx.Component:
+    """'이전 보고서' 모달 하단 더 보기. 한 번에 CONVERSATION_LIMIT 개씩 과거를 펼친다.
+
+    사이드바 '이전 대화 더 보기'(components/sidebar/conversation_list.py)와 같은 모양.
+    """
+    is_loading = ReportMakerState.is_loading_more_conversations
+    return rx.el.button(
+        rx.cond(is_loading, "불러오는 중...", "이전 보고서 더 보기"),
+        on_click=ReportMakerState.load_more_conversations,
+        disabled=is_loading,
+        width="100%",
+        padding_x="1em",
+        padding_y="0.625em",
+        font_size="0.8rem",
+        color=COLORS["text_secondary"],
+        background="transparent",
+        border="none",
+        cursor=rx.cond(is_loading, "default", "pointer"),
+        _hover={"bg": COLORS["sidebar_hover"], "color": COLORS["text_primary"]},
+    )
+
+
 def _report_history_row(c) -> rx.Component:
     """'이전 보고서' 모달의 개별 항목 — 제목·작성일 클릭 시 불러오기 + 이름변경·삭제."""
     is_active = ReportMakerState.session_id == c.id
@@ -364,6 +386,14 @@ def report_history_modal() -> rx.Component:
                                 rx.foreach(
                                     ReportMakerState.filtered_conversations,
                                     _report_history_row,
+                                ),
+                                # 검색 중에는 숨긴다 — 검색은 이미 불러온 목록만 훑으므로
+                                # 여기서 더 불러와도 결과가 늘지 않아 오해를 준다
+                                # (사이드바 '이전 대화 더 보기' 와 같은 이유).
+                                rx.cond(
+                                    ReportMakerState.has_more_conversations
+                                    & (ReportMakerState.report_history_query == ""),
+                                    _report_history_more_button(),
                                 ),
                                 spacing="0", width="100%",
                             ),
@@ -496,6 +526,10 @@ def _chat_view() -> rx.Component:
             align="center",
             padding_bottom="0.5em",
             border_bottom=f"1px solid {COLORS['border']}",
+            # 부모에서 옮겨온 폭 제약 — 상단 바만 900px 을 쓴다(메시지·입력 바는 이미
+            # 768px 중앙 정렬). 넓은 창에서 기존과 같은 위치에 놓인다.
+            max_width="900px",
+            margin_x="auto",
         ),
         # 메시지 목록
         rx.box(
@@ -670,8 +704,10 @@ def _chat_view() -> rx.Component:
         ),
         width="100%",
         height="100%",
-        max_width="900px",
-        margin="0 auto",
+        # 여기에 max_width 를 두면 스크롤 컨테이너(#rm-chat-container)까지 같이 좁아져
+        # 스크롤바가 메시지 칼럼 옆에 붙는다. 메인 채팅은 스크롤러가 pane 전폭이고
+        # 내용만 768px 중앙 정렬이라 스크롤바가 가장자리에 있다(오류 탐지·스타일 편집
+        # 페이지도 같은 패턴). 폭 제약은 그것이 필요한 자식(상단 바)에만 준다.
         spacing="2",
     )
 
@@ -699,8 +735,10 @@ def report_maker_page() -> rx.Component:
                 width="100%",
                 height="100%",
                 # 하단만 1em — 일반 채팅 입력 바(input_bar padding_bottom="1em")와
-                # 안내 문구의 바닥 간격을 맞춘다. 상단·좌우는 기존 값 유지.
-                padding="1.5em 2em 1em",
+                # 안내 문구의 바닥 간격을 맞춘다.
+                # 좌우 0 — 여기 패딩이 남으면 스크롤바가 그만큼 안쪽에 붙는다. 폭 제약은
+                # 자식(상단 바 900px, 메시지·입력 바 768px)이 각자 갖는다.
+                padding="1.5em 0 1em",
             )
         ),
     )

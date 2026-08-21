@@ -30,7 +30,7 @@ from pathlib import Path
 import reflex as rx
 from pydantic import BaseModel
 
-from wellbot.constants import STREAM_FLUSH_INTERVAL_SEC
+from wellbot.constants import CONVERSATION_LIMIT, STREAM_FLUSH_INTERVAL_SEC
 from wellbot.logger import log_context
 from wellbot.services.ai.bedrock.converse import adrain_generator
 from wellbot.services.auth import policy_service
@@ -132,6 +132,11 @@ class ReportMakerState(rx.State):
     conversation_list: list[ConvSummary] = []
     show_report_history: bool = False   # '이전 보고서' 모달 열림 여부
     report_history_query: str = ""      # 이전 보고서 검색어(제목 필터)
+    # 목록은 CONVERSATION_LIMIT 개씩 펼친다. 상한이 아니라 페이지 크기 —
+    # 전에는 30 에서 잘려 31번째 보고서에 도달할 UI 경로가 아예 없었다.
+    has_more_conversations: bool = False
+    is_loading_more_conversations: bool = False
+    _conversation_pages: int = 1
     # ── 이름 변경 공용 다이얼로그(유형/대화) — 컨트롤드(폼 submit-in-close 회피) ──
     rename_open: bool = False
     rename_kind: str = ""               # "template" | "conversation"
@@ -519,8 +524,15 @@ class ReportMakerState(rx.State):
     # ══════════════════════════════════════════════════════════
     # 대화 이력 (chtb_smry_d / chtb_msg_d, AGNT_ID 태깅)
     # ══════════════════════════════════════════════════════════
+    def _conversation_limit(self) -> int:
+        """현재 펼친 페이지 수만큼의 조회 상한."""
+        return max(1, self._conversation_pages) * CONVERSATION_LIMIT
+
     async def _load_conversation_list(self):
-        rows = await asyncio.to_thread(db.list_conversations, self._emp_no)
+        rows, has_more = await asyncio.to_thread(
+            db.list_conversations, self._emp_no, self._conversation_limit()
+        )
+        self.has_more_conversations = has_more
         self.conversation_list = [
             ConvSummary(id=r["id"], title=r["title"], created_at=r["created_at"],
                         created_label=r.get("created_label", ""),
@@ -531,6 +543,20 @@ class ReportMakerState(rx.State):
     @rx.event
     async def load_conversation_list(self):
         await self._load_conversation_list()
+
+    @rx.event
+    async def load_more_conversations(self):
+        """'이전 보고서' 모달의 더 보기 — 다음 페이지까지 포함해 다시 읽는다."""
+        if self.is_loading_more_conversations or not self.has_more_conversations:
+            return
+        self.is_loading_more_conversations = True
+        yield          # 버튼 문구를 '불러오는 중'으로 먼저 갱신
+
+        try:
+            self._conversation_pages += 1
+            await self._load_conversation_list()
+        finally:
+            self.is_loading_more_conversations = False
 
     # ── '이전 보고서' 모달 ──
     @rx.var
@@ -645,6 +671,9 @@ class ReportMakerState(rx.State):
             session_id = self.session_id
             template_id = self.template_id
             persisted_before = self._persisted_count
+            # 펼친 페이지 수를 락 안에서 미리 읽어 둔다 — 이 값을 빼먹으면 매 턴 저장 후
+            # 목록이 첫 페이지(30건)로 되돌아간다.
+            list_limit = self._conversation_limit()
             flow_state = self._collect_state()
             title = next(
                 (m.content[:30] for m in self.messages if m.role == "user"), "새 보고서"
@@ -689,14 +718,18 @@ class ReportMakerState(rx.State):
             log.exception("flow_state 저장 실패 emp_no=%s session=%s", emp_no, session_id)
 
         try:
-            rows = await asyncio.to_thread(db.list_conversations, emp_no)
+            rows, has_more = await asyncio.to_thread(
+                db.list_conversations, emp_no, list_limit
+            )
         except Exception:
             log.exception("대화 목록 조회 실패 emp_no=%s", emp_no)
             rows = None
+            has_more = False
 
         async with self:
             self._persisted_count = persisted_before + saved
             if rows is not None:
+                self.has_more_conversations = has_more
                 self.conversation_list = [
                     ConvSummary(id=r["id"], title=r["title"], created_at=r["created_at"],
                                 created_label=r.get("created_label", ""),

@@ -16,7 +16,10 @@ LOCK_DURATION_MINUTES: int = 30    # 계정 잠금 시간(분)
 PASSWORD_MIN_LENGTH: int = 8       # 비밀번호 최소 길이
 
 # ── 채팅 ──
-CONVERSATION_LIMIT: int = 30       # 사이드바 대화 목록 최대 수
+# 대화·보고서 목록의 **페이지 크기**(상한이 아니다). 사이드바와 '이전 보고서' 모달 모두
+# "더 보기"로 이 크기만큼 더 읽는다. 값을 바꾸면 양쪽이 함께 바뀐다 — 의미가 같으므로
+# 상수를 두 벌로 쪼개지 않는다.
+CONVERSATION_LIMIT: int = 30
 TITLE_MAX_LENGTH: int = 30         # 임시 제목 최대 글자 수
 DEFAULT_CONVERSATION_TITLE: str = "새 대화"
 MESSAGE_SEQ_MAX_RETRIES: int = 5   # 메시지 seq 동시 발급 충돌 시 재시도 횟수

@@ -81,8 +81,20 @@ def can_attach(smry_id: str, emp_no: str) -> bool:
     return not has_messages
 
 
-def list_conversations(emp_no: str) -> list[dict]:
-    """report_maker 대화 목록(최근순). AGNT_ID 태깅 메시지가 있는 대화만."""
+def list_conversations(
+    emp_no: str, limit: int = CONVERSATION_LIMIT
+) -> tuple[list[dict], bool]:
+    """report_maker 대화 목록(최근순). AGNT_ID 태깅 메시지가 있는 대화만.
+
+    반환: (목록, 더 있는지).
+
+    **offset 이 아니라 limit 만 받는 이유** — 모달의 "더 보기"는 목록을 늘려 가며 항상
+    맨 위부터 다시 읽는다. offset 페이지네이션은 페이지를 넘기는 사이에 새 보고서가
+    생기면 창이 밀려 중복·누락이 생기는데, 이 목록은 많아도 수십 건이라 전 구간을 다시
+    읽는 편이 단순하고 정확하다(`chat_service.list_conversations` 와 같은 판단).
+
+    더 있는지는 limit + 1 건을 읽어 판단한다(별도 COUNT 질의 불필요).
+    """
     with get_session() as session:
         smry_ids = (
             session.query(ChatMessage.chtb_tlk_smry_id)
@@ -96,9 +108,11 @@ def list_conversations(emp_no: str) -> list[dict]:
                 ChatSummary.chtb_tlk_smry_id.in_(smry_ids),
             )
             .order_by(ChatSummary.rgst_dtm.desc())
-            .limit(CONVERSATION_LIMIT)
+            .limit(limit + 1)
             .all()
         )
+        has_more = len(rows) > limit
+        rows = rows[:limit]
         return [
             {
                 "id": r.chtb_tlk_smry_id,
@@ -109,7 +123,7 @@ def list_conversations(emp_no: str) -> list[dict]:
                 "template_id": r.chtb_mdl_nm or "",
             }
             for r in rows
-        ]
+        ], has_more
 
 
 def get_conversation_messages(smry_id: str, emp_no: str) -> list[dict]:
