@@ -5,6 +5,7 @@
 
 import reflex as rx
 
+from wellbot.constants import SEARCH_DEBOUNCE_MS
 from wellbot.state.chat_models import ConvListItem
 from wellbot.state.chat_state import ChatState
 from wellbot.state.ui_state import UIState
@@ -142,28 +143,38 @@ def search_modal() -> rx.Component:
                             color=COLORS["text_secondary"],
                             flex_shrink="0",
                         ),
-                        rx.el.input(
-                            placeholder="채팅 검색...",
-                            # value 를 주지 않는다(언컨트롤드). 주면 키 입력마다 서버가
-                            # 되돌린 값으로 React 가 DOM value 를 덮어쓰는데, 한글은 자모를
-                            # 조합하는 중간 상태가 있어 그 순간 덮이면 IME 조합 버퍼가
-                            # 깨진다("아니"→"ㅇㅏ니ㅣ"). 영어는 한 키가 곧 완성된 글자라
-                            # 무해해서 한글에서만 증상이 났다. rx.el.input 은 rx.input 과
-                            # 달리 디바운스 래핑도 받지 못해 왕복이 그대로 노출된다.
-                            # 초기화는 모달이 rx.cond 로 언마운트되며 자연히 성립한다.
-                            on_change=ChatState.set_search_query,
-                            auto_focus=True,
-                            style={
-                                "flex": "1",
-                                "background": "transparent",
-                                "border": "none",
-                                "box_shadow": "none",
-                                "outline": "none",
-                                "color": str(COLORS["text_primary"]),
-                                "font_size": "0.875rem",
-                                "padding": "0",
-                                "min_width": "0",
-                            },
+                        # 한글 IME 를 위해 반드시 debounce 로 감싼다.
+                        #
+                        # 원인은 "서버가 DOM value 를 덮어쓴다"가 아니라 **키 입력마다
+                        # 서버 왕복이 일어난다** 는 것이다(언컨트롤드로 바꿔 봤으나 증상이
+                        # 그대로였다 — 2026-08-21 QA). 한글은 자모를 조합하는 중간 상태가
+                        # 있어서, 그 사이에 리렌더가 끼면 조합이 끊겨 "마음"이 "ㅁㅏㅇㅡㅁ"
+                        # 으로 들어간다. 영어는 한 키가 곧 완성된 글자라 무해하다.
+                        #
+                        # DebounceInput 은 값을 클라이언트에 붙잡아 두고 입력이 멈춘 뒤에만
+                        # on_change 를 보낸다 → 조합 중에는 왕복이 아예 없다. Radix
+                        # rx.input 은 value+on_change 면 이걸 **자동으로** 붙이지만
+                        # (프레임워크 주석: "to avoid typing jank"), rx.el.input 은 안 붙는다.
+                        # 그래서 이 앱에서 한글 밀림이 rx.el.input 두 곳에만 났다.
+                        rx.debounce_input(
+                            rx.el.input(
+                                placeholder="채팅 검색...",
+                                value=ChatState.search_query,
+                                on_change=ChatState.set_search_query,
+                                auto_focus=True,
+                                style={
+                                    "flex": "1",
+                                    "background": "transparent",
+                                    "border": "none",
+                                    "box_shadow": "none",
+                                    "outline": "none",
+                                    "color": str(COLORS["text_primary"]),
+                                    "font_size": "0.875rem",
+                                    "padding": "0",
+                                    "min_width": "0",
+                                },
+                            ),
+                            debounce_timeout=SEARCH_DEBOUNCE_MS,
                         ),
                         rx.box(
                             rx.icon("x", size=_ICON_SIZE),
