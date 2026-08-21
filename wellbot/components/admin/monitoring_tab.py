@@ -31,7 +31,11 @@ def _cat_chip(c: dict) -> rx.Component:
 
 
 def _th(label: str, align: str = "center") -> rx.Component:
-    return rx.table.column_header_cell(label, text_align=align)
+    # nowrap 이 필요한 이유: table-layout 이 auto 라 여유 폭이 (max-content − min-content)
+    # 비율로 배분된다. 데이터가 헤더보다 좁은 열(값이 1~2자리 숫자나 "-" 뿐인 '횟수'·'사용자'
+    # 등)은 배분을 못 받아 min-content 로 눌리는데, 한글은 음절 사이 줄바꿈이 허용되므로
+    # 그 폭에서 "횟 / 수" 로 세로화된다. 헤더 라벨을 한 줄로 묶어 하한을 올린다.
+    return rx.table.column_header_cell(label, text_align=align, white_space="nowrap")
 
 
 def _cell_left(content) -> rx.Component:
@@ -72,12 +76,18 @@ def _empty(msg: str, length) -> rx.Component:
 
 def _table(*, headers: list, body, empty_len, empty_msg: str) -> rx.Component:
     return rx.vstack(
-        rx.table.root(
-            rx.table.header(rx.table.row(*headers)),
-            rx.table.body(body),
+        # 헤더 nowrap 으로 표의 최소 폭이 올라가므로(열이 9개인 AI 서비스 표가 특히) 넘침은
+        # 표 안에서 흡수한다 — 페이지 전체가 가로로 흔들리지 않게. KB 탭 표와 같은 관행.
+        rx.box(
+            rx.table.root(
+                rx.table.header(rx.table.row(*headers)),
+                rx.table.body(body),
+                width="100%",
+                size="1",
+                variant="surface",
+            ),
             width="100%",
-            size="1",
-            variant="surface",
+            overflow_x="auto",
         ),
         _empty(empty_msg, empty_len),
         spacing="2",
