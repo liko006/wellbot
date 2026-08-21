@@ -172,7 +172,9 @@ def _collapsed_nav() -> rx.Component:
         ),
         _collapsed_icon(
             "search",
-            UIState.open_search,
+            # 열 때 검색어를 비운다 — 입력이 언컨트롤드라 DOM 은 항상 빈 상태로 시작하는데
+            # 서버 쿼리가 남아 있으면 사이드바만 필터된 채 굳어 원인을 알 수 없다.
+            [ChatState.clear_search_query, UIState.open_search],
             "채팅 검색",
         ),
         # 이용 가능한 AI 서비스가 없으면 구분선까지 통째로 숨긴다
@@ -494,7 +496,8 @@ def sidebar() -> rx.Component:
                         _nav_item(
                             "search",
                             "채팅 검색",
-                            UIState.open_search,
+                            # 접힌 상태 아이콘과 같은 이유로 검색어를 먼저 비운다.
+                            [ChatState.clear_search_query, UIState.open_search],
                         ),
                         # 이용 가능한 AI 서비스가 없으면 구분선까지 통째로 숨긴다
                         rx.cond(

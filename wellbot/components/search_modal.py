@@ -5,7 +5,7 @@
 
 import reflex as rx
 
-from wellbot.state.chat_models import Conversation
+from wellbot.state.chat_models import ConvListItem
 from wellbot.state.chat_state import ChatState
 from wellbot.state.ui_state import UIState
 from wellbot.styles import COLORS
@@ -14,8 +14,8 @@ _ICON_SIZE = 18
 _ICON_BOX = "36px"
 
 
-def _search_result_item(conv: Conversation) -> rx.Component:
-    """검색 결과 개별 대화 항목."""
+def _search_result_item(conv: ConvListItem) -> rx.Component:
+    """검색 결과 개별 대화 항목. id·title 만 쓴다."""
     is_active = ChatState.current_conversation_id == conv.id
 
     return rx.hstack(
@@ -144,7 +144,13 @@ def search_modal() -> rx.Component:
                         ),
                         rx.el.input(
                             placeholder="채팅 검색...",
-                            value=ChatState.search_query,
+                            # value 를 주지 않는다(언컨트롤드). 주면 키 입력마다 서버가
+                            # 되돌린 값으로 React 가 DOM value 를 덮어쓰는데, 한글은 자모를
+                            # 조합하는 중간 상태가 있어 그 순간 덮이면 IME 조합 버퍼가
+                            # 깨진다("아니"→"ㅇㅏ니ㅣ"). 영어는 한 키가 곧 완성된 글자라
+                            # 무해해서 한글에서만 증상이 났다. rx.el.input 은 rx.input 과
+                            # 달리 디바운스 래핑도 받지 못해 왕복이 그대로 노출된다.
+                            # 초기화는 모달이 rx.cond 로 언마운트되며 자연히 성립한다.
                             on_change=ChatState.set_search_query,
                             auto_focus=True,
                             style={

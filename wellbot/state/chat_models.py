@@ -80,6 +80,19 @@ class Conversation(BaseModel):
     has_more_older: bool = False # 로드되지 않은 더 오래된 메시지가 DB 에 남아있는지
 
 
+class ConvListItem(BaseModel):
+    """목록 렌더 전용 대화 요약 — **messages 를 싣지 않는다.**
+
+    사이드바·검색 모달은 제목과 id 만 쓰는데, `Conversation` 을 그대로 내보내면 목록이
+    갱신될 때마다 대화 본문 전체(+source_docs)가 함께 직렬화되어 브라우저로 간다.
+    검색은 글자마다 목록을 다시 계산하므로 그 비용이 자모 단위로 반복됐다.
+    `report_maker_state.ConvSummary` 와 같은 결의 모델.
+    """
+
+    id: str = ""
+    title: str = ""
+
+
 # ── KB (Knowledge Base) 표시용 모델 ──
 class PendingFile(BaseModel):
     """KB 업로드 대기 파일 정보."""

@@ -361,7 +361,8 @@ def report_history_modal() -> rx.Component:
                                 flex_shrink="0"),
                         rx.el.input(
                             placeholder="이전 보고서 검색...",
-                            value=ReportMakerState.report_history_query,
+                            # value 를 주지 않는다(언컨트롤드) — 채팅 검색 모달과 같은
+                            # 이유. 상세는 components/search_modal.py 의 주석.
                             on_change=ReportMakerState.set_report_history_query,
                             auto_focus=True,
                             style={
