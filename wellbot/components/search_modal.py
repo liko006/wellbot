@@ -5,7 +5,8 @@
 
 import reflex as rx
 
-from wellbot.state.chat_models import Conversation
+from wellbot.constants import SEARCH_DEBOUNCE_MS
+from wellbot.state.chat_models import ConvListItem
 from wellbot.state.chat_state import ChatState
 from wellbot.state.ui_state import UIState
 from wellbot.styles import COLORS
@@ -14,8 +15,8 @@ _ICON_SIZE = 18
 _ICON_BOX = "36px"
 
 
-def _search_result_item(conv: Conversation) -> rx.Component:
-    """검색 결과 개별 대화 항목."""
+def _search_result_item(conv: ConvListItem) -> rx.Component:
+    """검색 결과 개별 대화 항목. id·title 만 쓴다."""
     is_active = ChatState.current_conversation_id == conv.id
 
     return rx.hstack(
@@ -142,22 +143,38 @@ def search_modal() -> rx.Component:
                             color=COLORS["text_secondary"],
                             flex_shrink="0",
                         ),
-                        rx.el.input(
-                            placeholder="채팅 검색...",
-                            value=ChatState.search_query,
-                            on_change=ChatState.set_search_query,
-                            auto_focus=True,
-                            style={
-                                "flex": "1",
-                                "background": "transparent",
-                                "border": "none",
-                                "box_shadow": "none",
-                                "outline": "none",
-                                "color": str(COLORS["text_primary"]),
-                                "font_size": "0.875rem",
-                                "padding": "0",
-                                "min_width": "0",
-                            },
+                        # 한글 IME 를 위해 반드시 debounce 로 감싼다.
+                        #
+                        # 원인은 "서버가 DOM value 를 덮어쓴다"가 아니라 **키 입력마다
+                        # 서버 왕복이 일어난다** 는 것이다(언컨트롤드로 바꿔 봤으나 증상이
+                        # 그대로였다 — 2026-08-21 QA). 한글은 자모를 조합하는 중간 상태가
+                        # 있어서, 그 사이에 리렌더가 끼면 조합이 끊겨 "마음"이 "ㅁㅏㅇㅡㅁ"
+                        # 으로 들어간다. 영어는 한 키가 곧 완성된 글자라 무해하다.
+                        #
+                        # DebounceInput 은 값을 클라이언트에 붙잡아 두고 입력이 멈춘 뒤에만
+                        # on_change 를 보낸다 → 조합 중에는 왕복이 아예 없다. Radix
+                        # rx.input 은 value+on_change 면 이걸 **자동으로** 붙이지만
+                        # (프레임워크 주석: "to avoid typing jank"), rx.el.input 은 안 붙는다.
+                        # 그래서 이 앱에서 한글 밀림이 rx.el.input 두 곳에만 났다.
+                        rx.debounce_input(
+                            rx.el.input(
+                                placeholder="채팅 검색...",
+                                value=ChatState.search_query,
+                                on_change=ChatState.set_search_query,
+                                auto_focus=True,
+                                style={
+                                    "flex": "1",
+                                    "background": "transparent",
+                                    "border": "none",
+                                    "box_shadow": "none",
+                                    "outline": "none",
+                                    "color": str(COLORS["text_primary"]),
+                                    "font_size": "0.875rem",
+                                    "padding": "0",
+                                    "min_width": "0",
+                                },
+                            ),
+                            debounce_timeout=SEARCH_DEBOUNCE_MS,
                         ),
                         rx.box(
                             rx.icon("x", size=_ICON_SIZE),

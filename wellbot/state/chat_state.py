@@ -73,6 +73,7 @@ from wellbot.state.chat_helpers.system_prompt import (
 from wellbot.state.chat_helpers.upload_script import build_upload_script
 from wellbot.state.chat_models import (
     AttachmentInfo,
+    ConvListItem,
     Conversation,
     KbTreeRow,
     Message,
@@ -393,11 +394,17 @@ class ChatState(rx.State):
         return not self.has_processing_attachments
 
     @rx.var
-    def sorted_conversations(self) -> list[Conversation]:
-        """시간 역순으로 정렬된 대화 목록.
+    def sorted_conversations(self) -> list[ConvListItem]:
+        """시간 역순으로 정렬된 대화 목록 (렌더 전용 경량 항목).
 
         빈 미저장 대화는 숨기되, 현재 활성 대화는 항상 표시.
         검색어가 있으면 제목 부분 일치(대소문자 구분 없음)로 필터링.
+
+        **`Conversation` 이 아니라 `ConvListItem` 을 내보내는 이유** — 이 var 는
+        `search_query` 에 의존해 글자마다 재계산·재전송된다. `Conversation` 은
+        `messages`(본문 전체 + source_docs)를 품고 있어, 그대로 내보내면 자모 하나마다
+        현재 대화 트랜스크립트까지 함께 직렬화되어 브라우저로 갔다. 소비처(사이드바
+        목록·검색 모달)는 id 와 title 만 쓴다. 필터·정렬은 원본으로 계산하고 투영만 바꾼다.
         """
         current_id = self.current_conversation_id
         visible = [
@@ -407,7 +414,10 @@ class ChatState(rx.State):
         query = self.search_query.strip().lower()
         if query:
             visible = [c for c in visible if query in (c.title or "").lower()]
-        return sorted(visible, key=lambda c: c.created_at, reverse=True)
+        return [
+            ConvListItem(id=c.id, title=c.title)
+            for c in sorted(visible, key=lambda c: c.created_at, reverse=True)
+        ]
 
     @rx.var
     def is_searching(self) -> bool:

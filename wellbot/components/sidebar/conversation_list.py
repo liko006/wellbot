@@ -5,13 +5,13 @@
 
 import reflex as rx
 
-from wellbot.state.chat_models import Conversation
+from wellbot.state.chat_models import ConvListItem
 from wellbot.state.chat_state import ChatState
 from wellbot.styles import COLORS, SPACING
 
 
-def conversation_item(conv: Conversation) -> rx.Component:
-    """개별 대화 항목."""
+def conversation_item(conv: ConvListItem) -> rx.Component:
+    """개별 대화 항목. id·title 만 쓴다(목록 델타를 가볍게 유지)."""
     is_active = ChatState.on_chat_page & (
         ChatState.current_conversation_id == conv.id
     )

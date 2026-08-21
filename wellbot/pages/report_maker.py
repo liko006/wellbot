@@ -7,7 +7,7 @@ chat_layout 으로 래핑(표준 wellbot 사이드바 유지)하고, 메인 영�
 import reflex as rx
 
 from wellbot.components.layout import chat_layout
-from wellbot.constants import AI_DISCLAIMER_TEXT
+from wellbot.constants import AI_DISCLAIMER_TEXT, SEARCH_DEBOUNCE_MS
 from wellbot.state.report_maker_scripts import (
     REPORT_MAKER_AUTOSCROLL_SCRIPT,
     REPORT_MAKER_SCRIPT,
@@ -359,17 +359,24 @@ def report_history_modal() -> rx.Component:
                     rx.hstack(
                         rx.icon("search", size=18, color=COLORS["text_secondary"],
                                 flex_shrink="0"),
-                        rx.el.input(
-                            placeholder="이전 보고서 검색...",
-                            value=ReportMakerState.report_history_query,
-                            on_change=ReportMakerState.set_report_history_query,
-                            auto_focus=True,
-                            style={
-                                "flex": "1", "background": "transparent", "border": "none",
-                                "boxShadow": "none", "outline": "none",
-                                "color": str(COLORS["text_primary"]),
-                                "fontSize": "0.875rem", "padding": "0", "minWidth": "0",
-                            },
+                        # 한글 IME 를 위해 debounce 로 감싼다 — 상세 근거는
+                        # components/search_modal.py 의 같은 위치 주석.
+                        rx.debounce_input(
+                            rx.el.input(
+                                placeholder="이전 보고서 검색...",
+                                value=ReportMakerState.report_history_query,
+                                on_change=ReportMakerState.set_report_history_query,
+                                auto_focus=True,
+                                style={
+                                    "flex": "1", "background": "transparent",
+                                    "border": "none",
+                                    "boxShadow": "none", "outline": "none",
+                                    "color": str(COLORS["text_primary"]),
+                                    "fontSize": "0.875rem", "padding": "0",
+                                    "minWidth": "0",
+                                },
+                            ),
+                            debounce_timeout=SEARCH_DEBOUNCE_MS,
                         ),
                         rx.icon_button(
                             rx.icon("x", size=18), variant="ghost", color_scheme="gray",

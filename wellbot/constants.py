@@ -20,6 +20,11 @@ PASSWORD_MIN_LENGTH: int = 8       # 비밀번호 최소 길이
 # "더 보기"로 이 크기만큼 더 읽는다. 값을 바꾸면 양쪽이 함께 바뀐다 — 의미가 같으므로
 # 상수를 두 벌로 쪼개지 않는다.
 CONVERSATION_LIMIT: int = 30
+
+# 검색 입력의 debounce(ms). **한글 IME 를 위해 필수** — 키 입력마다 서버 왕복이 일어나면
+# 자모 조합 중에 리렌더가 끼어 "마음"이 "ㅁㅏㅇㅡㅁ"으로 들어간다. 값을 0 으로 만들거나
+# debounce 래퍼를 빼면 그 증상이 즉시 재발한다. 너무 길면 검색 결과가 늦게 좁혀진다.
+SEARCH_DEBOUNCE_MS: int = 300
 TITLE_MAX_LENGTH: int = 30         # 임시 제목 최대 글자 수
 DEFAULT_CONVERSATION_TITLE: str = "새 대화"
 MESSAGE_SEQ_MAX_RETRIES: int = 5   # 메시지 seq 동시 발급 충돌 시 재시도 횟수
